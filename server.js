@@ -139,26 +139,33 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     #local-map-panel {
       display: none;
-      position: fixed; bottom: 36px; right: 14px;
-      width: 300px; height: 240px;
-      border: 1px solid rgba(44, 130, 188, 0.42);
-      box-shadow: 0 0 28px rgba(12, 56, 94, 0.48);
-      z-index: 30; overflow: hidden;
+      position: fixed; inset: 0;
+      z-index: 19; overflow: hidden;
       background: #020508;
     }
     #local-map-panel.active { display: block; }
     #local-map { width: 100%; height: 100%; }
     #lm-label {
-      position: absolute; top: 4px; left: 6px;
-      font-size: 8px; letter-spacing: 2px; color: #56afd8;
-      pointer-events: none; z-index: 31;
-      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+      position: fixed; top: 54px; left: 14px;
+      font-size: 9px; letter-spacing: 3px; color: #56afd8;
+      pointer-events: none; z-index: 21;
+      text-shadow: 0 1px 6px rgba(0,0,0,0.95);
+      display: none;
     }
-    #lm-close {
-      position: absolute; top: 3px; right: 5px;
-      font-size: 11px; color: #5cf2b6; cursor: pointer; z-index: 31;
-      pointer-events: all; background: none; border: none; padding: 2px 5px;
+    #back-to-globe {
+      display: none;
+      position: fixed; top: 9px; right: 14px;
+      font-size: 10px; letter-spacing: 2px; color: #5cf2b6;
+      cursor: pointer; z-index: 21; pointer-events: all;
+      background: rgba(5, 14, 24, 0.82);
+      border: 1px solid rgba(92, 242, 182, 0.40);
+      padding: 4px 12px;
+      box-shadow: 0 0 10px rgba(92, 242, 182, 0.16) inset;
     }
+    body.local-mode .side-panel { display: none; }
+    body.local-mode #hud-status { display: none; }
+    body.local-mode #lm-label  { display: block; }
+    body.local-mode #back-to-globe { display: block; }
   </style>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
@@ -186,10 +193,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
   <div id="hud-foot">GLOBE OPERATIONAL SURFACE</div>
   <div id="local-map-panel">
-    <span id="lm-label">LOCAL VIEW</span>
-    <button id="lm-close">&#x2715;</button>
     <div id="local-map"></div>
   </div>
+  <span id="lm-label">LOCAL VIEW</span>
+  <button id="back-to-globe">← GLOBE</button>
 <script>
 (function () {
   'use strict';
@@ -319,7 +326,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function showLocalMap(ent) {
     if (typeof L === 'undefined' || typeof ent.lat !== 'number') return;
+    document.body.classList.add('local-mode');
     localMapPanel.classList.add('active');
+    document.getElementById('lm-label').textContent = ent.id.toUpperCase() + ' — LOCAL VIEW';
     if (!localLeaflet) {
       localLeaflet = L.map('local-map', { zoomControl: true });
       var tileLogDone = false;
@@ -347,6 +356,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function hideLocalMap() {
+    document.body.classList.remove('local-mode');
     if (localMapPanel) localMapPanel.classList.remove('active');
   }
 
@@ -570,7 +580,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     setInterval(fetchWorldview, 3000);
     connect();
     requestAnimationFrame(animTick);
-    document.getElementById('lm-close').addEventListener('click', function() {
+    document.getElementById('back-to-globe').addEventListener('click', function() {
       hideLocalMap();
       selected = null;
       updatePanels();
