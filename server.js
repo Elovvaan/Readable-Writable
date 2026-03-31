@@ -25,6 +25,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RW Worldview</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
   <style>
     /* WORLDVIEW RENDERER - globe-primary, no board, no grid, no x/y */
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -50,7 +56,46 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       opacity: 0.32;
       z-index: 8;
     }
-    #globe { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(circle at center, rgba(0, 0, 0, 0) 58%, rgba(0, 0, 0, 0.46) 100%);
+      z-index: 9;
+    }
+    #map-view {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 3;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 220ms ease;
+    }
+    #globe {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      z-index: 4;
+      transition: opacity 220ms ease;
+    }
+    body.local-mode #map-view {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+    body.local-mode #globe {
+      opacity: 0.24;
+    }
+    .leaflet-container {
+      background: #0b1a2b;
+      font: 12px/1.5 Consolas, "Courier New", monospace;
+    }
     #hud-bar {
       position: fixed; top: 0; left: 0; right: 0; height: 46px;
       display: flex; align-items: center; justify-content: space-between;
@@ -64,6 +109,32 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       font-size: 14px; letter-spacing: 4px; font-weight: 700;
       color: #66d9ff; text-shadow: 0 0 12px rgba(102,217,255,0.55);
     }
+    #hud-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 10px;
+      margin-right: auto;
+      padding-left: 14px;
+      min-width: 0;
+    }
+    #hud-meta .hchip {
+      font-size: 9px;
+      letter-spacing: 1.4px;
+      color: #89bfd8;
+      border: 1px solid rgba(54, 124, 160, 0.32);
+      background: rgba(7, 17, 28, 0.66);
+      padding: 2px 7px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    #hud-meta .hchip.target {
+      color: #d9effa;
+      border-color: rgba(128, 202, 234, 0.38);
+      max-width: 190px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     #hud-status {
       font-size: 10px;
       letter-spacing: 2px;
@@ -73,7 +144,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       background: rgba(92, 242, 182, 0.08);
       box-shadow: 0 0 10px rgba(92, 242, 182, 0.18) inset;
     }
-    #hud-status.offline { color: #ff7d6e; }
+    #hud-status.live { animation: livePulse 2.1s ease-in-out infinite; }
+    #hud-status.offline { color: #ff7d6e; animation: none; }
+    @keyframes livePulse {
+      0% { opacity: 0.92; box-shadow: 0 0 8px rgba(92, 242, 182, 0.10) inset, 0 0 3px rgba(92, 242, 182, 0.18); }
+      50% { opacity: 1; box-shadow: 0 0 12px rgba(92, 242, 182, 0.22) inset, 0 0 10px rgba(92, 242, 182, 0.26); }
+      100% { opacity: 0.92; box-shadow: 0 0 8px rgba(92, 242, 182, 0.10) inset, 0 0 3px rgba(92, 242, 182, 0.18); }
+    }
     .side-panel {
       position: fixed; top: 62px; width: 172px;
       background: linear-gradient(180deg, rgba(5, 14, 24, 0.76), rgba(3, 8, 15, 0.68));
@@ -101,6 +178,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       font-variant-numeric: tabular-nums;
       text-shadow: 0 0 7px rgba(140, 225, 255, 0.24);
       font-weight: 700;
+      text-align: right;
     }
     #selected-detail {
       margin-top: 9px; padding-top: 8px;
@@ -113,6 +191,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #selected-detail.locked {
       color: #7fd3ff;
       text-shadow: 0 0 10px rgba(96, 193, 246, 0.26);
+      background: rgba(8, 22, 34, 0.38);
+      border: 1px solid rgba(82, 170, 215, 0.26);
+      padding: 7px;
     }
     #selected-detail .sel-id { color: #c7eeff; font-weight: 700; }
     #hud-foot {
@@ -123,10 +204,171 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       font-size: 9px; letter-spacing: 3px; color: #3d6e86;
       z-index: 20; pointer-events: none;
     }
+    #spatial-controls {
+      position: fixed;
+      right: 14px;
+      bottom: 38px;
+      z-index: 21;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(64px, auto));
+      gap: 6px;
+      pointer-events: auto;
+    }
+    .ctl {
+      border: 1px solid rgba(92, 167, 216, 0.45);
+      background: rgba(6, 16, 28, 0.84);
+      color: #8fd7ff;
+      font-size: 10px;
+      letter-spacing: 1px;
+      padding: 6px 8px;
+      min-width: 70px;
+      cursor: pointer;
+      box-shadow: 0 0 10px rgba(41, 134, 194, 0.18);
+    }
+    .ctl:hover { background: rgba(10, 28, 45, 0.9); }
+    .ctl:active { transform: translateY(1px); }
+    .ctl.active {
+      color: #aef8d7;
+      border-color: rgba(92, 242, 182, 0.52);
+      box-shadow: 0 0 12px rgba(92, 242, 182, 0.24);
+    }
     body.admin .side-panel { width: 186px; padding: 9px 11px; }
     body.admin .pnl-row { margin: 4px 0; font-size: 9.5px; }
     body.admin #hud-bar { height: 42px; }
     body.admin #hud-foot { height: 24px; font-size: 8.5px; }
+
+    #local-context {
+      position: fixed;
+      left: 50%;
+      bottom: 36px;
+      transform: translateX(-50%);
+      z-index: 23;
+      border: 1px solid rgba(78, 164, 214, 0.34);
+      background: rgba(6, 16, 28, 0.82);
+      color: #92cce2;
+      font-size: 9px;
+      letter-spacing: 1.4px;
+      padding: 5px 9px;
+      text-transform: uppercase;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 180ms ease;
+      max-width: 62vw;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    body.local-mode #local-context { opacity: 1; }
+
+    #event-feed {
+      position: fixed;
+      left: 14px;
+      bottom: 38px;
+      width: 320px;
+      max-height: 190px;
+      z-index: 21;
+      border: 1px solid rgba(47, 125, 170, 0.3);
+      background: linear-gradient(180deg, rgba(5, 14, 24, 0.76), rgba(3, 8, 15, 0.68));
+      box-shadow: 0 0 20px rgba(14, 58, 96, 0.22);
+      padding: 8px;
+      pointer-events: auto;
+    }
+    #event-feed .feed-head {
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: #5fb3db;
+      margin-bottom: 6px;
+      border-bottom: 1px solid rgba(44,130,188,0.24);
+      padding-bottom: 4px;
+    }
+    #feed-list {
+      max-height: 162px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .feed-item {
+      width: 100%;
+      border: 1px solid rgba(51, 118, 152, 0.26);
+      background: rgba(7, 16, 27, 0.52);
+      color: #8ebcd1;
+      font-size: 9px;
+      line-height: 1.4;
+      text-align: left;
+      padding: 5px 6px;
+      margin-bottom: 5px;
+      cursor: pointer;
+    }
+    .feed-item strong {
+      color: #b9e7f8;
+      font-size: 9px;
+      letter-spacing: 0.8px;
+    }
+    .feed-item[data-pri="3"] { border-color: rgba(255, 192, 96, 0.46); }
+    .feed-item[data-pri="4"] {
+      border-color: rgba(255, 125, 110, 0.52);
+      color: #ffd1cb;
+    }
+    .feed-item:hover { background: rgba(13, 29, 44, 0.75); }
+    .feed-time { color: #57839a; margin-left: 8px; }
+
+    .state-active { color: #7ce1b8 !important; }
+    .state-stale { color: #ffd79b !important; }
+    .state-lost { color: #ff9a8f !important; }
+    .state-alert { color: #ffcf91 !important; }
+
+    .admin-only { display: none; }
+    body.admin .admin-only { display: flex; }
+    body.admin #event-feed {
+      width: 350px;
+      max-height: 215px;
+    }
+
+    #map-controls {
+      position: fixed;
+      right: 14px;
+      bottom: 130px;
+      z-index: 24;
+      display: none;
+      gap: 6px;
+      pointer-events: auto;
+      flex-direction: column;
+    }
+    body.local-mode #map-controls {
+      display: flex;
+    }
+    #map-controls .ctl {
+      min-width: 118px;
+    }
+
+    #transition-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 26;
+      pointer-events: none;
+      opacity: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 220ms ease;
+      background: radial-gradient(circle at center, rgba(4, 12, 22, 0.06), rgba(2, 7, 12, 0.72));
+    }
+    #transition-overlay .msg {
+      font-size: 14px;
+      letter-spacing: 5px;
+      color: #d8f3ff;
+      border: 1px solid rgba(117, 201, 242, 0.4);
+      background: rgba(7, 16, 27, 0.82);
+      padding: 10px 15px;
+      text-transform: uppercase;
+      box-shadow: 0 0 18px rgba(112, 196, 236, 0.2);
+    }
+    body.signal-track #transition-overlay,
+    body.signal-globe #transition-overlay {
+      opacity: 1;
+    }
+    body.signal-live #hud-bar {
+      box-shadow: 0 6px 24px rgba(4, 28, 54, 0.28), 0 0 14px rgba(92, 242, 182, 0.2) inset;
+    }
 
     @media (max-width: 900px) {
       .side-panel {
@@ -136,45 +378,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       .pnl-row { margin: 4px 0; font-size: 9px; }
       #hud-title { font-size: 12px; letter-spacing: 3px; }
+      #hud-meta { gap: 5px; padding-left: 8px; }
+      #hud-meta .hchip { font-size: 8px; }
+      #hud-meta .hchip.target { max-width: 120px; }
+      #map-controls { right: 8px; bottom: 120px; }
+      #event-feed {
+        left: 8px;
+        right: 8px;
+        width: auto;
+        max-height: 150px;
+      }
+      #local-context { max-width: 86vw; bottom: 30px; }
     }
-    #local-map-panel {
-      display: none;
-      position: fixed; inset: 0;
-      z-index: 19; overflow: hidden;
-      background: #020508;
-    }
-    #local-map-panel.active { display: block; }
-    #local-map { width: 100%; height: 100%; }
-    #lm-label {
-      position: fixed; top: 54px; left: 14px;
-      font-size: 9px; letter-spacing: 3px; color: #56afd8;
-      pointer-events: none; z-index: 21;
-      text-shadow: 0 1px 6px rgba(0,0,0,0.95);
-      display: none;
-    }
-    #back-to-globe {
-      display: none;
-      position: fixed; top: 9px; right: 14px;
-      font-size: 10px; letter-spacing: 2px; color: #5cf2b6;
-      cursor: pointer; z-index: 21; pointer-events: all;
-      background: rgba(5, 14, 24, 0.82);
-      border: 1px solid rgba(92, 242, 182, 0.40);
-      padding: 4px 12px;
-      box-shadow: 0 0 10px rgba(92, 242, 182, 0.16) inset;
-    }
-    body.local-mode .side-panel { display: none; }
-    body.local-mode #hud-status { display: none; }
-    body.local-mode #lm-label  { display: block; }
-    body.local-mode #back-to-globe { display: block; }
   </style>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
 </head>
 <body>
+  <div id="map-view"></div>
   <canvas id="globe"></canvas>
+  <div id="transition-overlay"><div class="msg" id="transition-msg">TRACKING TARGET</div></div>
   <div id="hud-bar">
     <div id="hud-title">RW WORLDVIEW</div>
+    <div id="hud-meta">
+      <span id="hud-mode" class="hchip">GLOBAL</span>
+      <span id="hud-conn" class="hchip">CONNECTING</span>
+      <span id="hud-target" class="hchip target">TARGET —</span>
+    </div>
     <div id="hud-status">CONNECTING</div>
   </div>
   <div id="panel-left" class="side-panel">
@@ -186,17 +414,50 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
   <div id="panel-right" class="side-panel">
     <div class="pnl-head">TACTICAL</div>
+    <div class="pnl-row"><span class="lbl">MODE</span><span class="val" id="info-mode">GLOBAL</span></div>
+    <div class="pnl-row"><span class="lbl">TARGET ID</span><span class="val" id="info-target-id">—</span></div>
+    <div class="pnl-row"><span class="lbl">TARGET TYPE</span><span class="val" id="info-target-type">—</span></div>
+    <div class="pnl-row"><span class="lbl">LAT</span><span class="val" id="info-lat">—</span></div>
+    <div class="pnl-row"><span class="lbl">LNG</span><span class="val" id="info-lng">—</span></div>
+    <div class="pnl-row"><span class="lbl">STATUS</span><span class="val" id="info-status">IDLE</span></div>
+    <div class="pnl-row"><span class="lbl">LAST UPDATE</span><span class="val" id="info-last">—</span></div>
+    <div class="pnl-row"><span class="lbl">LAST SEEN</span><span class="val" id="info-last-seen">—</span></div>
+    <div class="pnl-row"><span class="lbl">MISSIONS</span><span class="val" id="info-missions">0</span></div>
+    <div class="pnl-row"><span class="lbl">ACTIONS</span><span class="val" id="info-actions">0</span></div>
+    <div class="pnl-row"><span class="lbl">APPROVALS</span><span class="val" id="info-approvals">0</span></div>
     <div class="pnl-row"><span class="lbl">TICK</span><span class="val" id="info-tick">0</span></div>
     <div class="pnl-row"><span class="lbl">UPTIME</span><span class="val" id="info-uptime">—</span></div>
     <div class="pnl-row"><span class="lbl">TOTAL</span><span class="val" id="info-total">0</span></div>
     <div id="selected-detail">—</div>
+    <div id="admin-ops" class="admin-only" style="margin-top:8px; gap:6px; pointer-events:auto;">
+      <button id="ctl-admin-cycle" class="ctl" style="min-width:82px;">CYCLE</button>
+      <button id="ctl-admin-auto" class="ctl active" style="min-width:82px;">AUTO ON</button>
+    </div>
   </div>
   <div id="hud-foot">GLOBE OPERATIONAL SURFACE</div>
-  <div id="local-map-panel">
-    <div id="local-map"></div>
+  <div id="local-context">AREA: — • TARGET: —</div>
+  <div id="map-controls">
+    <button id="ctl-local-focus" class="ctl">FOCUS SELECTED</button>
+    <button id="ctl-local-recenter" class="ctl">RECENTER</button>
+    <button id="ctl-local-back" class="ctl">BACK TO GLOBE</button>
   </div>
-  <span id="lm-label">LOCAL VIEW</span>
-  <button id="back-to-globe">← GLOBE</button>
+  <div id="spatial-controls">
+    <button id="ctl-zoom-in" class="ctl">ZOOM +</button>
+    <button id="ctl-zoom-out" class="ctl">ZOOM -</button>
+    <button id="ctl-home" class="ctl">GLOBAL</button>
+    <button id="ctl-focus" class="ctl">FOCUS</button>
+    <button id="ctl-track" class="ctl">TRACK</button>
+    <button id="ctl-mode" class="ctl">AREA</button>
+  </div>
+  <div id="event-feed">
+    <div class="feed-head">EVENT TIMELINE</div>
+    <div id="feed-list"></div>
+  </div>
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""
+></script>
 <script>
 (function () {
   'use strict';
@@ -210,19 +471,44 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var ctx       = canvas.getContext('2d');
   var statusEl  = document.getElementById('hud-status');
   var selDetail = document.getElementById('selected-detail');
+  var modeBtn   = document.getElementById('ctl-mode');
+  var hudModeEl = document.getElementById('hud-mode');
+  var hudConnEl = document.getElementById('hud-conn');
+  var hudTargetEl = document.getElementById('hud-target');
+  var transitionMsg = document.getElementById('transition-msg');
+  var localContextEl = document.getElementById('local-context');
+  var feedListEl = document.getElementById('feed-list');
 
   var state    = { entities: [], tick: 0, started: null };
   var rot      = 0;
   var selected = null;
+  var selectedMeta = null;
+  var selectedAreaName = null;
   var selectedPulse = 0;
   var hits     = [];
+  var liveFlicker = 0;
+  var trailMap = Object.create(null);
+  var linkBursts = [];
+  var frameCount = 0;
+  var viewMode = 'global';
+  var map;
+  var mapReady = false;
+  var mapLayerStreet;
+  var mapLayerImagery;
+  var mapMarkers;
+  var mapTrailLayer;
+  var mapTargetPulse;
+  var mapFocusCircle;
+  var geocodeCache = Object.create(null);
+  var lastUpdateIso = null;
+  var targetStatus = 'IDLE';
+  var lastSignalTs = 0;
+  var autoTrack = true;
+  var entityRuntime = Object.create(null);
+  var eventFeed = [];
+  var STATE_STALE_MS = 9000;
+  var STATE_LOST_MS = 22000;
   var ws, wsDelay = 1000;
-
-  var landPolygons  = [];
-  var mapLoaded     = false;
-  var localLeaflet  = null;
-  var localMarker   = null;
-  var localMapPanel = document.getElementById('local-map-panel');
 
   function resize() {
     canvas.width  = window.innerWidth;
@@ -240,124 +526,456 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return { x: cx + r * x3, y: cy - r * y3, z: z3 };
   }
 
-  // ── Map / Continent Rendering ────────────────────────────────────────────────
-  function loadWorldGeo() {
-    console.log('[MAP] Loading world land topology...');
-    fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/land-110m.json')
-      .then(function(r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
-      .then(function(topo) {
-        if (typeof topojson === 'undefined') throw new Error('topojson-client not loaded');
-        var geo = topojson.feature(topo, topo.objects.land);
-        landPolygons = [];
-        var feats = Array.isArray(geo.features) ? geo.features : [geo];
-        feats.forEach(function(f) { collectGeoRings(f.geometry || f); });
-        mapLoaded = true;
-        console.log('[MAP] Land loaded — ' + landPolygons.length + ' rings');
-      })
-      .catch(function(err) {
-        console.warn('[MAP] Primary land failed (' + err.message + ') — applying fallback');
-        applyFallbackLand();
-      });
+  function stableHash(str) {
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
   }
 
-  function collectGeoRings(g) {
-    if (!g) return;
-    if (g.type === 'Polygon') {
-      g.coordinates.forEach(function(ring) { landPolygons.push(ring); });
-    } else if (g.type === 'MultiPolygon') {
-      g.coordinates.forEach(function(poly) {
-        poly.forEach(function(ring) { landPolygons.push(ring); });
-      });
+  function colorForKind(kind) {
+    if (kind === 'agent') return { fill: 'rgba(100, 218, 255, 0.96)', halo: 'rgba(100, 218, 255, 0.19)' };
+    if (kind === 'satellite') return { fill: 'rgba(255, 228, 112, 0.95)', halo: 'rgba(255, 228, 112, 0.20)' };
+    if (kind === 'flight') return { fill: 'rgba(255, 164, 86, 0.94)', halo: 'rgba(255, 164, 86, 0.18)' };
+    if (kind === 'region') return { fill: 'rgba(120, 210, 255, 0.35)', halo: 'rgba(120, 210, 255, 0.16)' };
+    return { fill: 'rgba(100, 218, 255, 0.90)', halo: 'rgba(100, 218, 255, 0.16)' };
+  }
+
+  function setModeLabel() {
+    if (modeBtn) {
+      modeBtn.textContent = viewMode === 'global' ? 'AREA' : 'WORLD';
+      modeBtn.className = viewMode === 'local' ? 'ctl active' : 'ctl';
+    }
+    if (hudModeEl) {
+      hudModeEl.textContent = viewMode === 'local' ? 'LOCAL TRACK' : 'GLOBAL';
     }
   }
 
-  function applyFallbackLand() {
-    // Simplified [lng, lat] outlines for major landmasses
-    landPolygons = [
-      // Africa
-      [[-18,14],[0,14],[12,12],[18,4],[22,2],[28,-2],[34,-4],[36,-12],[38,-18],[36,-22],[32,-28],[26,-34],[18,-34],[14,-24],[10,-8],[6,4],[0,6],[-6,5],[-14,10],[-18,14]],
-      // Europe
-      [[-10,36],[0,44],[10,56],[20,60],[28,62],[30,70],[14,68],[4,62],[0,50],[-2,44],[6,44],[14,46],[20,50],[28,54],[32,58],[38,56],[42,42],[36,40],[30,38],[24,36],[10,38],[0,38],[-6,36],[-10,36]],
-      // Asia
-      [[42,40],[50,30],[58,22],[65,22],[70,26],[80,28],[90,28],[100,20],[110,2],[120,4],[124,12],[128,26],[128,36],[132,44],[136,34],[128,32],[120,34],[120,38],[124,40],[118,42],[108,48],[100,52],[90,56],[80,50],[70,44],[62,40],[50,38],[44,40],[42,40]],
-      // North America
-      [[-168,72],[-141,60],[-125,49],[-117,32],[-97,26],[-83,10],[-78,16],[-66,18],[-70,44],[-56,47],[-60,46],[-80,46],[-84,46],[-90,48],[-94,49],[-110,49],[-125,49],[-132,55],[-141,60],[-150,62],[-157,60],[-163,62],[-166,64],[-168,72]],
-      // South America
-      [[-81,9],[-77,4],[-72,1],[-72,-4],[-76,-10],[-78,-14],[-76,-18],[-72,-22],[-70,-30],[-70,-40],[-66,-54],[-68,-54],[-64,-42],[-58,-34],[-52,-32],[-38,-14],[-34,-8],[-38,-4],[-50,-1],[-57,6],[-60,8],[-66,11],[-72,10],[-76,9],[-81,9]],
-      // Australia
-      [[130,-14],[136,-12],[138,-14],[140,-18],[144,-18],[150,-24],[152,-28],[152,-32],[148,-38],[144,-38],[140,-36],[134,-34],[126,-34],[114,-30],[114,-26],[122,-22],[128,-14],[130,-14]],
-    ];
-    mapLoaded = true;
-    console.log('[MAP] Fallback land active — ' + landPolygons.length + ' rings');
+  function signalEvent(kind) {
+    var cls = kind === 'track' ? 'signal-track' : kind === 'globe' ? 'signal-globe' : 'signal-live';
+    if (kind === 'live') {
+      var now = Date.now();
+      if (now - lastSignalTs < 850) return;
+      lastSignalTs = now;
+    }
+    document.body.classList.add(cls);
+    setTimeout(function () {
+      document.body.classList.remove(cls);
+    }, kind === 'live' ? 180 : 300);
   }
 
-  function drawContinents(cx, cy, r) {
-    if (!landPolygons.length) return;
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.fillStyle   = 'rgba(40, 100, 58, 0.42)';
-    ctx.strokeStyle = 'rgba(70, 160, 90, 0.58)';
-    ctx.lineWidth   = 0.5;
-    for (var ri = 0; ri < landPolygons.length; ri++) {
-      var ring = landPolygons[ri];
-      if (!ring || ring.length < 3) continue;
-      ctx.beginPath();
-      var moved = false;
-      for (var pi = 0; pi < ring.length; pi++) {
-        var c = ring[pi];
-        var pt = project(c[1], c[0], cx, cy, r);
-        if (pt.z > 0) {
-          if (!moved) { ctx.moveTo(pt.x, pt.y); moved = true; }
-          else        { ctx.lineTo(pt.x, pt.y); }
-        } else if (moved) {
-          ctx.closePath(); ctx.fill(); ctx.stroke();
-          ctx.beginPath(); moved = false;
+  function showTransition(msg) {
+    if (!transitionMsg) return;
+    transitionMsg.textContent = msg;
+  }
+
+  function ageLabel(ms) {
+    if (ms < 1500) return 'NOW';
+    var sec = Math.floor(ms / 1000);
+    if (sec < 60) return sec + 'S AGO';
+    var min = Math.floor(sec / 60);
+    if (min < 60) return min + 'M AGO';
+    return Math.floor(min / 60) + 'H AGO';
+  }
+
+  function entityIdFromMessage(msg) {
+    if (!msg) return null;
+    var m = String(msg).match(/(agent-[a-f0-9]+|flight-agent-[a-f0-9]+|sat-agent-[a-f0-9]+|alpha|beta|gamma|delta|center)/i);
+    return m ? m[1] : null;
+  }
+
+  function addEventItem(kind, msg, entityId) {
+    var pri = 1;
+    var text = String(msg || 'event');
+    var upper = text.toUpperCase();
+    if (kind === 'track' || kind === 'state') pri = 2;
+    if (upper.indexOf('ALERT') >= 0 || upper.indexOf('STALE') >= 0) pri = 3;
+    if (upper.indexOf('LOST') >= 0 || kind === 'lost') pri = 4;
+    eventFeed.unshift({
+      ts: Date.now(),
+      kind: kind || 'system',
+      msg: text,
+      pri: pri,
+      entityId: entityId || null
+    });
+    if (eventFeed.length > 40) eventFeed.length = 40;
+    renderEventFeed();
+  }
+
+  function renderEventFeed() {
+    if (!feedListEl) return;
+    var sorted = eventFeed.slice(0, 12).sort(function (a, b) {
+      if (b.pri !== a.pri) return b.pri - a.pri;
+      return b.ts - a.ts;
+    });
+    var html = '';
+    for (var i = 0; i < sorted.length; i++) {
+      var ev = sorted[i];
+      var t = new Date(ev.ts);
+      var stamp = t.toLocaleTimeString([], { hour12: false });
+      var cap = ev.kind.toUpperCase();
+      var idAttr = ev.entityId ? ' data-entity="' + ev.entityId + '"' : '';
+      html += '<button class="feed-item" data-pri="' + ev.pri + '"' + idAttr + '>'
+        + '<strong>' + cap + '</strong><span class="feed-time">' + stamp + '</span><br/>'
+        + ev.msg + '</button>';
+    }
+    feedListEl.innerHTML = html || '<div class="feed-item" data-pri="1">NO EVENTS</div>';
+  }
+
+  function opCounts(ent) {
+    if (!ent) return { missions: 0, actions: 0, approvals: 0 };
+    var missionCount = Array.isArray(ent.missions) ? ent.missions.length : (Number(ent.missionCount) || Number(ent.missions) || 0);
+    var actionCount = Array.isArray(ent.actions) ? ent.actions.length : (Number(ent.actionCount) || Number(ent.actions) || 0);
+    var approvalCount = Array.isArray(ent.approvals) ? ent.approvals.length : (Number(ent.approvalCount) || Number(ent.approvals) || 0);
+    return { missions: missionCount, actions: actionCount, approvals: approvalCount };
+  }
+
+  function runtimeState(id) {
+    var rec = entityRuntime[id];
+    if (!rec) return 'lost';
+    var age = Date.now() - (rec.lastSeenAt || 0);
+    if (age >= STATE_LOST_MS) return 'lost';
+    if (age >= STATE_STALE_MS) return 'stale';
+    if (rec.alert) return 'alert';
+    return 'active';
+  }
+
+  function syncRuntime(entities) {
+    var now = Date.now();
+    var seen = Object.create(null);
+    for (var i = 0; i < entities.length; i++) {
+      var ent = entities[i];
+      seen[ent.id] = true;
+      var rec = entityRuntime[ent.id] || { lastSeenAt: 0, lastLat: null, lastLng: null, status: 'active', alert: false };
+      var moved = 0;
+      if (typeof rec.lastLat === 'number' && typeof rec.lastLng === 'number') {
+        moved = Math.hypot(ent.lat - rec.lastLat, ent.lng - rec.lastLng);
+      }
+      rec.alert = moved > 2.6;
+      rec.lastSeenAt = now;
+      rec.lastLat = ent.lat;
+      rec.lastLng = ent.lng;
+      entityRuntime[ent.id] = rec;
+    }
+    var keys = Object.keys(entityRuntime);
+    for (var k = 0; k < keys.length; k++) {
+      var id = keys[k];
+      if (seen[id]) continue;
+      entityRuntime[id].alert = false;
+    }
+
+    if (selected && entityRuntime[selected]) {
+      var recSel = entityRuntime[selected];
+      var nextState = runtimeState(selected);
+      if (recSel.lastEventState !== nextState) {
+        recSel.lastEventState = nextState;
+        if (nextState === 'stale') addEventItem('state', 'Target stale: ' + selected, selected);
+        if (nextState === 'lost') addEventItem('lost', 'Target lost: ' + selected, selected);
+        if (nextState === 'alert') addEventItem('state', 'Target alert movement: ' + selected, selected);
+      }
+    }
+  }
+
+  function setViewMode(mode) {
+    viewMode = mode === 'local' ? 'local' : 'global';
+    if (viewMode === 'local') document.body.classList.add('local-mode');
+    else document.body.classList.remove('local-mode');
+    if (mapReady && viewMode === 'local') {
+      setTimeout(function () { map.invalidateSize(); }, 30);
+    }
+    setModeLabel();
+    var foot = document.getElementById('hud-foot');
+    if (foot) {
+      foot.textContent = viewMode === 'local'
+        ? 'LOCAL AREA TRACKING • TICK ' + String(state.tick || 0)
+        : 'GLOBE OPERATIONAL SURFACE • TICK ' + String(state.tick || 0);
+    }
+    var modeInfo = document.getElementById('info-mode');
+    if (modeInfo) modeInfo.textContent = viewMode === 'local' ? 'LOCAL TRACK' : 'GLOBAL';
+  }
+
+  function areaLabelFromReverseData(data) {
+    if (!data || !data.address) return null;
+    var a = data.address;
+    return a.city || a.town || a.village || a.county || a.state || a.country || null;
+  }
+
+  async function resolveAreaName(lat, lng) {
+    var key = lat.toFixed(2) + ',' + lng.toFixed(2);
+    if (geocodeCache[key]) return geocodeCache[key];
+    try {
+      var url = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=' + encodeURIComponent(lat) + '&lon=' + encodeURIComponent(lng) + '&zoom=8';
+      var res = await fetch(url, { cache: 'force-cache' });
+      if (!res.ok) return null;
+      var data = await res.json();
+      var label = areaLabelFromReverseData(data);
+      geocodeCache[key] = label || null;
+      return geocodeCache[key];
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function initMap() {
+    if (mapReady || typeof L === 'undefined') return;
+    map = L.map('map-view', {
+      zoomControl: false,
+      attributionControl: false,
+      worldCopyJump: true,
+      preferCanvas: true
+    }).setView([18, 0], 2);
+
+    mapLayerStreet = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      crossOrigin: true
+    }).addTo(map);
+
+    mapLayerImagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 18,
+      crossOrigin: true
+    });
+
+    mapMarkers = L.layerGroup().addTo(map);
+    mapTrailLayer = L.layerGroup().addTo(map);
+    mapTargetPulse = L.circle([0, 0], {
+      radius: 0,
+      color: '#ffe078',
+      weight: 1.1,
+      opacity: 0,
+      fillColor: '#ffe078',
+      fillOpacity: 0
+    }).addTo(map);
+    mapFocusCircle = L.circle([0, 0], {
+      radius: 0,
+      color: '#ffe078',
+      weight: 1.3,
+      opacity: 0.84,
+      fillOpacity: 0.06
+    }).addTo(map);
+
+    mapReady = true;
+  }
+
+  function mapColor(kind) {
+    if (kind === 'agent') return '#64daff';
+    if (kind === 'satellite') return '#ffe470';
+    if (kind === 'flight') return '#ffa456';
+    if (kind === 'region') return '#9edcff';
+    return '#64daff';
+  }
+
+  function updateMapEntities() {
+    if (!mapReady) return;
+    safeClearLayerGroup(mapMarkers);
+    safeClearLayerGroup(mapTrailLayer);
+    var entities = state.entities || [];
+    if (mapTargetPulse) {
+      mapTargetPulse.setStyle({ opacity: 0, fillOpacity: 0 });
+      mapTargetPulse.setRadius(0);
+    }
+    for (var i = 0; i < entities.length; i++) {
+      var ent = entities[i];
+      if (typeof ent.lat !== 'number' || typeof ent.lng !== 'number') continue;
+      var c = mapColor(ent.kind);
+      var marker;
+      if (ent.kind === 'region') {
+        marker = L.circle([ent.lat, ent.lng], {
+          radius: 45000,
+          color: c,
+          weight: 1.3,
+          fillOpacity: 0,
+          opacity: 0.7
+        });
+      } else {
+        var isSel = selected === ent.id;
+        var st = runtimeState(ent.id);
+        var stale = st === 'stale';
+        var lost = st === 'lost';
+        var alert = st === 'alert';
+        var markerColor = lost ? '#ff8c81' : alert ? '#ffd08f' : c;
+        marker = L.circleMarker([ent.lat, ent.lng], {
+          radius: isSel ? 7.5 : ent.kind === 'satellite' ? 5 : ent.kind === 'flight' ? 4.5 : 4,
+          color: markerColor,
+          weight: isSel ? 1.9 : 1.2,
+          fillColor: markerColor,
+          fillOpacity: lost ? 0.35 : isSel ? 0.95 : stale ? 0.6 : 0.78,
+          opacity: isSel ? 1 : stale ? 0.66 : 0.9
+        });
+      }
+      marker.on('click', (function (meta) {
+        return function () {
+          lockTarget(meta);
+        };
+      })(ent));
+      marker.addTo(mapMarkers);
+
+      var history = trailMap[ent.id];
+      if (history && history.length > 1 && mapTrailLayer) {
+        var latLngs = [];
+        var lim = Math.min(history.length, 12);
+        for (var h = history.length - lim; h < history.length; h++) {
+          var m = history[h].meta;
+          if (!m || typeof m.lat !== 'number' || typeof m.lng !== 'number') continue;
+          latLngs.push([m.lat, m.lng]);
+        }
+        if (latLngs.length > 1) {
+          var emph = selected === ent.id;
+          var st2 = runtimeState(ent.id);
+          var trOpacity = st2 === 'lost' ? 0.12 : emph ? 0.78 : st2 === 'stale' ? 0.17 : 0.24;
+          L.polyline(latLngs, {
+            color: ent.kind === 'flight' ? '#ffbe80' : '#7ccfff',
+            opacity: trOpacity,
+            weight: emph ? 2.6 : 1.1,
+            lineCap: 'round',
+            dashArray: ent.kind === 'flight' && !emph ? '4 4' : null
+          }).addTo(mapTrailLayer);
         }
       }
-      if (moved) { ctx.closePath(); ctx.fill(); ctx.stroke(); }
+
+      if (selected === ent.id && mapTargetPulse) {
+        mapTargetPulse.setLatLng([ent.lat, ent.lng]);
+        mapTargetPulse.setRadius(24000 + Math.sin(selectedPulse) * 6500);
+        mapTargetPulse.setStyle({ opacity: 0.82, fillOpacity: 0.06 });
+      }
     }
-    ctx.restore();
   }
 
-  function showLocalMap(ent) {
-    if (typeof L === 'undefined' || typeof ent.lat !== 'number') return;
-    document.body.classList.add('local-mode');
-    localMapPanel.classList.add('active');
-    document.getElementById('lm-label').textContent = ent.id.toUpperCase() + ' — LOCAL VIEW';
-    if (!localLeaflet) {
-      localLeaflet = L.map('local-map', { zoomControl: true });
-      var tileLogDone = false;
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 18,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-      }).addTo(localLeaflet)
-        .on('tileload', function() {
-          if (!tileLogDone) {
-            console.log('[MAP] Local tile render success');
-            tileLogDone = true;
-          }
-        });
-      localMarker = L.circleMarker([0, 0], {
-        radius: 7, color: '#5cf2b6', fillColor: '#66d9ff', fillOpacity: 0.9
-      });
-      console.log('[MAP] Local map initialised');
+  function safeClearLayerGroup(group) {
+    if (!group) return;
+    if (typeof group.clearLayers === 'function') {
+      group.clearLayers();
+      return;
     }
-    var latlng = [ent.lat, ent.lng];
-    localLeaflet.setView(latlng, 5);
-    localMarker.setLatLng(latlng).addTo(localLeaflet);
-    // Allow the CSS display change to resolve before Leaflet reads container dimensions
-    setTimeout(function() { localLeaflet.invalidateSize(); }, 10);
-    console.log('[MAP] Local mode: ' + ent.id + ' @ ' + ent.lat.toFixed(3) + ', ' + ent.lng.toFixed(3));
+    if (typeof group.eachLayer === 'function' && typeof group.removeLayer === 'function') {
+      var toRemove = [];
+      group.eachLayer(function (layer) { toRemove.push(layer); });
+      for (var i = 0; i < toRemove.length; i++) group.removeLayer(toRemove[i]);
+    }
   }
 
-  function hideLocalMap() {
-    document.body.classList.remove('local-mode');
-    if (localMapPanel) localMapPanel.classList.remove('active');
+  function focusSelectedEntity(forceLocal) {
+    if (!selectedMeta || typeof selectedMeta.lat !== 'number' || typeof selectedMeta.lng !== 'number') return;
+    if (!mapReady) initMap();
+    if (!mapReady) return;
+    if (forceLocal) setViewMode('local');
+    mapLayerStreet.addTo(map);
+    if (mapLayerImagery && map.hasLayer(mapLayerImagery)) map.removeLayer(mapLayerImagery);
+    map.flyTo([selectedMeta.lat, selectedMeta.lng], Math.max(7, map.getZoom()), { duration: 0.8 });
+    mapFocusCircle.setLatLng([selectedMeta.lat, selectedMeta.lng]);
+    mapFocusCircle.setRadius(selectedMeta.kind === 'region' ? 100000 : 30000);
+    resolveAreaName(selectedMeta.lat, selectedMeta.lng).then(function (label) {
+      selectedAreaName = label;
+      updatePanels();
+    });
+  }
+
+  function jumpTrackedArea() {
+    if (!selectedMeta) return;
+    focusSelectedEntity(true);
+  }
+
+  function alphaVariant(rgba, a) {
+    return rgba.replace(/0\.\d+\)$/, a.toFixed(2) + ')');
+  }
+
+  function motionLatLng(ent, tSec) {
+    var id = ent.id || '';
+    var seed = stableHash(id);
+    var phase = (seed % 628) / 100;
+    var speed = 0.14 + ((seed >>> 8) % 100) / 1000;
+    var lat = ent.lat;
+    var lng = ent.lng;
+
+    if (ent.kind === 'satellite') {
+      lat += Math.sin(tSec * (speed * 1.9) + phase) * 2.2;
+      lng += tSec * (speed * 28) + Math.cos(tSec * (speed * 0.8) + phase) * 0.7;
+    } else if (ent.kind === 'flight') {
+      lat += Math.sin(tSec * (speed * 0.9) + phase) * 0.6;
+      lng += tSec * (speed * 14) + ((seed % 2) ? 1 : -1) * 0.45;
+    } else if (ent.kind === 'agent') {
+      lat += Math.sin(tSec * (speed * 0.65) + phase) * 0.45;
+      lng += Math.cos(tSec * (speed * 0.60) + phase) * 0.55;
+    } else if (ent.kind === 'region') {
+      lat += Math.sin(tSec * 0.22 + phase) * 0.08;
+      lng += Math.cos(tSec * 0.2 + phase) * 0.08;
+    }
+
+    if (lng > 180) lng -= 360;
+    if (lng < -180) lng += 360;
+    lat = Math.max(-84, Math.min(84, lat));
+    return { lat: lat, lng: lng };
+  }
+
+  function pushTrail(id, x, y, kind) {
+    if (!trailMap[id]) trailMap[id] = [];
+    var trail = trailMap[id];
+    var ent = state.entities.find(function (e) { return e.id === id; });
+    trail.push({ x: x, y: y, life: 1, kind: kind, meta: ent ? { lat: ent.lat, lng: ent.lng } : null });
+    if (trail.length > 18) trail.shift();
+  }
+
+  function drawTrails() {
+    var ids = Object.keys(trailMap);
+    for (var i = 0; i < ids.length; i++) {
+      var pts = trailMap[ids[i]];
+      if (!pts || pts.length < 2) continue;
+      for (var j = 1; j < pts.length; j++) {
+        var p0 = pts[j - 1];
+        var p1 = pts[j];
+        var c = colorForKind(p1.kind);
+        var selectedTrail = ids[i] === selected;
+        var st = runtimeState(ids[i]);
+        var base = st === 'lost' ? 0.10 : st === 'stale' ? 0.15 : 0.2;
+        var a = Math.min(p0.life, p1.life) * (selectedTrail ? 0.58 : base);
+        ctx.strokeStyle = alphaVariant(c.halo, a);
+        ctx.lineWidth = selectedTrail ? 2 : 1;
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y);
+        ctx.lineTo(p1.x, p1.y);
+        ctx.stroke();
+      }
+      for (var k = 0; k < pts.length; k++) pts[k].life *= 0.94;
+      while (pts.length && pts[0].life < 0.06) pts.shift();
+    }
+  }
+
+  function spawnLinkBurst(projected) {
+    if (!projected.length || frameCount % 40 !== 0) return;
+    var agents = projected.filter(function (p) { return p.kind === 'agent'; });
+    var regions = projected.filter(function (p) { return p.kind === 'region'; });
+    var flights = projected.filter(function (p) { return p.kind === 'flight'; });
+    if (agents.length && regions.length) {
+      var a = agents[Math.floor(Math.random() * agents.length)];
+      var r = regions[Math.floor(Math.random() * regions.length)];
+      linkBursts.push({ a: a, b: r, life: 1, color: 'rgba(100, 218, 255, 0.32)' });
+    }
+    if (flights.length && agents.length && Math.random() < 0.55) {
+      var f = flights[Math.floor(Math.random() * flights.length)];
+      var ag = agents[Math.floor(Math.random() * agents.length)];
+      linkBursts.push({ a: f, b: ag, life: 0.82, color: 'rgba(255, 164, 86, 0.28)' });
+    }
+  }
+
+  function drawLinkBursts() {
+    for (var i = linkBursts.length - 1; i >= 0; i--) {
+      var l = linkBursts[i];
+      var alpha = Math.max(0, l.life);
+      if (alpha <= 0.03) {
+        linkBursts.splice(i, 1);
+        continue;
+      }
+      ctx.strokeStyle = alphaVariant(l.color, alpha);
+      ctx.lineWidth = 0.9;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(l.a.x, l.a.y);
+      ctx.lineTo(l.b.x, l.b.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      l.life *= 0.93;
+    }
   }
 
   function drawFrame() {
@@ -385,7 +1003,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
     ctx.strokeStyle = 'rgba(100,210,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke();
 
-    drawContinents(cx, cy, r);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 2.6, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(120, 224, 255, 0.18)';
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
 
     var night = ctx.createRadialGradient(cx + r * 0.46, cy + r * 0.18, r * 0.14, cx, cy, r * 1.08);
     night.addColorStop(0, 'rgba(0,0,0,0.02)');
@@ -433,52 +1055,124 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
 
     var entities = state.entities || [];
+    var projected = [];
     hits = [];
+    var tSec = Date.now() * 0.001;
+
     for (var i = 0; i < entities.length; i++) {
       var ent = entities[i];
       if (typeof ent.lat !== 'number' || typeof ent.lng !== 'number') continue;
-      var ep = project(ent.lat, ent.lng, cx, cy, r);
+      var moved = motionLatLng(ent, tSec);
+      var ep = project(moved.lat, moved.lng, cx, cy, r);
       if (ep.z <= 0.04) continue;
-      var dotR = 2.0 + ep.z * 2.6;
-      var color = ent.kind === 'satellite' ? 'rgba(255,170,80,0.95)'
-        : ent.kind === 'region' ? 'rgba(255,222,100,0.90)'
-        : ent.kind === 'flight' ? 'rgba(180,255,180,0.90)'
-        :                          'rgba(100,218,255,0.95)';
+      projected.push({ id: ent.id, kind: ent.kind || 'agent', x: ep.x, y: ep.y, z: ep.z, meta: ent });
+      pushTrail(ent.id, ep.x, ep.y, ent.kind || 'agent');
+    }
 
-      ctx.beginPath();
-      ctx.arc(ep.x, ep.y, dotR + 3.2, 0, Math.PI*2);
-      ctx.fillStyle = color.replace('0.95', '0.16').replace('0.90', '0.14');
-      ctx.fill();
+    drawTrails();
+    spawnLinkBurst(projected);
+    drawLinkBursts();
 
-      ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR, 0, Math.PI*2);
-      ctx.fillStyle = color; ctx.fill();
-      ctx.beginPath();
-      ctx.arc(ep.x, ep.y, Math.max(1.2, dotR * 0.45), 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(245, 252, 255, 0.92)';
-      ctx.fill();
+    for (var j = 0; j < projected.length; j++) {
+      var p = projected[j];
+      var ent2 = p.meta;
+      var dotR = 2.2 + p.z * 2.8;
+      var tone = colorForKind(ent2.kind || 'agent');
+      var pulseK = 0.82 + 0.18 * Math.sin(selectedPulse + j * 0.57);
+      var entState = runtimeState(ent2.id);
+      var isAlert = entState === 'alert';
+      var isStale = entState === 'stale';
+      var isLost = entState === 'lost';
 
-      ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR+2.5, 0, Math.PI*2);
-      ctx.strokeStyle = 'rgba(100,200,255,0.15)'; ctx.lineWidth = 0.7; ctx.stroke();
-      if (selected === ent.id) {
-        var pulse = 7 + Math.sin(selectedPulse) * 2.6;
-        ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR + pulse, 0, Math.PI*2);
-        ctx.strokeStyle = 'rgba(255,200,80,0.92)'; ctx.lineWidth = 1.3; ctx.stroke();
-        ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR + pulse + 4.3, 0, Math.PI*2);
-        ctx.strokeStyle = 'rgba(255,200,80,0.38)'; ctx.lineWidth = 0.9; ctx.stroke();
+      if (ent2.kind === 'region') {
         ctx.beginPath();
-        ctx.moveTo(ep.x + dotR + 2, ep.y);
-        ctx.lineTo(ep.x + dotR + 11, ep.y);
-        ctx.moveTo(ep.x - dotR - 2, ep.y);
-        ctx.lineTo(ep.x - dotR - 11, ep.y);
-        ctx.moveTo(ep.x, ep.y + dotR + 2);
-        ctx.lineTo(ep.x, ep.y + dotR + 11);
-        ctx.moveTo(ep.x, ep.y - dotR - 2);
-        ctx.lineTo(ep.x, ep.y - dotR - 11);
+        ctx.arc(p.x, p.y, dotR + 5.5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(120, 210, 255, 0.42)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, dotR + 2.6, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(120, 210, 255, 0.22)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, dotR + 3.4 * pulseK, 0, Math.PI*2);
+        ctx.fillStyle = tone.halo;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, dotR * pulseK, 0, Math.PI*2);
+        ctx.fillStyle = isLost ? 'rgba(255, 130, 112, 0.62)' : isStale ? 'rgba(255, 201, 133, 0.72)' : tone.fill;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, Math.max(1.1, dotR * 0.44), 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(245, 252, 255, 0.92)';
+        ctx.fill();
+      }
+
+      if (ent2.kind === 'satellite') {
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, dotR + 6.5, dotR + 2.6, selectedPulse * 0.2, 0, Math.PI * 2);
+        ctx.strokeStyle = isLost ? 'rgba(255,140,120,0.20)' : 'rgba(255,228,112,0.34)';
+        ctx.lineWidth = 0.9;
+        ctx.stroke();
+      }
+
+      if (ent2.kind === 'flight') {
+        var flTrail = trailMap[ent2.id];
+        if (flTrail && flTrail.length > 1) {
+          var p0 = flTrail[flTrail.length - 2];
+          var p1 = flTrail[flTrail.length - 1];
+          var vx = p1.x - p0.x;
+          var vy = p1.y - p0.y;
+          var mag = Math.hypot(vx, vy);
+          if (mag > 0.4) {
+            vx /= mag;
+            vy /= mag;
+            var len = selected === ent2.id ? 16 : 11;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.x + vx * len, p.y + vy * len);
+            ctx.strokeStyle = selected === ent2.id ? 'rgba(255, 205, 140, 0.92)' : 'rgba(255, 174, 112, 0.62)';
+            ctx.lineWidth = selected === ent2.id ? 1.4 : 0.9;
+            ctx.stroke();
+          }
+        }
+      }
+
+      if (selected === ent2.id) {
+        var pulse = 8.8 + Math.sin(selectedPulse) * 3.2;
+        ctx.beginPath(); ctx.arc(p.x, p.y, dotR + pulse, 0, Math.PI*2);
+        ctx.strokeStyle = 'rgba(255,214,118,0.95)'; ctx.lineWidth = 1.6; ctx.stroke();
+        ctx.beginPath(); ctx.arc(p.x, p.y, dotR + pulse + 4.3, 0, Math.PI*2);
+        ctx.strokeStyle = 'rgba(255,214,118,0.44)'; ctx.lineWidth = 1.1; ctx.stroke();
+        ctx.beginPath(); ctx.arc(p.x, p.y, dotR + pulse + 7.8, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,214,118,0.25)'; ctx.lineWidth = 0.9; ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p.x + dotR + 2, p.y);
+        ctx.lineTo(p.x + dotR + 11, p.y);
+        ctx.moveTo(p.x - dotR - 2, p.y);
+        ctx.lineTo(p.x - dotR - 11, p.y);
+        ctx.moveTo(p.x, p.y + dotR + 2);
+        ctx.lineTo(p.x, p.y + dotR + 11);
+        ctx.moveTo(p.x, p.y - dotR - 2);
+        ctx.lineTo(p.x, p.y - dotR - 11);
         ctx.strokeStyle = 'rgba(255, 220, 120, 0.62)';
         ctx.lineWidth = 0.9;
         ctx.stroke();
       }
-      hits.push({ id: ent.id, x: ep.x, y: ep.y, meta: ent });
+
+      if (isAlert && selected !== ent2.id) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, dotR + 5 + Math.sin(selectedPulse + j) * 1.6, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 173, 98, 0.55)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      hits.push({ id: ent2.id, x: p.x, y: p.y, meta: ent2 });
     }
   }
 
@@ -494,6 +1188,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     document.getElementById('cnt-sats').textContent    = counts.satellite;
     document.getElementById('info-tick').textContent   = state.tick || 0;
     document.getElementById('info-total').textContent  = entities.length;
+    var infoLast = document.getElementById('info-last');
+    if (infoLast) infoLast.textContent = lastUpdateIso ? new Date(lastUpdateIso).toLocaleTimeString() : '—';
+    if (hudConnEl) hudConnEl.textContent = statusEl.textContent || 'CONNECTING';
     if (state.started) {
       var sec = Math.floor((Date.now() - new Date(state.started)) / 1000);
       var hh = Math.floor(sec/3600), mm = Math.floor((sec%3600)/60), ss = sec%60;
@@ -503,20 +1200,121 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (selected) {
       var ent = entities.find(function(e) { return e.id === selected; });
       if (ent) {
+        selectedMeta = ent;
+        targetStatus = runtimeState(ent.id).toUpperCase();
+        if (targetStatus === 'ACTIVE') targetStatus = viewMode === 'local' ? 'TRACKED' : 'LOCKED';
+        var infoId = document.getElementById('info-target-id');
+        var infoType = document.getElementById('info-target-type');
+        var infoLat = document.getElementById('info-lat');
+        var infoLng = document.getElementById('info-lng');
+        var infoStat = document.getElementById('info-status');
+        var infoSeen = document.getElementById('info-last-seen');
+        var infoMissions = document.getElementById('info-missions');
+        var infoActions = document.getElementById('info-actions');
+        var infoApprovals = document.getElementById('info-approvals');
+        var rc = entityRuntime[ent.id];
+        var countsOp = opCounts(ent);
+        if (infoId) infoId.textContent = ent.id;
+        if (infoType) infoType.textContent = String(ent.kind || 'unknown').toUpperCase();
+        if (infoLat) infoLat.textContent = ent.lat.toFixed(3);
+        if (infoLng) infoLng.textContent = ent.lng.toFixed(3);
+        if (infoStat) infoStat.textContent = targetStatus;
+        if (infoSeen) infoSeen.textContent = rc ? ageLabel(Date.now() - rc.lastSeenAt) : '—';
+        if (infoMissions) infoMissions.textContent = String(countsOp.missions);
+        if (infoActions) infoActions.textContent = String(countsOp.actions);
+        if (infoApprovals) infoApprovals.textContent = String(countsOp.approvals);
+        if (infoStat) {
+          infoStat.classList.remove('state-active', 'state-stale', 'state-lost', 'state-alert');
+          infoStat.classList.add('state-' + runtimeState(ent.id));
+        }
+        if (hudTargetEl) hudTargetEl.textContent = 'TARGET ' + ent.id;
+        if (localContextEl) {
+          localContextEl.textContent = 'AREA: ' + (selectedAreaName || 'RESOLVING') + ' • TARGET: ' + ent.id + ' • ' + targetStatus;
+        }
         selDetail.className = 'locked';
         selDetail.innerHTML = '<span class="sel-id">'+ent.id+'</span><br/>'
           +'LOCKED: '+ent.kind.toUpperCase()+'<br/>'
-          +ent.lat.toFixed(2)+'°'+', '+ent.lng.toFixed(2)+'°';
+          +ent.lat.toFixed(2)+'°'+', '+ent.lng.toFixed(2)+'°'
+          +(selectedAreaName ? '<br/>AREA: '+selectedAreaName.toUpperCase() : '')
+          +'<br/>STATUS: '+targetStatus
+          +'<br/>LAST SEEN: '+(rc ? ageLabel(Date.now() - rc.lastSeenAt) : '—')
+          +'<br/>OPS: M'+countsOp.missions+' A'+countsOp.actions+' P'+countsOp.approvals;
       } else {
         selDetail.className = '';
-        selDetail.textContent = '—';
-        selected = null;
-        hideLocalMap();
+        var rec = entityRuntime[selected];
+        if (rec && typeof rec.lastLat === 'number' && typeof rec.lastLng === 'number') {
+          targetStatus = runtimeState(selected).toUpperCase();
+          if (targetStatus !== 'LOST') targetStatus = 'STALE';
+          selDetail.innerHTML = '<span class="sel-id">'+selected+'</span><br/>LAST KNOWN<br/>'
+            +rec.lastLat.toFixed(2)+'°'+', '+rec.lastLng.toFixed(2)+'°<br/>'
+            +'STATUS: '+targetStatus+'<br/>LAST SEEN: '+ageLabel(Date.now() - rec.lastSeenAt);
+          selectedMeta = { id: selected, lat: rec.lastLat, lng: rec.lastLng, kind: 'agent' };
+          if (localContextEl) localContextEl.textContent = 'AREA: ' + (selectedAreaName || 'UNKNOWN') + ' • TARGET: ' + selected + ' • ' + targetStatus;
+        } else {
+          selDetail.textContent = '—';
+          selected = null;
+          selectedMeta = null;
+          targetStatus = 'IDLE';
+        }
       }
     } else {
       selDetail.className = '';
       selDetail.textContent = '—';
+      selectedMeta = null;
+      targetStatus = 'IDLE';
+      var idleId = document.getElementById('info-target-id');
+      var idleType = document.getElementById('info-target-type');
+      var idleLat = document.getElementById('info-lat');
+      var idleLng = document.getElementById('info-lng');
+      var idleStat = document.getElementById('info-status');
+      var idleSeen = document.getElementById('info-last-seen');
+      var idleMissions = document.getElementById('info-missions');
+      var idleActions = document.getElementById('info-actions');
+      var idleApprovals = document.getElementById('info-approvals');
+      if (idleId) idleId.textContent = '—';
+      if (idleType) idleType.textContent = '—';
+      if (idleLat) idleLat.textContent = '—';
+      if (idleLng) idleLng.textContent = '—';
+      if (idleStat) idleStat.textContent = 'IDLE';
+      if (idleSeen) idleSeen.textContent = '—';
+      if (idleMissions) idleMissions.textContent = '0';
+      if (idleActions) idleActions.textContent = '0';
+      if (idleApprovals) idleApprovals.textContent = '0';
+      if (idleStat) idleStat.classList.remove('state-active', 'state-stale', 'state-lost', 'state-alert');
+      if (hudTargetEl) hudTargetEl.textContent = 'TARGET —';
+      if (localContextEl) localContextEl.textContent = 'AREA: — • TARGET: —';
     }
+  }
+
+  function lockTarget(meta) {
+    if (!meta) return;
+    selected = meta.id;
+    selectedMeta = meta;
+    selectedAreaName = null;
+    targetStatus = 'ACQUIRING';
+    showTransition('TRACKING TARGET');
+    signalEvent('track');
+    addEventItem('track', 'Tracking target ' + meta.id, meta.id);
+    if (entityRuntime[meta.id]) entityRuntime[meta.id].lastEventState = runtimeState(meta.id);
+    updatePanels();
+    setTimeout(function () {
+      setViewMode('local');
+      focusSelectedEntity(true);
+      targetStatus = 'TRACKED';
+      updatePanels();
+    }, 160);
+  }
+
+  function backToGlobe() {
+    targetStatus = selected ? 'LOCKED' : 'IDLE';
+    showTransition('RETURNING TO GLOBE');
+    signalEvent('globe');
+    addEventItem('system', 'Returned to global overview', selected);
+    setTimeout(function () {
+      setViewMode('global');
+      if (mapReady) map.flyTo([18, 0], 2, { duration: 0.65 });
+      updatePanels();
+    }, 120);
   }
 
   canvas.addEventListener('click', function(e) {
@@ -529,20 +1327,35 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (d < bestD) { best = hits[i]; bestD = d; }
     }
     selected = best ? best.id : null;
-    updatePanels();
-    if (selected) {
-      var selEnt = (state.entities || []).find(function(e) { return e.id === selected; });
-      if (selEnt) showLocalMap(selEnt);
-    } else {
-      hideLocalMap();
+    selectedMeta = best ? best.meta : null;
+    selectedAreaName = null;
+    if (selectedMeta) {
+      lockTarget(selectedMeta);
     }
+    updatePanels();
   });
 
   function animTick() {
     rot = (rot + 0.055) % 360;
     selectedPulse += 0.12;
+    liveFlicker += 0.11;
+    frameCount++;
+    if (!statusEl.classList.contains('offline')) {
+      statusEl.classList.add('live');
+      if ((frameCount % 90) < 3) {
+        statusEl.style.opacity = String(0.8 + Math.random() * 0.2);
+      } else {
+        statusEl.style.opacity = String(0.92 + Math.sin(liveFlicker) * 0.08);
+      }
+      var foot = document.getElementById('hud-foot');
+      if (foot) {
+        foot.textContent = viewMode === 'local'
+          ? 'LOCAL AREA TRACKING • TICK ' + String(state.tick || 0)
+          : 'GLOBE OPERATIONAL SURFACE • TICK ' + String(state.tick || 0);
+      }
+    }
     drawFrame();
-    updatePanels();
+    if ((frameCount % 8) === 0) updatePanels();
     requestAnimationFrame(animTick);
   }
 
@@ -556,18 +1369,37 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         tick:     data.tick || 0,
         started:  data.started || state.started
       };
+      lastUpdateIso = data.ts || new Date().toISOString();
+      syncRuntime(state.entities);
+      signalEvent('live');
+      updateMapEntities();
+      updatePanels();
     } catch (_) {}
   }
 
   function connect() {
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(proto + '://' + location.host + '/ws');
-    ws.onopen = function() { statusEl.textContent='LIVE'; statusEl.className=''; wsDelay=1000; };
+    ws.onopen = function() {
+      statusEl.textContent='LIVE';
+      statusEl.className='live';
+      if (hudConnEl) hudConnEl.textContent = 'LIVE';
+      wsDelay=1000;
+    };
     ws.onmessage = function(e) {
-      try { var m=JSON.parse(e.data); if(m&&m.type) fetchWorldview(); } catch(_){}
+      try {
+        var m = JSON.parse(e.data);
+        if (!m || !m.type) return;
+        if (m.type === 'event' && m.data) {
+          addEventItem(m.data.kind || 'system', m.data.msg || 'event', entityIdFromMessage(m.data.msg));
+        }
+        fetchWorldview();
+      } catch(_){}
     };
     ws.onclose = function() {
-      statusEl.textContent='OFFLINE'; statusEl.className='offline';
+      statusEl.textContent='OFFLINE';
+      statusEl.className='offline';
+      if (hudConnEl) hudConnEl.textContent = 'OFFLINE';
       setTimeout(connect, wsDelay); wsDelay=Math.min(wsDelay*2,16000);
     };
     ws.onerror = function() { ws.close(); };
@@ -575,16 +1407,78 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function initWorldview() {
     console.log("NEW WORLDVIEW RENDERER ACTIVE");
-    loadWorldGeo();
+    initMap();
+    setViewMode('global');
+
+    var zoomInBtn = document.getElementById('ctl-zoom-in');
+    var zoomOutBtn = document.getElementById('ctl-zoom-out');
+    var homeBtn = document.getElementById('ctl-home');
+    var focusBtn = document.getElementById('ctl-focus');
+    var trackBtn = document.getElementById('ctl-track');
+    var modeToggleBtn = document.getElementById('ctl-mode');
+    var localFocusBtn = document.getElementById('ctl-local-focus');
+    var localRecenterBtn = document.getElementById('ctl-local-recenter');
+    var localBackBtn = document.getElementById('ctl-local-back');
+    var adminCycleBtn = document.getElementById('ctl-admin-cycle');
+    var adminAutoBtn = document.getElementById('ctl-admin-auto');
+
+    if (zoomInBtn) zoomInBtn.onclick = function () { if (mapReady) map.zoomIn(); };
+    if (zoomOutBtn) zoomOutBtn.onclick = function () { if (mapReady) map.zoomOut(); };
+    if (homeBtn) homeBtn.onclick = function () { setViewMode('global'); if (mapReady) map.flyTo([18, 0], 2, { duration: 0.8 }); };
+    if (focusBtn) focusBtn.onclick = function () { focusSelectedEntity(true); };
+    if (trackBtn) trackBtn.onclick = function () {
+      autoTrack = !autoTrack;
+      trackBtn.className = autoTrack ? 'ctl active' : 'ctl';
+      trackBtn.textContent = autoTrack ? 'TRACK ON' : 'TRACK OFF';
+      if (autoTrack) jumpTrackedArea();
+      addEventItem('system', autoTrack ? 'Auto tracking enabled' : 'Auto tracking paused', selected);
+    };
+    if (modeToggleBtn) modeToggleBtn.onclick = function () {
+      if (viewMode === 'global') {
+        setViewMode('local');
+        if (selectedMeta) focusSelectedEntity(false);
+        else if (mapReady) map.flyTo([18, 0], 3, { duration: 0.7 });
+      } else {
+        backToGlobe();
+      }
+    };
+    if (localFocusBtn) localFocusBtn.onclick = function () { focusSelectedEntity(false); };
+    if (localRecenterBtn) localRecenterBtn.onclick = function () {
+      if (selectedMeta) {
+        map.flyTo([selectedMeta.lat, selectedMeta.lng], Math.max(7, map.getZoom()), { duration: 0.55 });
+      }
+    };
+    if (localBackBtn) localBackBtn.onclick = function () { backToGlobe(); };
+    if (adminCycleBtn) adminCycleBtn.onclick = function () {
+      fetchWorldview();
+      addEventItem('system', 'Admin forced cycle', selected);
+    };
+    if (adminAutoBtn) adminAutoBtn.onclick = function () {
+      autoTrack = !autoTrack;
+      adminAutoBtn.textContent = autoTrack ? 'AUTO ON' : 'AUTO OFF';
+      adminAutoBtn.className = autoTrack ? 'ctl active' : 'ctl';
+      addEventItem('system', autoTrack ? 'Admin set automation ON' : 'Admin set automation OFF', selected);
+    };
+
+    if (feedListEl) {
+      feedListEl.onclick = function (ev) {
+        var t = ev.target;
+        while (t && t !== feedListEl && !t.getAttribute('data-entity')) t = t.parentElement;
+        if (!t || t === feedListEl) return;
+        var id = t.getAttribute('data-entity');
+        if (!id) return;
+        var ent = (state.entities || []).find(function (x) { return x.id === id; });
+        if (ent) lockTarget(ent);
+      };
+    }
+
+    addEventItem('system', 'Worldview operational surface online', null);
+    renderEventFeed();
+
     fetchWorldview();
     setInterval(fetchWorldview, 3000);
     connect();
     requestAnimationFrame(animTick);
-    document.getElementById('back-to-globe').addEventListener('click', function() {
-      hideLocalMap();
-      selected = null;
-      updatePanels();
-    });
   }
 
   window.onload = initWorldview;
