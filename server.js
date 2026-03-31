@@ -682,8 +682,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function setViewMode(mode) {
     var nextMode = mode === 'local' ? 'local' : 'global';
-    if (viewMode !== nextMode && mapReady) clearRenderedMapArtifacts();
+    var modeChanged = viewMode !== nextMode;
+    if (modeChanged && mapReady) clearRenderedMapArtifacts();
     viewMode = nextMode;
+    if (modeChanged && mapReady) refreshCurrentWorldviewRender();
     if (viewMode === 'local') document.body.classList.add('local-mode');
     else document.body.classList.remove('local-mode');
     if (mapReady && viewMode === 'local') {
@@ -845,6 +847,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         mapTargetPulse.setStyle({ opacity: 0.82, fillOpacity: 0.06 });
       }
     }
+  }
+
+  function refreshCurrentWorldviewRender() {
+    if (!mapReady) return;
+    updateMapEntities();
   }
 
   function safeClearLayerGroup(group) {
