@@ -667,6 +667,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var animStarted = false;
   var lastFallbackLogFrame = -1;
   var canvasClickBound = false;
+  var GLOBE_Z_INDEX = '4';
 
   function ensureCanvasReady() {
     if (!canvas) {
@@ -681,7 +682,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function ensureCanvasVisibility() {
     if (!ensureCanvasReady()) return;
-    canvas.style.zIndex = '1';
+    canvas.style.zIndex = GLOBE_Z_INDEX;
     if (viewMode === 'global') {
       canvas.style.display = 'block';
       canvas.style.opacity = '1';
@@ -710,12 +711,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   resize();
 
   function applyModeVisibility() {
-    if (!canvas) return;
+    if (!ensureCanvasReady()) return;
     var inLocal = viewMode === 'local' && mapReady;
     canvas.style.display = inLocal ? 'none' : 'block';
     canvas.style.opacity = inLocal ? '0' : '1';
     canvas.style.visibility = inLocal ? 'hidden' : 'visible';
-    canvas.style.zIndex = '1';
+    canvas.style.zIndex = GLOBE_Z_INDEX;
     if (!inLocal) canvas.style.pointerEvents = 'auto';
     var mapEl = document.getElementById('map-view');
     if (mapEl) {
@@ -1212,7 +1213,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function drawFrame() {
-    console.log('DRAW FRAME RUNNING');
+    if (!ensureCanvasReady()) {
+      console.error('WORLDVIEW drawFrame: canvas unavailable');
+      return;
+    }
     ensureCanvasVisibility();
     var frameCtx = canvas.getContext('2d');
     if (!frameCtx) {
@@ -1228,8 +1232,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       canvas.height = H;
       console.log('WORLDVIEW CANVAS SIZE', W, H);
     }
-    console.log('CANVAS SIZE', canvas.width, canvas.height);
-    console.log('CANVAS VISIBLE', canvas.offsetParent !== null);
     var cx = canvas.width / 2;
     var cy = canvas.height / 2;
     var radius = Math.min(canvas.width, canvas.height) * 0.35;
@@ -1250,14 +1252,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.beginPath();
     ctx.arc(cx, cy, radius * 1.2, 0, Math.PI * 2);
     ctx.fill();
-
-    ctx.strokeStyle = 'red';
-    ctx.beginPath();
-    ctx.moveTo(cx - 10, cy);
-    ctx.lineTo(cx + 10, cy);
-    ctx.moveTo(cx, cy - 10);
-    ctx.lineTo(cx, cy + 10);
-    ctx.stroke();
 
     var halo = ctx.createRadialGradient(cx, cy, r*0.88, cx, cy, r*1.36);
     halo.addColorStop(0, 'rgba(30,100,190,0.16)');
@@ -1769,7 +1763,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     canvas.style.display = 'block';
     canvas.style.opacity = '1';
     canvas.style.visibility = 'visible';
-    canvas.style.zIndex = '1';
+    canvas.style.zIndex = GLOBE_Z_INDEX;
     if (canvas.parentElement) {
       canvas.parentElement.style.display = 'block';
       canvas.parentElement.style.opacity = '1';
