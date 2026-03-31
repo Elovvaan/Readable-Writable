@@ -526,7 +526,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   resize();
 
   function applyModeVisibility() {
-    var inLocal = viewMode === 'local';
+    var inLocal = viewMode === 'local' && mapReady;
     canvas.style.display = inLocal ? 'none' : 'block';
     canvas.style.opacity = inLocal ? '0' : '1';
     canvas.style.visibility = inLocal ? 'hidden' : 'visible';
@@ -700,12 +700,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function setViewMode(mode) {
-    var nextMode = mode === 'local' ? 'local' : 'global';
+    var wantsLocal = mode === 'local';
+    if (wantsLocal && !mapReady) initMap();
+    var nextMode = wantsLocal && mapReady ? 'local' : 'global';
     var modeChanged = viewMode !== nextMode;
     if (modeChanged && mapReady) clearRenderedMapArtifacts();
     viewMode = nextMode;
     if (modeChanged && mapReady) refreshCurrentWorldviewRender();
-    if (viewMode === 'local') document.body.classList.add('local-mode');
+    if (viewMode === 'local' && mapReady) document.body.classList.add('local-mode');
     else document.body.classList.remove('local-mode');
     applyModeVisibility();
     if (mapReady && viewMode === 'local') {
@@ -746,44 +748,49 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function initMap() {
     if (mapReady || typeof L === 'undefined') return;
-    map = L.map('map-view', {
-      zoomControl: false,
-      attributionControl: false,
-      worldCopyJump: true,
-      preferCanvas: true
-    }).setView([18, 0], 2);
+    try {
+      map = L.map('map-view', {
+        zoomControl: false,
+        attributionControl: false,
+        worldCopyJump: true,
+        preferCanvas: true
+      }).setView([18, 0], 2);
 
-    mapLayerStreet = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      crossOrigin: true
-    }).addTo(map);
+      mapLayerStreet = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        crossOrigin: true
+      }).addTo(map);
 
-    mapLayerImagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 18,
-      crossOrigin: true
-    });
+      mapLayerImagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 18,
+        crossOrigin: true
+      });
 
-    mapMarkers = L.layerGroup().addTo(map);
-    mapTrailLayer = L.layerGroup().addTo(map);
-    mapLinkLayer = L.layerGroup().addTo(map);
-    mapTargetLayer = L.layerGroup().addTo(map);
-    mapTargetPulse = L.circle([0, 0], {
-      radius: 0,
-      color: '#ffe078',
-      weight: 1.1,
-      opacity: 0,
-      fillColor: '#ffe078',
-      fillOpacity: 0
-    }).addTo(map);
-    mapFocusCircle = L.circle([0, 0], {
-      radius: 0,
-      color: '#ffe078',
-      weight: 1.3,
-      opacity: 0.84,
-      fillOpacity: 0.06
-    }).addTo(map);
+      mapMarkers = L.layerGroup().addTo(map);
+      mapTrailLayer = L.layerGroup().addTo(map);
+      mapLinkLayer = L.layerGroup().addTo(map);
+      mapTargetLayer = L.layerGroup().addTo(map);
+      mapTargetPulse = L.circle([0, 0], {
+        radius: 0,
+        color: '#ffe078',
+        weight: 1.1,
+        opacity: 0,
+        fillColor: '#ffe078',
+        fillOpacity: 0
+      }).addTo(map);
+      mapFocusCircle = L.circle([0, 0], {
+        radius: 0,
+        color: '#ffe078',
+        weight: 1.3,
+        opacity: 0.84,
+        fillOpacity: 0.06
+      }).addTo(map);
 
-    mapReady = true;
+      mapReady = true;
+    } catch (err) {
+      mapReady = false;
+      console.warn('Map initialization failed, using globe fallback.', err);
+    }
   }
 
   function mapColor(kind) {
