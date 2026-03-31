@@ -219,8 +219,10 @@ function uid(prefix) {
 function broadcast(type, data) {
   const msg = JSON.stringify({ type, data });
   for (const client of wsClients) {
-    if (client.readyState === 1) {
+    if (!client.destroyed && client.writable) {
       wsSend(client, msg);
+    } else {
+      wsClients.delete(client);
     }
   }
 }
@@ -377,10 +379,36 @@ function wsParse(socket, buf) {
     return;
   }
   if (opcode === 0x9) {
-    // ping → pong
-    const pong = Buffer.alloc(2);
-    pong[0] = 0x8a; pong[1] = 0x00;
-    socket.write(pong);
+    // ping -> pong (must mirror ping payload per RFC 6455)
+    const payloadStart = offset + (masked ? 4 : 0);
+    const payloadEnd = payloadStart + payloadLen;
+    let pingPayload = buf.slice(payloadStart, payloadEnd);
+    if (masked) {
+      const mask = buf.slice(offset, offset + 4);
+      pingPayload = Buffer.from(pingPayload);
+      for (let i = 0; i < pingPayload.length; i++) {
+        pingPayload[i] ^= mask[i % 4];
+      }
+    }
+
+    let pongHeader;
+    if (pingPayload.length <= 125) {
+      pongHeader = Buffer.alloc(2);
+      pongHeader[0] = 0x8a;
+      pongHeader[1] = pingPayload.length;
+    } else if (pingPayload.length <= 65535) {
+      pongHeader = Buffer.alloc(4);
+      pongHeader[0] = 0x8a;
+      pongHeader[1] = 126;
+      pongHeader.writeUInt16BE(pingPayload.length, 2);
+    } else {
+      pongHeader = Buffer.alloc(10);
+      pongHeader[0] = 0x8a;
+      pongHeader[1] = 127;
+      pongHeader.writeBigUInt64BE(BigInt(pingPayload.length), 2);
+    }
+
+    socket.write(Buffer.concat([pongHeader, pingPayload]));
     return;
   }
   if (opcode === 0x1 && masked) {
@@ -403,7 +431,6 @@ function handleClientMessage(socket, msg) {
 
 function wsUpgrade(req, socket) {
   const buf = { data: Buffer.alloc(0) };
-  socket.readyState = 1;
   wsClients.add(socket);
 
   // send initial snapshot
@@ -461,6 +488,22 @@ function router(req, res) {
       tick: worldview.tick,
       agents: Object.keys(worldview.agents).length,
       regions: Object.keys(worldview.regions).length,
+      uptime: process.uptime(),
+      ts: new Date().toISOString(),
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(body);
+    return;
+  }
+
+  // ── GET /rw/spatial/health
+  if (req.method === 'GET' && url === '/rw/spatial/health') {
+    const body = JSON.stringify({
+      status: 'ok',
+      tick: worldview.tick,
+      agents: Object.keys(worldview.agents).length,
+      regions: Object.keys(worldview.regions).length,
+      websocketClients: wsClients.size,
       uptime: process.uptime(),
       ts: new Date().toISOString(),
     });
