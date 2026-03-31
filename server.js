@@ -90,7 +90,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       pointer-events: auto;
     }
     body.local-mode #globe {
-      opacity: 0.24;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
     }
     .leaflet-container {
       background: #0b1a2b;
@@ -511,13 +513,30 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var STATE_STALE_MS = 9000;
   var STATE_LOST_MS = 22000;
   var ws, wsDelay = 1000;
+  var animStarted = false;
 
   function resize() {
-    canvas.width  = window.innerWidth;
-    canvas.height = window.innerHeight;
+    var w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+    var h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+    canvas.width = w;
+    canvas.height = h;
+    if (viewMode === 'global') drawFrame();
   }
   window.addEventListener('resize', resize);
   resize();
+
+  function applyModeVisibility() {
+    var inLocal = viewMode === 'local';
+    canvas.style.display = inLocal ? 'none' : 'block';
+    canvas.style.opacity = inLocal ? '0' : '1';
+    canvas.style.visibility = inLocal ? 'hidden' : 'visible';
+    var mapEl = document.getElementById('map-view');
+    if (mapEl) {
+      mapEl.style.visibility = inLocal ? 'visible' : 'hidden';
+      mapEl.style.pointerEvents = inLocal ? 'auto' : 'none';
+      mapEl.style.opacity = inLocal ? '1' : '0';
+    }
+  }
 
   function project(lat, lng, cx, cy, r) {
     var la = lat  * Math.PI / 180;
@@ -688,6 +707,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (modeChanged && mapReady) refreshCurrentWorldviewRender();
     if (viewMode === 'local') document.body.classList.add('local-mode');
     else document.body.classList.remove('local-mode');
+    applyModeVisibility();
     if (mapReady && viewMode === 'local') {
       setTimeout(function () { map.invalidateSize(); }, 30);
     }
@@ -1001,6 +1021,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     var W = canvas.width, H = canvas.height;
     var cx = W * 0.5, cy = H * 0.5;
     var r = Math.min(W, H) * 0.40;
+    if (!W || !H || r < 4) return;
 
     ctx.fillStyle = '#03070f';
     ctx.fillRect(0, 0, W, H);
@@ -1072,6 +1093,44 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       ctx.strokeStyle = 'rgba(55,130,195,0.11)'; ctx.lineWidth = 0.6; ctx.stroke();
     }
+
+    var fallbackBands = [
+      { lat: 48, lng: -110, rx: 0.18, ry: 0.09, a: 0.18 },
+      { lat: 8, lng: -62, rx: 0.14, ry: 0.10, a: 0.15 },
+      { lat: 8, lng: 22, rx: 0.18, ry: 0.12, a: 0.15 },
+      { lat: 50, lng: 82, rx: 0.24, ry: 0.11, a: 0.16 },
+      { lat: -24, lng: 134, rx: 0.12, ry: 0.08, a: 0.15 }
+    ];
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    for (var fb = 0; fb < fallbackBands.length; fb++) {
+      var band = fallbackBands[fb];
+      var bp = project(band.lat, band.lng, cx, cy, r);
+      if (bp.z <= 0) continue;
+      ctx.beginPath();
+      ctx.ellipse(bp.x, bp.y, r * band.rx * bp.z, r * band.ry * bp.z, 0.35, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(120, 206, 160,' + String(band.a) + ')';
+      ctx.fill();
+    }
+    for (var arcI = 0; arcI < 4; arcI++) {
+      var arcLat = -25 + arcI * 16;
+      var arcStart = -160 + arcI * 40 + Math.sin(selectedPulse + arcI) * 10;
+      var arcEnd = arcStart + 72;
+      ctx.beginPath();
+      var started = false;
+      for (var arcLng = arcStart; arcLng <= arcEnd; arcLng += 2) {
+        var ap = project(arcLat, arcLng, cx, cy, r * 1.01);
+        if (ap.z <= 0) { started = false; continue; }
+        if (!started) { ctx.moveTo(ap.x, ap.y); started = true; }
+        else ctx.lineTo(ap.x, ap.y);
+      }
+      ctx.strokeStyle = 'rgba(118, 214, 255, 0.18)';
+      ctx.lineWidth = 0.9;
+      ctx.stroke();
+    }
+    ctx.restore();
 
     var entities = state.entities || [];
     var projected = [];
@@ -1375,7 +1434,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           : 'GLOBE OPERATIONAL SURFACE • TICK ' + String(state.tick || 0);
       }
     }
-    drawFrame();
+    if (viewMode === 'global') drawFrame();
     if ((frameCount % 8) === 0) updatePanels();
     requestAnimationFrame(animTick);
   }
@@ -1430,6 +1489,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     console.log("NEW WORLDVIEW RENDERER ACTIVE");
     initMap();
     setViewMode('global');
+    resize();
+    drawFrame();
 
     var zoomInBtn = document.getElementById('ctl-zoom-in');
     var zoomOutBtn = document.getElementById('ctl-zoom-out');
@@ -1499,10 +1560,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     fetchWorldview();
     setInterval(fetchWorldview, 3000);
     connect();
-    requestAnimationFrame(animTick);
+    if (!animStarted) {
+      animStarted = true;
+      requestAnimationFrame(animTick);
+    }
   }
 
-  window.onload = initWorldview;
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    initWorldview();
+  } else {
+    window.addEventListener('load', initWorldview, { once: true });
+  }
 
 })();
 </script>
