@@ -1632,30 +1632,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function animTick() {
-    rot = (rot + 0.055) % 360;
-    selectedPulse += 0.12;
-    liveFlicker += 0.11;
-    frameCount++;
-    if (!statusEl.classList.contains('offline')) {
-      statusEl.classList.add('live');
-      if ((frameCount % 90) < 3) {
-        statusEl.style.opacity = String(0.8 + Math.random() * 0.2);
-      } else {
-        statusEl.style.opacity = String(0.92 + Math.sin(liveFlicker) * 0.08);
+    try {
+      rot = (rot + 0.055) % 360;
+      selectedPulse += 0.12;
+      liveFlicker += 0.11;
+      frameCount++;
+      if (!statusEl.classList.contains('offline')) {
+        statusEl.classList.add('live');
+        if ((frameCount % 90) < 3) {
+          statusEl.style.opacity = String(0.8 + Math.random() * 0.2);
+        } else {
+          statusEl.style.opacity = String(0.92 + Math.sin(liveFlicker) * 0.08);
+        }
+        var foot = document.getElementById('hud-foot');
+        if (foot) {
+          foot.textContent = missionLabel + ' • TICK ' + String(state.tick || 0);
+        }
       }
-      var foot = document.getElementById('hud-foot');
-      if (foot) {
-        foot.textContent = missionLabel + ' • TICK ' + String(state.tick || 0);
+      var recEl = document.getElementById('meta-rec');
+      if (recEl) recEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
+      var orbitEl = document.getElementById('meta-orbit');
+      if (orbitEl) orbitEl.textContent = "PASS " + String((state.tick || 0) % 360).padStart(3, "0");
+      if (viewMode !== 'local') {
+        try { drawFrame(); } catch (fe) { console.error('WORLDVIEW drawFrame error:', fe); }
       }
+      if ((frameCount % 8) === 0) updatePanels();
+    } catch (e) {
+      console.error('WORLDVIEW animTick error:', e);
     }
-    var recEl = document.getElementById('meta-rec');
-    if (recEl) recEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
-    var orbitEl = document.getElementById('meta-orbit');
-    if (orbitEl) orbitEl.textContent = "PASS " + String((state.tick || 0) % 360).padStart(3, "0");
-    if (viewMode !== 'local') {
-      drawFrame();
-    }
-    if ((frameCount % 8) === 0) updatePanels();
     requestAnimationFrame(animTick);
   }
 
@@ -2156,13 +2160,6 @@ function handleClientMessage(socket, msg) {
 function wsUpgrade(req, socket) {
   const buf = { data: Buffer.alloc(0) };
   wsClients.add(socket);
-
-  // send initial snapshot
-  wsSend(socket, JSON.stringify({ type: 'snapshot', data: snapshot() }));
-  // send last 20 events
-  for (const ev of eventLog.slice(-20)) {
-    wsSend(socket, JSON.stringify({ type: 'event', data: ev }));
-  }
 
   socket.on('data', chunk => {
     buf.data = Buffer.concat([buf.data, chunk]);
