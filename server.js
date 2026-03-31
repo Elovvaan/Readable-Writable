@@ -137,7 +137,32 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       .pnl-row { margin: 4px 0; font-size: 9px; }
       #hud-title { font-size: 12px; letter-spacing: 3px; }
     }
+    #local-map-panel {
+      display: none;
+      position: fixed; bottom: 36px; right: 14px;
+      width: 300px; height: 240px;
+      border: 1px solid rgba(44, 130, 188, 0.42);
+      box-shadow: 0 0 28px rgba(12, 56, 94, 0.48);
+      z-index: 30; overflow: hidden;
+      background: #020508;
+    }
+    #local-map-panel.active { display: block; }
+    #local-map { width: 100%; height: 100%; }
+    #lm-label {
+      position: absolute; top: 4px; left: 6px;
+      font-size: 8px; letter-spacing: 2px; color: #56afd8;
+      pointer-events: none; z-index: 31;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    }
+    #lm-close {
+      position: absolute; top: 3px; right: 5px;
+      font-size: 11px; color: #5cf2b6; cursor: pointer; z-index: 31;
+      pointer-events: all; background: none; border: none; padding: 2px 5px;
+    }
   </style>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
 </head>
 <body>
   <canvas id="globe"></canvas>
@@ -160,6 +185,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div id="selected-detail">—</div>
   </div>
   <div id="hud-foot">GLOBE OPERATIONAL SURFACE</div>
+  <div id="local-map-panel">
+    <span id="lm-label">LOCAL VIEW</span>
+    <button id="lm-close">&#x2715;</button>
+    <div id="local-map"></div>
+  </div>
 <script>
 (function () {
   'use strict';
@@ -181,6 +211,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var hits     = [];
   var ws, wsDelay = 1000;
 
+  var landPolygons  = [];
+  var mapLoaded     = false;
+  var localLeaflet  = null;
+  var localMarker   = null;
+  var localMapPanel = document.getElementById('local-map-panel');
+
   function resize() {
     canvas.width  = window.innerWidth;
     canvas.height = window.innerHeight;
@@ -195,6 +231,123 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     var y3 = Math.sin(la);
     var z3 = Math.cos(la) * Math.cos(lo);
     return { x: cx + r * x3, y: cy - r * y3, z: z3 };
+  }
+
+  // ── Map / Continent Rendering ────────────────────────────────────────────────
+  function loadWorldGeo() {
+    console.log('[MAP] Loading world land topology...');
+    fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/land-110m.json')
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function(topo) {
+        if (typeof topojson === 'undefined') throw new Error('topojson-client not loaded');
+        var geo = topojson.feature(topo, topo.objects.land);
+        landPolygons = [];
+        var feats = Array.isArray(geo.features) ? geo.features : [geo];
+        feats.forEach(function(f) { collectGeoRings(f.geometry || f); });
+        mapLoaded = true;
+        console.log('[MAP] Land loaded — ' + landPolygons.length + ' rings');
+      })
+      .catch(function(err) {
+        console.warn('[MAP] Primary land failed (' + err.message + ') — applying fallback');
+        applyFallbackLand();
+      });
+  }
+
+  function collectGeoRings(g) {
+    if (!g) return;
+    if (g.type === 'Polygon') {
+      g.coordinates.forEach(function(ring) { landPolygons.push(ring); });
+    } else if (g.type === 'MultiPolygon') {
+      g.coordinates.forEach(function(poly) {
+        poly.forEach(function(ring) { landPolygons.push(ring); });
+      });
+    }
+  }
+
+  function applyFallbackLand() {
+    // Simplified [lng, lat] outlines for major landmasses
+    landPolygons = [
+      // Africa
+      [[-18,14],[0,14],[12,12],[18,4],[22,2],[28,-2],[34,-4],[36,-12],[38,-18],[36,-22],[32,-28],[26,-34],[18,-34],[14,-24],[10,-8],[6,4],[0,6],[-6,5],[-14,10],[-18,14]],
+      // Europe
+      [[-10,36],[0,44],[10,56],[20,60],[28,62],[30,70],[14,68],[4,62],[0,50],[-2,44],[6,44],[14,46],[20,50],[28,54],[32,58],[38,56],[42,42],[36,40],[30,38],[24,36],[10,38],[0,38],[-6,36],[-10,36]],
+      // Asia
+      [[42,40],[50,30],[58,22],[65,22],[70,26],[80,28],[90,28],[100,20],[110,2],[120,4],[124,12],[128,26],[128,36],[132,44],[136,34],[128,32],[120,34],[120,38],[124,40],[118,42],[108,48],[100,52],[90,56],[80,50],[70,44],[62,40],[50,38],[44,40],[42,40]],
+      // North America
+      [[-168,72],[-141,60],[-125,49],[-117,32],[-97,26],[-83,10],[-78,16],[-66,18],[-70,44],[-56,47],[-60,46],[-80,46],[-84,46],[-90,48],[-94,49],[-110,49],[-125,49],[-132,55],[-141,60],[-150,62],[-157,60],[-163,62],[-166,64],[-168,72]],
+      // South America
+      [[-81,9],[-77,4],[-72,1],[-72,-4],[-76,-10],[-78,-14],[-76,-18],[-72,-22],[-70,-30],[-70,-40],[-66,-54],[-68,-54],[-64,-42],[-58,-34],[-52,-32],[-38,-14],[-34,-8],[-38,-4],[-50,-1],[-57,6],[-60,8],[-66,11],[-72,10],[-76,9],[-81,9]],
+      // Australia
+      [[130,-14],[136,-12],[138,-14],[140,-18],[144,-18],[150,-24],[152,-28],[152,-32],[148,-38],[144,-38],[140,-36],[134,-34],[126,-34],[114,-30],[114,-26],[122,-22],[128,-14],[130,-14]],
+    ];
+    mapLoaded = true;
+    console.log('[MAP] Fallback land active — ' + landPolygons.length + ' rings');
+  }
+
+  function drawContinents(cx, cy, r) {
+    if (!landPolygons.length) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle   = 'rgba(40, 100, 58, 0.42)';
+    ctx.strokeStyle = 'rgba(70, 160, 90, 0.58)';
+    ctx.lineWidth   = 0.5;
+    for (var ri = 0; ri < landPolygons.length; ri++) {
+      var ring = landPolygons[ri];
+      if (!ring || ring.length < 3) continue;
+      ctx.beginPath();
+      var moved = false;
+      for (var pi = 0; pi < ring.length; pi++) {
+        var c = ring[pi];
+        var pt = project(c[1], c[0], cx, cy, r);
+        if (pt.z > 0) {
+          if (!moved) { ctx.moveTo(pt.x, pt.y); moved = true; }
+          else        { ctx.lineTo(pt.x, pt.y); }
+        } else if (moved) {
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); moved = false;
+        }
+      }
+      if (moved) { ctx.closePath(); ctx.fill(); ctx.stroke(); }
+    }
+    ctx.restore();
+  }
+
+  function showLocalMap(ent) {
+    if (typeof L === 'undefined' || typeof ent.lat !== 'number') return;
+    localMapPanel.classList.add('active');
+    if (!localLeaflet) {
+      localLeaflet = L.map('local-map', { zoomControl: true });
+      var tileLogDone = false;
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+      }).addTo(localLeaflet)
+        .on('tileload', function() {
+          if (!tileLogDone) {
+            console.log('[MAP] Local tile render success');
+            tileLogDone = true;
+          }
+        });
+      localMarker = L.circleMarker([0, 0], {
+        radius: 7, color: '#5cf2b6', fillColor: '#66d9ff', fillOpacity: 0.9
+      });
+      console.log('[MAP] Local map initialised');
+    }
+    var latlng = [ent.lat, ent.lng];
+    localLeaflet.setView(latlng, 5);
+    localMarker.setLatLng(latlng).addTo(localLeaflet);
+    // Allow the CSS display change to resolve before Leaflet reads container dimensions
+    setTimeout(function() { localLeaflet.invalidateSize(); }, 10);
+    console.log('[MAP] Local mode: ' + ent.id + ' @ ' + ent.lat.toFixed(3) + ', ' + ent.lng.toFixed(3));
+  }
+
+  function hideLocalMap() {
+    if (localMapPanel) localMapPanel.classList.remove('active');
   }
 
   function drawFrame() {
@@ -221,6 +374,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
     ctx.strokeStyle = 'rgba(100,210,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    drawContinents(cx, cy, r);
 
     var night = ctx.createRadialGradient(cx + r * 0.46, cy + r * 0.18, r * 0.14, cx, cy, r * 1.08);
     night.addColorStop(0, 'rgba(0,0,0,0.02)');
@@ -346,6 +501,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         selDetail.className = '';
         selDetail.textContent = '—';
         selected = null;
+        hideLocalMap();
       }
     } else {
       selDetail.className = '';
@@ -364,6 +520,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     selected = best ? best.id : null;
     updatePanels();
+    if (selected) {
+      var selEnt = (state.entities || []).find(function(e) { return e.id === selected; });
+      if (selEnt) showLocalMap(selEnt);
+    } else {
+      hideLocalMap();
+    }
   });
 
   function animTick() {
@@ -403,10 +565,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function initWorldview() {
     console.log("NEW WORLDVIEW RENDERER ACTIVE");
+    loadWorldGeo();
     fetchWorldview();
     setInterval(fetchWorldview, 3000);
     connect();
     requestAnimationFrame(animTick);
+    document.getElementById('lm-close').addEventListener('click', function() {
+      hideLocalMap();
+      selected = null;
+      updatePanels();
+    });
   }
 
   window.onload = initWorldview;
