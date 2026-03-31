@@ -514,12 +514,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var STATE_LOST_MS = 22000;
   var ws, wsDelay = 1000;
   var animStarted = false;
+  var lastFallbackLogFrame = -1;
+
+  function ensureCanvasVisibility() {
+    if (!canvas) return;
+    canvas.style.zIndex = '4';
+    if (viewMode === 'global') {
+      canvas.style.display = 'block';
+      canvas.style.opacity = '1';
+      canvas.style.visibility = 'visible';
+      canvas.style.pointerEvents = 'auto';
+    }
+  }
 
   function resize() {
     var w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
     var h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
     canvas.width = w;
     canvas.height = h;
+    ensureCanvasVisibility();
+    console.log('WORLDVIEW CANVAS SIZE', w, h);
     if (viewMode === 'global') drawFrame();
   }
   window.addEventListener('resize', resize);
@@ -530,6 +544,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     canvas.style.display = inLocal ? 'none' : 'block';
     canvas.style.opacity = inLocal ? '0' : '1';
     canvas.style.visibility = inLocal ? 'hidden' : 'visible';
+    canvas.style.zIndex = '4';
+    if (!inLocal) canvas.style.pointerEvents = 'auto';
     var mapEl = document.getElementById('map-view');
     if (mapEl) {
       mapEl.style.visibility = inLocal ? 'visible' : 'hidden';
@@ -1025,10 +1041,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function drawFrame() {
+    console.log('WORLDVIEW DRAW FRAME');
     var W = canvas.width, H = canvas.height;
+    if (!W || !H) {
+      W = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+      H = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+      canvas.width = W;
+      canvas.height = H;
+      console.log('WORLDVIEW CANVAS SIZE', W, H);
+    }
     var cx = W * 0.5, cy = H * 0.5;
-    var r = Math.min(W, H) * 0.40;
-    if (!W || !H || r < 4) return;
+    var r = Math.max(6, Math.min(W, H) * 0.40);
 
     ctx.fillStyle = '#03070f';
     ctx.fillRect(0, 0, W, H);
@@ -1140,6 +1163,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.restore();
 
     var entities = state.entities || [];
+    if (!entities.length && lastFallbackLogFrame !== frameCount) {
+      console.log('WORLDVIEW GLOBAL FALLBACK DRAW');
+      lastFallbackLogFrame = frameCount;
+    }
     var projected = [];
     hits = [];
     var tSec = Date.now() * 0.001;
@@ -1493,10 +1520,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function initWorldview() {
-    console.log("NEW WORLDVIEW RENDERER ACTIVE");
+    console.log("WORLDVIEW INIT START");
     initMap();
-    setViewMode('global');
+    viewMode = 'global';
+    document.body.classList.remove('local-mode');
     resize();
+    applyModeVisibility();
+    setModeLabel();
+    ensureCanvasVisibility();
     drawFrame();
 
     var zoomInBtn = document.getElementById('ctl-zoom-in');
@@ -1564,13 +1595,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     addEventItem('system', 'Worldview operational surface online', null);
     renderEventFeed();
 
-    fetchWorldview();
-    setInterval(fetchWorldview, 3000);
-    connect();
     if (!animStarted) {
       animStarted = true;
       requestAnimationFrame(animTick);
     }
+    fetchWorldview();
+    setInterval(fetchWorldview, 3000);
+    connect();
   }
 
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
