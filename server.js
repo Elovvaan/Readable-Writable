@@ -25,12 +25,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RW Worldview</title>
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-    crossorigin=""
-  />
   <style>
     /* WORLDVIEW RENDERER - globe-primary, no board, no grid, no x/y */
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -983,18 +977,41 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function loadLeaflet() {
     if (typeof L !== 'undefined' || leafletLoading) return;
     leafletLoading = true;
-    var providers = [
+    var styleProviders = [
+      'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+      'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css'
+    ];
+    var scriptProviders = [
       'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
       'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js'
     ];
-    function tryProvider(idx) {
-      if (idx >= providers.length) {
+    function loadStyleProvider(idx, onDone) {
+      if (idx >= styleProviders.length) {
+        console.warn('Leaflet CSS CDN unavailable; map mode may render without base styles.');
+        onDone();
+        return;
+      }
+      var l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = styleProviders[idx];
+      l.crossOrigin = '';
+      l.onload = function () {
+        onDone();
+      };
+      l.onerror = function () {
+        l.remove();
+        loadStyleProvider(idx + 1, onDone);
+      };
+      document.head.appendChild(l);
+    }
+    function loadScriptProvider(idx) {
+      if (idx >= scriptProviders.length) {
         leafletLoading = false;
         console.warn('Leaflet CDN unavailable; local map mode disabled, globe remains active.');
         return;
       }
       var s = document.createElement('script');
-      s.src = providers[idx];
+      s.src = scriptProviders[idx];
       s.async = true;
       s.onload = function () {
         leafletLoading = false;
@@ -1003,11 +1020,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       };
       s.onerror = function () {
         s.remove();
-        tryProvider(idx + 1);
+        loadScriptProvider(idx + 1);
       };
       document.head.appendChild(s);
     }
-    tryProvider(0);
+    loadStyleProvider(0, function () {
+      loadScriptProvider(0);
+    });
   }
 
   function mapColor(kind) {
