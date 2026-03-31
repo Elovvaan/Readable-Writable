@@ -608,8 +608,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var IS_ADMIN = location.pathname.indexOf('/admin/') === 0;
   if (IS_ADMIN) document.body.classList.add('admin');
 
-  var canvas    = document.getElementById('globe');
-  var ctx       = canvas.getContext('2d');
+  var canvas    = null;
+  var ctx       = null;
   var statusEl  = document.getElementById('hud-status');
   var selDetail = document.getElementById('selected-detail');
   var modeBtn   = document.getElementById('ctl-mode');
@@ -666,9 +666,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var ws, wsDelay = 1000;
   var animStarted = false;
   var lastFallbackLogFrame = -1;
+  var canvasClickBound = false;
+
+  function ensureCanvasReady() {
+    if (!canvas) {
+      canvas = document.getElementById('globe');
+    }
+    if (!canvas) return false;
+    if (!ctx) {
+      ctx = canvas.getContext('2d');
+    }
+    return !!ctx;
+  }
 
   function ensureCanvasVisibility() {
-    if (!canvas) return;
+    if (!ensureCanvasReady()) return;
     canvas.style.zIndex = '1';
     if (viewMode === 'global') {
       canvas.style.display = 'block';
@@ -679,6 +691,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function resize() {
+    if (!ensureCanvasReady()) return;
     var w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
     var h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
     canvas.width = w;
@@ -697,6 +710,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   resize();
 
   function applyModeVisibility() {
+    if (!canvas) return;
     var inLocal = viewMode === 'local' && mapReady;
     canvas.style.display = inLocal ? 'none' : 'block';
     canvas.style.opacity = inLocal ? '0' : '1';
@@ -1623,24 +1637,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }, 120);
   }
 
-  canvas.addEventListener('click', function(e) {
-    var rect = canvas.getBoundingClientRect();
-    var mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    var best = null, bestD = 12;
-    for (var i = 0; i < hits.length; i++) {
-      var dx = hits[i].x - mx, dy = hits[i].y - my;
-      var d = Math.sqrt(dx*dx + dy*dy);
-      if (d < bestD) { best = hits[i]; bestD = d; }
-    }
-    selected = best ? best.id : null;
-    selectedMeta = best ? best.meta : null;
-    selectedAreaName = null;
-    if (selectedMeta) {
-      lockTarget(selectedMeta);
-    }
-    updatePanels();
-  });
-
   function animTick() {
     rot = (rot + 0.055) % 360;
     selectedPulse += 0.12;
@@ -1766,6 +1762,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       canvas.id = 'globe';
       document.body.appendChild(canvas);
     }
+    if (!ensureCanvasReady()) {
+      console.error('WORLDVIEW INIT: canvas/context unavailable; globe cannot render');
+      return;
+    }
     canvas.style.display = 'block';
     canvas.style.opacity = '1';
     canvas.style.visibility = 'visible';
@@ -1784,6 +1784,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     applyModeVisibility();
     setModeLabel();
     ensureCanvasVisibility();
+    if (!canvasClickBound) {
+      canvas.addEventListener('click', function(e) {
+        var rect = canvas.getBoundingClientRect();
+        var mx = e.clientX - rect.left, my = e.clientY - rect.top;
+        var best = null, bestD = 12;
+        for (var i = 0; i < hits.length; i++) {
+          var dx = hits[i].x - mx, dy = hits[i].y - my;
+          var d = Math.sqrt(dx*dx + dy*dy);
+          if (d < bestD) { best = hits[i]; bestD = d; }
+        }
+        selected = best ? best.id : null;
+        selectedMeta = best ? best.meta : null;
+        selectedAreaName = null;
+        if (selectedMeta) {
+          lockTarget(selectedMeta);
+        }
+        updatePanels();
+      });
+      canvasClickBound = true;
+    }
 
     var zoomInBtn = document.getElementById('ctl-zoom-in');
     var zoomOutBtn = document.getElementById('ctl-zoom-out');
