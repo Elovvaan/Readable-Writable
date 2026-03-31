@@ -1200,6 +1200,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function drawFrame() {
     console.log('DRAW FRAME RUNNING');
     ensureCanvasVisibility();
+    var frameCtx = canvas.getContext('2d');
+    if (!frameCtx) {
+      console.error('WORLDVIEW drawFrame: 2D context unavailable');
+      return;
+    }
+    ctx = frameCtx;
     var W = canvas.width, H = canvas.height;
     if (!W || !H) {
       W = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
@@ -1210,11 +1216,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     console.log('CANVAS SIZE', canvas.width, canvas.height);
     console.log('CANVAS VISIBLE', canvas.offsetParent !== null);
-    var cx = W * 0.5, cy = H * 0.5;
+    var cx = canvas.width / 2;
+    var cy = canvas.height / 2;
+    var radius = Math.min(canvas.width, canvas.height) * 0.35;
     var r = Math.max(6, Math.min(W, H) * 0.40);
 
-    ctx.fillStyle = '#03070f';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#0b1a2a';
+    ctx.fill();
+
+    var grad = ctx.createRadialGradient(cx, cy, radius * 0.8, cx, cy, radius * 1.2);
+    grad.addColorStop(0, 'rgba(0,150,255,0.15)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius * 1.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = 'red';
+    ctx.beginPath();
+    ctx.moveTo(cx - 10, cy);
+    ctx.lineTo(cx + 10, cy);
+    ctx.moveTo(cx, cy - 10);
+    ctx.lineTo(cx, cy + 10);
+    ctx.stroke();
 
     var halo = ctx.createRadialGradient(cx, cy, r*0.88, cx, cy, r*1.36);
     halo.addColorStop(0, 'rgba(30,100,190,0.16)');
