@@ -474,8 +474,13 @@ function router(req, res) {
 
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  // ── GET / → frontend
-  if (req.method === 'GET' && (url === '/' || url === '/worldview')) {
+  // ── GET frontend routes
+  if (req.method === 'GET' && (
+    url === '/' ||
+    url === '/worldview' ||
+    url === '/app/worldview' ||
+    url === '/admin/worldview'
+  )) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(FRONTEND_HTML);
     return;
