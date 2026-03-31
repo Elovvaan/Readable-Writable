@@ -666,6 +666,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var ws, wsDelay = 1000;
   var animStarted = false;
   var lastFallbackLogFrame = -1;
+  var renderDebug = Boolean(window && window.__RW_RENDER_DEBUG__);
   var canvasClickBound = false;
   var GLOBE_Z_INDEX = '4';
 
@@ -1230,7 +1231,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       H = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
       canvas.width = W;
       canvas.height = H;
-      console.log('WORLDVIEW CANVAS SIZE', W, H);
+      if (renderDebug) console.log('WORLDVIEW CANVAS SIZE', W, H);
     }
     var cx = canvas.width / 2;
     var cy = canvas.height / 2;
@@ -1360,7 +1361,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.restore();
 
     var entities = state.entities || [];
-    if (!entities.length && lastFallbackLogFrame !== frameCount) {
+    if (renderDebug && !entities.length && lastFallbackLogFrame !== frameCount) {
       console.log('WORLDVIEW FALLBACK GLOBE DRAW');
       lastFallbackLogFrame = frameCount;
     }
