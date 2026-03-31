@@ -26,93 +26,103 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RW Worldview</title>
   <style>
-    /* ── NEW WORLDVIEW RENDERER — hard reset, no legacy code ── */
+    /* WORLDVIEW RENDERER - globe-primary, no board, no grid, no x/y */
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
-      width: 100%; height: 100%;
-      overflow: hidden;
+      width: 100%; height: 100%; overflow: hidden;
       background: #03070f;
-      font-family: Consolas, 'Courier New', monospace;
+      font-family: Consolas, "Courier New", monospace;
+      color: #c8dde8;
     }
-    #globe {
-      position: fixed;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      display: block;
+    #globe { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    #hud-bar {
+      position: fixed; top: 0; left: 0; right: 0; height: 46px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 18px;
+      background: rgba(3,7,15,0.78);
+      border-bottom: 1px solid rgba(30,90,140,0.30);
+      z-index: 20; pointer-events: none;
     }
-    /* HUD overlays — purely fixed-position, no panels */
     #hud-title {
-      position: fixed;
-      top: 18px;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 15px;
-      letter-spacing: 4px;
-      font-weight: 700;
-      color: #66d9ff;
-      text-shadow: 0 0 14px rgba(102, 217, 255, 0.65);
-      pointer-events: none;
-      z-index: 10;
+      font-size: 14px; letter-spacing: 4px; font-weight: 700;
+      color: #66d9ff; text-shadow: 0 0 12px rgba(102,217,255,0.55);
     }
-    #hud-status {
-      position: fixed;
-      top: 18px;
-      right: 22px;
-      font-size: 10px;
-      letter-spacing: 2px;
-      color: #5cf2b6;
-      pointer-events: none;
-      z-index: 10;
-    }
+    #hud-status { font-size: 10px; letter-spacing: 2px; color: #5cf2b6; }
     #hud-status.offline { color: #ff7d6e; }
-    #hud-tick {
-      position: fixed;
-      bottom: 18px;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 10px;
-      letter-spacing: 3px;
-      color: #3a6a84;
-      pointer-events: none;
-      z-index: 10;
+    .side-panel {
+      position: fixed; top: 62px; width: 172px;
+      background: rgba(3,7,15,0.68);
+      border: 1px solid rgba(30,90,140,0.28);
+      padding: 10px 12px;
+      z-index: 15; pointer-events: none;
     }
-    #hud-entities {
-      position: fixed;
-      bottom: 36px;
-      right: 22px;
-      font-size: 10px;
-      letter-spacing: 1px;
-      color: #3a6a84;
-      pointer-events: none;
-      z-index: 10;
+    #panel-left  { left: 14px; }
+    #panel-right { right: 14px; }
+    .pnl-head {
+      font-size: 9px; letter-spacing: 3px; color: #3a7fa8;
+      margin-bottom: 9px;
+      border-bottom: 1px solid rgba(30,90,140,0.25);
+      padding-bottom: 5px;
+    }
+    .pnl-row {
+      font-size: 10px; color: #7aaabb; margin: 5px 0;
+      display: flex; justify-content: space-between;
+    }
+    .pnl-row .lbl { color: #3a6878; }
+    .pnl-row .val { color: #9ed4e8; font-variant-numeric: tabular-nums; }
+    #selected-detail {
+      margin-top: 8px; padding-top: 7px;
+      border-top: 1px solid rgba(30,90,140,0.22);
+      font-size: 10px; color: #547a8a; line-height: 1.7; min-height: 44px;
+    }
+    #selected-detail .sel-id { color: #9ed4e8; }
+    #hud-foot {
+      position: fixed; bottom: 0; left: 0; right: 0; height: 28px;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(3,7,15,0.60);
+      border-top: 1px solid rgba(30,90,140,0.20);
+      font-size: 9px; letter-spacing: 3px; color: #2e5a70;
+      z-index: 20; pointer-events: none;
     }
   </style>
 </head>
 <body>
   <canvas id="globe"></canvas>
-  <div id="hud-title">RW WORLDVIEW</div>
-  <div id="hud-status">CONNECTING</div>
-  <div id="hud-tick">TICK 0</div>
-  <div id="hud-entities">ENTITIES 0</div>
+  <div id="hud-bar">
+    <div id="hud-title">RW WORLDVIEW</div>
+    <div id="hud-status">CONNECTING</div>
+  </div>
+  <div id="panel-left" class="side-panel">
+    <div class="pnl-head">ENTITIES</div>
+    <div class="pnl-row"><span class="lbl">AGENTS</span><span class="val" id="cnt-agents">0</span></div>
+    <div class="pnl-row"><span class="lbl">REGIONS</span><span class="val" id="cnt-regions">0</span></div>
+    <div class="pnl-row"><span class="lbl">FLIGHTS</span><span class="val" id="cnt-flights">0</span></div>
+    <div class="pnl-row"><span class="lbl">SATELLITES</span><span class="val" id="cnt-sats">0</span></div>
+  </div>
+  <div id="panel-right" class="side-panel">
+    <div class="pnl-head">TACTICAL</div>
+    <div class="pnl-row"><span class="lbl">TICK</span><span class="val" id="info-tick">0</span></div>
+    <div class="pnl-row"><span class="lbl">UPTIME</span><span class="val" id="info-uptime">—</span></div>
+    <div class="pnl-row"><span class="lbl">TOTAL</span><span class="val" id="info-total">0</span></div>
+    <div id="selected-detail">—</div>
+  </div>
+  <div id="hud-foot">GLOBE OPERATIONAL SURFACE</div>
 <script>
 (function () {
   'use strict';
 
   console.log("NEW WORLDVIEW RENDERER ACTIVE");
 
-  /* ── Canvas setup ── */
-  var canvas = document.getElementById('globe');
-  var ctx = canvas.getContext('2d');
-  var statusEl = document.getElementById('hud-status');
-  var tickEl = document.getElementById('hud-tick');
-  var entEl = document.getElementById('hud-entities');
+  var canvas    = document.getElementById('globe');
+  var ctx       = canvas.getContext('2d');
+  var statusEl  = document.getElementById('hud-status');
+  var selDetail = document.getElementById('selected-detail');
 
-  /* ── State ── */
-  var state = { entities: [], tick: 0, started: null };
-  var rot = 0;           // current rotation degrees
+  var state    = { entities: [], tick: 0, started: null };
+  var rot      = 0;
+  var selected = null;
+  var hits     = [];
   var ws, wsDelay = 1000;
-  var hits = [];         // clickable entity positions this frame
 
   function resize() {
     canvas.width  = window.innerWidth;
@@ -121,10 +131,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   window.addEventListener('resize', resize);
   resize();
 
-  /* ── Spherical projection ──
-     Converts geographic lat/lng to canvas x,y using orthographic projection.
-     z > 0 = visible (facing viewer), z <= 0 = on far side of globe.
-  */
   function project(lat, lng, cx, cy, r) {
     var la = lat  * Math.PI / 180;
     var lo = (lng - rot) * Math.PI / 180;
@@ -134,125 +140,124 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return { x: cx + r * x3, y: cy - r * y3, z: z3 };
   }
 
-  /* ── Draw one animation frame ── */
   function drawFrame() {
-    var W  = canvas.width;
-    var H  = canvas.height;
-    var cx = W * 0.5;
-    var cy = H * 0.5;
-    var r  = Math.min(W, H) * 0.40;
+    var W = canvas.width, H = canvas.height;
+    var cx = W * 0.5, cy = H * 0.5;
+    var r = Math.min(W, H) * 0.40;
 
-    /* Deep space background */
     ctx.fillStyle = '#03070f';
     ctx.fillRect(0, 0, W, H);
 
-    /* Subtle atmospheric halo behind globe */
-    var halo = ctx.createRadialGradient(cx, cy, r * 0.9, cx, cy, r * 1.28);
-    halo.addColorStop(0, 'rgba(40, 120, 200, 0.18)');
-    halo.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.beginPath();
-    ctx.arc(cx, cy, r * 1.28, 0, Math.PI * 2);
-    ctx.fillStyle = halo;
-    ctx.fill();
+    var halo = ctx.createRadialGradient(cx, cy, r*0.92, cx, cy, r*1.30);
+    halo.addColorStop(0, 'rgba(30,100,190,0.16)');
+    halo.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.beginPath(); ctx.arc(cx, cy, r*1.30, 0, Math.PI*2);
+    ctx.fillStyle = halo; ctx.fill();
 
-    /* Globe sphere — radial gradient gives 3-D depth */
-    var globe = ctx.createRadialGradient(
-      cx - r * 0.28, cy - r * 0.28, r * 0.04,
-      cx, cy, r
-    );
-    globe.addColorStop(0,    'rgba(110, 200, 255, 0.92)');
-    globe.addColorStop(0.25, 'rgba(35,  100, 170, 0.90)');
-    globe.addColorStop(0.72, 'rgba(12,  45,  85,  0.93)');
-    globe.addColorStop(1,    'rgba(5,   18,  38,  0.97)');
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = globe;
-    ctx.fill();
+    var grd = ctx.createRadialGradient(cx-r*0.28, cy-r*0.28, r*0.04, cx, cy, r);
+    grd.addColorStop(0,    'rgba(112,200,255,0.92)');
+    grd.addColorStop(0.25, 'rgba(30,95,165,0.90)');
+    grd.addColorStop(0.70, 'rgba(10,40,80,0.93)');
+    grd.addColorStop(1,    'rgba(4,14,32,0.97)');
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.fillStyle = grd; ctx.fill();
 
-    /* Crisp limb edge */
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(102, 217, 255, 0.38)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(100,210,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke();
 
-    /* Latitude parallels — drawn as curved arcs on sphere surface */
-    ctx.lineWidth = 0.7;
-    ctx.strokeStyle = 'rgba(70, 150, 210, 0.18)';
-    var parallels = [-60, -30, 0, 30, 60];
-    for (var pi = 0; pi < parallels.length; pi++) {
-      var latP = parallels[pi];
-      ctx.beginPath();
-      var pmoved = false;
-      for (var lng = -180; lng <= 180; lng += 3) {
-        var pp = project(latP, lng, cx, cy, r);
-        if (pp.z > 0) {
-          if (!pmoved) { ctx.moveTo(pp.x, pp.y); pmoved = true; }
-          else          { ctx.lineTo(pp.x, pp.y); }
-        } else { pmoved = false; }
+    var pars = [-60, -30, 0, 30, 60];
+    for (var pi = 0; pi < pars.length; pi++) {
+      var latP = pars[pi]; ctx.beginPath(); var pmv = false;
+      for (var lo2 = -180; lo2 <= 180; lo2 += 3) {
+        var pp = project(latP, lo2, cx, cy, r);
+        if (pp.z > 0) { if (!pmv) { ctx.moveTo(pp.x,pp.y); pmv=true; } else ctx.lineTo(pp.x,pp.y); }
+        else { pmv = false; }
       }
-      /* equator slightly brighter */
-      ctx.strokeStyle = latP === 0
-        ? 'rgba(102, 200, 255, 0.28)'
-        : 'rgba(70, 150, 210, 0.15)';
-      ctx.stroke();
+      ctx.strokeStyle = latP===0 ? 'rgba(100,195,255,0.26)' : 'rgba(55,130,195,0.13)';
+      ctx.lineWidth = 0.6; ctx.stroke();
     }
 
-    /* Longitude meridians */
-    ctx.strokeStyle = 'rgba(70, 150, 210, 0.14)';
     for (var lm = -150; lm <= 180; lm += 30) {
-      ctx.beginPath();
-      var mmoved = false;
-      for (var lat = -88; lat <= 88; lat += 3) {
-        var mp = project(lat, lm, cx, cy, r);
-        if (mp.z > 0) {
-          if (!mmoved) { ctx.moveTo(mp.x, mp.y); mmoved = true; }
-          else          { ctx.lineTo(mp.x, mp.y); }
-        } else { mmoved = false; }
+      ctx.beginPath(); var mmv = false;
+      for (var la2 = -88; la2 <= 88; la2 += 3) {
+        var mp = project(la2, lm, cx, cy, r);
+        if (mp.z > 0) { if (!mmv) { ctx.moveTo(mp.x,mp.y); mmv=true; } else ctx.lineTo(mp.x,mp.y); }
+        else { mmv = false; }
       }
-      ctx.stroke();
+      ctx.strokeStyle = 'rgba(55,130,195,0.11)'; ctx.lineWidth = 0.6; ctx.stroke();
     }
 
-    /* Entities on globe surface — lat/lng positioned dots */
     var entities = state.entities || [];
     hits = [];
     for (var i = 0; i < entities.length; i++) {
       var ent = entities[i];
       if (typeof ent.lat !== 'number' || typeof ent.lng !== 'number') continue;
       var ep = project(ent.lat, ent.lng, cx, cy, r);
-      if (ep.z <= 0.04) continue;   /* on far side — skip */
-
-      var dotR = 1.8 + ep.z * 2.8;
-      ctx.beginPath();
-      ctx.arc(ep.x, ep.y, dotR, 0, Math.PI * 2);
-      ctx.fillStyle = ent.kind === 'satellite'
-        ? 'rgba(255, 168, 80, 0.95)'
-        : ent.kind === 'region'
-          ? 'rgba(255, 220, 100, 0.90)'
-          : 'rgba(100, 220, 255, 0.95)';
-      ctx.fill();
-
-      /* faint pulse ring */
-      ctx.beginPath();
-      ctx.arc(ep.x, ep.y, dotR + 2.5, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(100, 200, 255, 0.18)';
-      ctx.lineWidth = 0.8;
-      ctx.stroke();
-
+      if (ep.z <= 0.04) continue;
+      var dotR = 1.8 + ep.z * 2.6;
+      var color = ent.kind === 'satellite' ? 'rgba(255,170,80,0.95)'
+        : ent.kind === 'region' ? 'rgba(255,222,100,0.90)'
+        : ent.kind === 'flight' ? 'rgba(180,255,180,0.90)'
+        :                          'rgba(100,218,255,0.95)';
+      ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR, 0, Math.PI*2);
+      ctx.fillStyle = color; ctx.fill();
+      ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR+2.5, 0, Math.PI*2);
+      ctx.strokeStyle = 'rgba(100,200,255,0.15)'; ctx.lineWidth = 0.7; ctx.stroke();
+      if (selected === ent.id) {
+        ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR+6, 0, Math.PI*2);
+        ctx.strokeStyle = 'rgba(255,200,80,0.85)'; ctx.lineWidth = 1.2; ctx.stroke();
+      }
       hits.push({ id: ent.id, x: ep.x, y: ep.y, meta: ent });
     }
   }
 
-  /* ── Animation loop ── */
-  function tick() {
-    rot = (rot + 0.055) % 360;
-    drawFrame();
-    tickEl.textContent = 'TICK ' + (state.tick || 0);
-    entEl.textContent  = 'ENTITIES ' + (state.entities ? state.entities.length : 0);
-    requestAnimationFrame(tick);
+  function updatePanels() {
+    var entities = state.entities || [];
+    var counts = { agent:0, region:0, flight:0, satellite:0 };
+    for (var i = 0; i < entities.length; i++) {
+      var k = entities[i].kind; if (counts[k] !== undefined) counts[k]++;
+    }
+    document.getElementById('cnt-agents').textContent  = counts.agent;
+    document.getElementById('cnt-regions').textContent = counts.region;
+    document.getElementById('cnt-flights').textContent = counts.flight;
+    document.getElementById('cnt-sats').textContent    = counts.satellite;
+    document.getElementById('info-tick').textContent   = state.tick || 0;
+    document.getElementById('info-total').textContent  = entities.length;
+    if (state.started) {
+      var sec = Math.floor((Date.now() - new Date(state.started)) / 1000);
+      var hh = Math.floor(sec/3600), mm = Math.floor((sec%3600)/60), ss = sec%60;
+      document.getElementById('info-uptime').textContent =
+        (hh?hh+'h ':'')+(mm?mm+'m ':'')+ ss+'s';
+    }
+    if (selected) {
+      var ent = entities.find(function(e) {{ return e.id === selected; }});
+      if (ent) {
+        selDetail.innerHTML = '<span class="sel-id">'+ent.id+'</span><br/>'
+          +ent.kind+'<br/>'+ent.lat.toFixed(2)+'°'+', '+ent.lng.toFixed(2)+'°';
+      } else { selDetail.textContent = '—'; selected = null; }
+    } else { selDetail.textContent = '—'; }
   }
 
-  /* ── Data fetch ── */
+  canvas.addEventListener('click', function(e) {
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    var best = null, bestD = 12;
+    for (var i = 0; i < hits.length; i++) {
+      var dx = hits[i].x - mx, dy = hits[i].y - my;
+      var d = Math.sqrt(dx*dx + dy*dy);
+      if (d < bestD) { best = hits[i]; bestD = d; }
+    }
+    selected = best ? best.id : null;
+    updatePanels();
+  });
+
+  function animTick() {
+    rot = (rot + 0.055) % 360;
+    drawFrame();
+    updatePanels();
+    requestAnimationFrame(animTick);
+  }
+
   async function fetchWorldview() {
     try {
       var res = await fetch('/rw/worldview/world', { cache: 'no-store' });
@@ -260,47 +265,32 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       var data = await res.json();
       state = {
         entities: Array.isArray(data.entities) ? data.entities : [],
-        tick:     data.tick    || 0,
+        tick:     data.tick || 0,
         started:  data.started || state.started
       };
-    } catch (_) { /* keep last state */ }
+    } catch (_) {}
   }
 
-  /* ── WebSocket ── */
   function connect() {
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(proto + '://' + location.host + '/ws');
-
-    ws.onopen = function () {
-      statusEl.textContent = 'LIVE';
-      statusEl.className   = '';
-      wsDelay = 1000;
+    ws.onopen = function() { statusEl.textContent='LIVE'; statusEl.className=''; wsDelay=1000; };
+    ws.onmessage = function(e) {
+      try { var m=JSON.parse(e.data); if(m&&m.type) fetchWorldview(); } catch(_){}
     };
-
-    ws.onmessage = function (e) {
-      try {
-        var msg = JSON.parse(e.data);
-        if (msg && msg.type) fetchWorldview();
-      } catch (_) {}
+    ws.onclose = function() {
+      statusEl.textContent='OFFLINE'; statusEl.className='offline';
+      setTimeout(connect, wsDelay); wsDelay=Math.min(wsDelay*2,16000);
     };
-
-    ws.onclose = function () {
-      statusEl.textContent = 'OFFLINE';
-      statusEl.className   = 'offline';
-      setTimeout(connect, wsDelay);
-      wsDelay = Math.min(wsDelay * 2, 16000);
-    };
-
-    ws.onerror = function () { ws.close(); };
+    ws.onerror = function() { ws.close(); };
   }
 
-  /* ── Entry point ── */
   function initWorldview() {
     console.log("NEW WORLDVIEW RENDERER ACTIVE");
     fetchWorldview();
     setInterval(fetchWorldview, 3000);
     connect();
-    requestAnimationFrame(tick);
+    requestAnimationFrame(animTick);
   }
 
   window.onload = initWorldview;
