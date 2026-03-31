@@ -372,6 +372,113 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       box-shadow: 0 6px 24px rgba(4, 28, 54, 0.28), 0 0 14px rgba(92, 242, 182, 0.2) inset;
     }
 
+
+
+    :root {
+      --accent-cyan: #66d9ff;
+      --accent-amber: #ffd27a;
+      --accent-green: #8effc6;
+    }
+    #tactical-frame {
+      position: fixed;
+      inset: 8px;
+      border: 1px solid rgba(108, 190, 236, 0.16);
+      pointer-events: none;
+      z-index: 10;
+      box-shadow: inset 0 0 38px rgba(10, 38, 66, 0.32);
+    }
+    #tactical-frame::before, #tactical-frame::after {
+      content: '';
+      position: absolute;
+      width: 120px;
+      height: 120px;
+      border: 1px solid rgba(108, 190, 236, 0.34);
+      opacity: 0.4;
+    }
+    #tactical-frame::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+    #tactical-frame::after { right: -1px; bottom: -1px; border-left: 0; border-top: 0; }
+    #brand-block {
+      position: fixed;
+      top: 56px;
+      left: 16px;
+      z-index: 22;
+      width: 300px;
+      border: 1px solid rgba(98, 183, 230, 0.28);
+      background: linear-gradient(180deg, rgba(6, 15, 26, 0.84), rgba(4, 10, 20, 0.72));
+      box-shadow: 0 0 24px rgba(19, 71, 115, 0.24);
+      padding: 10px 12px;
+      pointer-events: none;
+    }
+    #brand-title { font-size: 22px; letter-spacing: 4px; color: #bcefff; text-shadow: 0 0 16px rgba(102, 217, 255, 0.34); }
+    #brand-sub { font-size: 10px; letter-spacing: 2px; color: #7fb7d0; margin-top: 2px; text-transform: uppercase; }
+    #brand-meta { margin-top: 8px; font-size: 9px; line-height: 1.55; color: #87adc0; letter-spacing: 1px; }
+    #brand-meta .hot { color: var(--accent-amber); }
+    #session-meta {
+      position: fixed;
+      top: 56px;
+      right: 16px;
+      z-index: 22;
+      width: 230px;
+      border: 1px solid rgba(95, 173, 217, 0.26);
+      background: rgba(4, 11, 20, 0.68);
+      padding: 8px 9px;
+      font-size: 9px;
+      letter-spacing: 1.2px;
+      color: #89bdd2;
+      pointer-events: none;
+    }
+    #session-meta .row { display:flex; justify-content:space-between; margin:3px 0; }
+    #panel-left {
+      top: 168px;
+      width: 260px;
+      padding: 10px;
+      pointer-events: auto;
+      max-height: calc(100vh - 244px);
+      overflow: auto;
+    }
+    .stack-card {
+      border: 1px solid rgba(75, 156, 204, 0.35);
+      background: rgba(6, 15, 26, 0.64);
+      margin-bottom: 8px;
+      padding: 7px 8px;
+      box-shadow: inset 0 0 12px rgba(45, 128, 177, 0.14);
+    }
+    .stack-head { display:flex; justify-content:space-between; align-items:center; font-size:10px; color:#9fd8ef; letter-spacing:1.4px; }
+    .stack-count { color:#75ffcb; font-size:9px; }
+    .stack-actions { margin-top:6px; display:flex; flex-wrap:wrap; gap:4px; }
+    .mini-chip { border:1px solid rgba(94,165,201,.36); background:rgba(10,24,38,.8); color:#8bc9e2; font-size:9px; padding:2px 6px; }
+    .mini-chip.active { color:#e5fff4; border-color:rgba(130,255,206,.55); }
+    #poi-controls { margin-top: 8px; }
+    #poi-city-list, #poi-landmark-list { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+    .poi-chip { border: 1px solid rgba(94, 165, 201, 0.44); color:#9ad7ef; background: rgba(9,20,34,0.8); font-size: 9px; padding: 3px 6px; cursor: pointer; }
+    .poi-chip.active { border-color: rgba(255,210,122,0.7); color: #ffe0a0; }
+    #panel-right { width: 248px; top: 92px; pointer-events: auto; max-height: calc(100vh - 220px); overflow:auto; }
+    .rail-head { font-size: 10px; letter-spacing: 2px; color:#a9e7ff; margin-bottom:6px; }
+    .rail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px; margin-bottom:7px; }
+    .scene-lens {
+      position: fixed;
+      left: 50%;
+      top: 55%;
+      transform: translate(-50%, -50%);
+      width: min(38vw, 450px);
+      aspect-ratio: 1 / 1;
+      border: 1px solid rgba(132, 212, 255, 0.4);
+      border-radius: 50%;
+      z-index: 14;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 220ms ease;
+      background: radial-gradient(circle at 40% 35%, rgba(111, 204, 255, 0.20), rgba(4, 12, 23, 0.10) 38%, rgba(0, 0, 0, 0.64));
+      box-shadow: inset 0 0 45px rgba(94, 186, 232, 0.26), 0 0 30px rgba(0,0,0,.45);
+    }
+    body.scene-mode .scene-lens { opacity: 1; }
+    body.style-crt::before { opacity: 0.45; }
+    body.style-crt #globe { filter: contrast(1.12) saturate(0.88) blur(0.1px); }
+    body.style-flir { color: #d7ffc9; }
+    body.style-flir #globe { filter: grayscale(0.6) contrast(1.22) hue-rotate(50deg) saturate(1.35); }
+    body.style-flir #hud-bar, body.style-flir .side-panel, body.style-flir #session-meta, body.style-flir #brand-block { border-color: rgba(160, 255, 120, 0.28); }
+    body.style-night #globe { filter: brightness(0.85) saturate(1.25); }
+
     @media (max-width: 900px) {
       .side-panel {
         width: 148px;
@@ -397,9 +504,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 <body>
   <div id="map-view"></div>
   <canvas id="globe"></canvas>
+  <div id="tactical-frame"></div>
+  <div id="scene-lens" class="scene-lens"></div>
   <div id="transition-overlay"><div class="msg" id="transition-msg">TRACKING TARGET</div></div>
   <div id="hud-bar">
-    <div id="hud-title">RW WORLDVIEW</div>
+    <div id="hud-title">WORLDVIEW</div>
     <div id="hud-meta">
       <span id="hud-mode" class="hchip">GLOBAL</span>
       <span id="hud-conn" class="hchip">CONNECTING</span>
@@ -407,15 +516,45 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
     <div id="hud-status">CONNECTING</div>
   </div>
+
+  <div id="brand-block">
+    <div id="brand-title">WORLDVIEW</div>
+    <div id="brand-sub">Global Tactical Intelligence Surface</div>
+    <div id="brand-meta">
+      <div class="hot">TOP SECRET // SI-TK // NOFORN</div>
+      <div>OP: RW-ATLANTIS // SESSION: WV-17A</div>
+      <div>ACTIVE STYLE: <span id="meta-style">NORMAL</span></div>
+    </div>
+  </div>
+  <div id="session-meta">
+    <div class="row"><span>REC</span><span id="meta-rec">00:00:00</span></div>
+    <div class="row"><span>ORBIT</span><span id="meta-orbit">PASS 001</span></div>
+    <div class="row"><span>SESSION</span><span id="meta-session">WV-17A</span></div>
+    <div class="row"><span>STYLE</span><span id="meta-style-2">NORMAL</span></div>
+  </div>
+
   <div id="panel-left" class="side-panel">
-    <div class="pnl-head">ENTITIES</div>
-    <div class="pnl-row"><span class="lbl">AGENTS</span><span class="val" id="cnt-agents">0</span></div>
-    <div class="pnl-row"><span class="lbl">REGIONS</span><span class="val" id="cnt-regions">0</span></div>
-    <div class="pnl-row"><span class="lbl">FLIGHTS</span><span class="val" id="cnt-flights">0</span></div>
-    <div class="pnl-row"><span class="lbl">SATELLITES</span><span class="val" id="cnt-sats">0</span></div>
+    <div class="pnl-head">TACTICAL STACK</div>
+    <div class="stack-card"><div class="stack-head"><span>Data Layers</span><span class="stack-count" id="cnt-agents">0</span></div><div class="stack-actions"><button class="mini-chip active">Agents</button><button class="mini-chip active">Regions</button><button class="mini-chip active">Signals</button></div></div>
+    <div class="stack-card"><div class="stack-head"><span>CCTV Mesh</span><span class="stack-count">ACTIVE</span></div><div class="stack-actions"><button class="mini-chip">Urban</button><button class="mini-chip">Transit</button></div></div>
+    <div class="stack-card"><div class="stack-head"><span>Weather Radar</span><span class="stack-count">LIVE</span></div><div class="stack-actions"><button class="mini-chip">Cloud</button><button class="mini-chip">Storm</button></div></div>
+    <div class="stack-card"><div class="stack-head"><span>Live Flights</span><span class="stack-count" id="cnt-flights">0</span></div><div class="stack-actions"><button class="mini-chip active">Civil</button><button class="mini-chip">Cargo</button></div></div>
+    <div class="stack-card"><div class="stack-head"><span>Military Flights</span><span class="stack-count">MON</span></div><div class="stack-actions"><button class="mini-chip">Patrol</button><button class="mini-chip">Refuel</button></div></div>
+    <div class="stack-card"><div class="stack-head"><span>Earthquakes</span><span class="stack-count">MON</span></div><div class="stack-actions"><button class="mini-chip">M3+</button><button class="mini-chip">M5+</button></div></div>
+    <div class="stack-card"><div class="stack-head"><span>Satellites</span><span class="stack-count" id="cnt-sats">0</span></div><div class="stack-actions"><button class="mini-chip active">LEO</button><button class="mini-chip">GEO</button></div></div>
+    <div class="stack-card"><div class="stack-head"><span>Street Traffic</span><span class="stack-count">LIVE</span></div><div class="stack-actions"><button class="mini-chip">Flow</button><button class="mini-chip">Incidents</button></div></div>
+    <div class="stack-card"><div class="stack-head"><span>Bikeshare</span><span class="stack-count">LIVE</span></div><div class="stack-actions"><button class="mini-chip">Stations</button><button class="mini-chip">Avail</button></div></div>
+    <div id="poi-controls" class="stack-card">
+      <div class="stack-head"><span>Scenes / Locations</span><span class="stack-count" id="cnt-regions">0</span></div>
+      <div id="poi-city-list"></div>
+      <div id="poi-landmark-list"></div>
+    </div>
+    <div class="stack-card"><div class="stack-head"><span>Style Presets</span><span class="stack-count" id="style-badge">NORMAL</span></div><div class="stack-actions"><button class="mini-chip style-chip active" data-style="normal">NORMAL</button><button class="mini-chip style-chip" data-style="crt">CRT</button><button class="mini-chip style-chip" data-style="flir">FLIR</button><button class="mini-chip style-chip" data-style="night">NIGHT</button></div></div>
   </div>
   <div id="panel-right" class="side-panel">
-    <div class="pnl-head">TACTICAL</div>
+    <div class="pnl-head">TACTICAL CONTROL RAIL</div>
+    <div class="rail-head">Modules</div>
+    <div class="rail-grid"><button class="ctl">MOVE</button><button class="ctl">BLOOM</button><button class="ctl">SHARPEN</button><button class="ctl">HUD</button><button class="ctl">DETECT</button><button class="ctl">CLEAN UI</button></div>
     <div class="pnl-row"><span class="lbl">MODE</span><span class="val" id="info-mode">GLOBAL</span></div>
     <div class="pnl-row"><span class="lbl">TARGET ID</span><span class="val" id="info-target-id">—</span></div>
     <div class="pnl-row"><span class="lbl">TARGET TYPE</span><span class="val" id="info-target-type">—</span></div>
@@ -480,6 +619,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var transitionMsg = document.getElementById('transition-msg');
   var localContextEl = document.getElementById('local-context');
   var feedListEl = document.getElementById('feed-list');
+  var styleMode = 'normal';
+  var missionLabel = 'SATELLITES — Orbital Tracking';
+  var poiCities = [
+    { name: 'San Francisco', lat: 37.7749, lng: -122.4194, landmarks: [{name:'Golden Gate Bridge',lat:37.8199,lng:-122.4783},{name:'Transamerica Pyramid',lat:37.7952,lng:-122.4028},{name:'Salesforce Tower',lat:37.7897,lng:-122.3961},{name:'Alcatraz Island',lat:37.8267,lng:-122.423},{name:'Coit Tower',lat:37.8024,lng:-122.4058}] },
+    { name: 'New York', lat: 40.7128, lng: -74.0060, landmarks: [{name:'One World Trade Center',lat:40.7127,lng:-74.0134},{name:'Central Park',lat:40.7829,lng:-73.9654}] },
+    { name: 'Tokyo', lat: 35.6762, lng: 139.6503, landmarks: [{name:'Tokyo Tower',lat:35.6586,lng:139.7454}] },
+    { name: 'London', lat: 51.5074, lng: -0.1278, landmarks: [{name:'Tower Bridge',lat:51.5055,lng:-0.0754}] },
+    { name: 'Paris', lat: 48.8566, lng: 2.3522, landmarks: [{name:'Eiffel Tower',lat:48.8584,lng:2.2945}] },
+    { name: 'Dubai', lat: 25.2048, lng: 55.2708, landmarks: [{name:'Burj Khalifa',lat:25.1972,lng:55.2744}] },
+    { name: 'Washington DC', lat: 38.9072, lng: -77.0369, landmarks: [{name:'The White House',lat:38.8977,lng:-77.0365}] },
+    { name: 'Austin', lat: 30.2672, lng: -97.7431, landmarks: [{name:'Texas Capitol',lat:30.2747,lng:-97.7403}] }
+  ];
 
   var state    = { entities: [], tick: 0, started: null };
   var rot      = 0;
@@ -534,6 +685,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     canvas.height = h;
     ensureCanvasVisibility();
     console.log('WORLDVIEW CANVAS SIZE', w, h);
+    var recEl = document.getElementById('meta-rec');
+    if (recEl) recEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
+    var orbitEl = document.getElementById('meta-orbit');
+    if (orbitEl) orbitEl.textContent = "PASS " + String((state.tick || 0) % 360).padStart(3, "0");
     if (viewMode === 'global') drawFrame();
   }
   window.addEventListener('resize', resize);
@@ -732,9 +887,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     setModeLabel();
     var foot = document.getElementById('hud-foot');
     if (foot) {
-      foot.textContent = viewMode === 'local'
-        ? 'LOCAL AREA TRACKING • TICK ' + String(state.tick || 0)
-        : 'GLOBE OPERATIONAL SURFACE • TICK ' + String(state.tick || 0);
+      foot.textContent = missionLabel + ' • TICK ' + String(state.tick || 0);
     }
     var modeInfo = document.getElementById('info-mode');
     if (modeInfo) modeInfo.textContent = viewMode === 'local' ? 'LOCAL TRACK' : 'GLOBAL';
@@ -1407,6 +1560,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     targetStatus = 'ACQUIRING';
     showTransition('TRACKING TARGET');
     signalEvent('track');
+    missionLabel = 'SATELLITES — Orbital Tracking';
     addEventItem('track', 'Tracking target ' + meta.id, meta.id);
     if (entityRuntime[meta.id]) entityRuntime[meta.id].lastEventState = runtimeState(meta.id);
     updatePanels();
@@ -1423,6 +1577,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     targetStatus = selected ? 'LOCKED' : 'IDLE';
     showTransition('RETURNING TO GLOBE');
     signalEvent('globe');
+    document.body.classList.remove('scene-mode');
+    missionLabel = 'SATELLITES — Orbital Tracking';
     addEventItem('system', 'Returned to global overview', selected);
     setTimeout(function () {
       setViewMode('global');
@@ -1463,11 +1619,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       var foot = document.getElementById('hud-foot');
       if (foot) {
-        foot.textContent = viewMode === 'local'
-          ? 'LOCAL AREA TRACKING • TICK ' + String(state.tick || 0)
-          : 'GLOBE OPERATIONAL SURFACE • TICK ' + String(state.tick || 0);
+        foot.textContent = missionLabel + ' • TICK ' + String(state.tick || 0);
       }
     }
+    var recEl = document.getElementById('meta-rec');
+    if (recEl) recEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
+    var orbitEl = document.getElementById('meta-orbit');
+    if (orbitEl) orbitEl.textContent = "PASS " + String((state.tick || 0) % 360).padStart(3, "0");
     if (viewMode === 'global') drawFrame();
     if ((frameCount % 8) === 0) updatePanels();
     requestAnimationFrame(animTick);
@@ -1517,6 +1675,47 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       setTimeout(connect, wsDelay); wsDelay=Math.min(wsDelay*2,16000);
     };
     ws.onerror = function() { ws.close(); };
+  }
+
+
+
+  function applyStyleMode(mode) {
+    styleMode = mode || 'normal';
+    document.body.classList.remove('style-normal', 'style-crt', 'style-flir', 'style-night');
+    document.body.classList.add('style-' + styleMode);
+    var badge = document.getElementById('style-badge');
+    var m1 = document.getElementById('meta-style');
+    var m2 = document.getElementById('meta-style-2');
+    var upper = styleMode.toUpperCase();
+    if (badge) badge.textContent = upper;
+    if (m1) m1.textContent = upper;
+    if (m2) m2.textContent = upper;
+    var chips = document.querySelectorAll('.style-chip');
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].classList.toggle('active', chips[i].getAttribute('data-style') === styleMode);
+    }
+  }
+
+  function renderPoiLists() {
+    var cityEl = document.getElementById('poi-city-list');
+    if (!cityEl) return;
+    cityEl.innerHTML = poiCities.map(function (c, idx) { return '<button class="poi-chip" data-city="' + idx + '">' + c.name + '</button>'; }).join('');
+    var lmEl = document.getElementById('poi-landmark-list');
+    if (lmEl) lmEl.innerHTML = '<div style="font-size:8px;color:#6f9db2;letter-spacing:1px;">SELECT CITY</div>';
+  }
+
+  function jumpToPoi(lat, lng, label) {
+    selectedAreaName = label;
+    missionLabel = 'POINTS OF INTEREST — Navigation';
+    document.body.classList.add('scene-mode');
+    setViewMode('local');
+    if (mapReady) {
+      mapLayerImagery.addTo(map);
+      map.flyTo([lat, lng], 13, { duration: 0.9 });
+      mapFocusCircle.setLatLng([lat, lng]);
+      mapFocusCircle.setRadius(1800);
+    }
+    if (localContextEl) localContextEl.textContent = 'AREA: ' + label.toUpperCase() + ' • SCENE MODE';
   }
 
   function initWorldview() {
@@ -1591,6 +1790,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         if (ent) lockTarget(ent);
       };
     }
+
+
+    renderPoiLists();
+    applyStyleMode('normal');
+    document.body.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (t.classList && t.classList.contains('style-chip')) {
+        applyStyleMode(t.getAttribute('data-style'));
+      }
+      if (t.classList && t.classList.contains('poi-chip') && t.hasAttribute('data-city')) {
+        var city = poiCities[Number(t.getAttribute('data-city'))];
+        if (!city) return;
+        jumpToPoi(city.lat, city.lng, city.name);
+        var lmEl = document.getElementById('poi-landmark-list');
+        if (lmEl) {
+          lmEl.innerHTML = city.landmarks.map(function (l, idx) { return '<button class="poi-chip" data-lm="' + city.name + '|' + idx + '">' + l.name + '</button>'; }).join('');
+        }
+      }
+      if (t.classList && t.classList.contains('poi-chip') && t.hasAttribute('data-lm')) {
+        var parts = t.getAttribute('data-lm').split('|');
+        var cityName = parts[0];
+        var idx = Number(parts[1]);
+        var cityRef = poiCities.find(function (c) { return c.name === cityName; });
+        if (!cityRef || !cityRef.landmarks[idx]) return;
+        var lm = cityRef.landmarks[idx];
+        jumpToPoi(lm.lat, lm.lng, cityName + ' — ' + lm.name);
+      }
+    });
 
     addEventItem('system', 'Worldview operational surface online', null);
     renderEventFeed();
