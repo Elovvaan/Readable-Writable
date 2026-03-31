@@ -594,11 +594,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div class="feed-head">EVENT TIMELINE</div>
     <div id="feed-list"></div>
   </div>
-<script
-  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-  crossorigin=""
-></script>
 <script>
 (function () {
   'use strict';
@@ -666,6 +661,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var ws, wsDelay = 1000;
   var animStarted = false;
   var lastFallbackLogFrame = -1;
+  var leafletLoading = false;
   function isRenderDebugEnabled() {
     return Boolean(window && window.__RW_RENDER_DEBUG__);
   }
@@ -982,6 +978,36 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       mapReady = false;
       console.warn('Map initialization failed, using globe fallback.', err);
     }
+  }
+
+  function loadLeaflet() {
+    if (typeof L !== 'undefined' || leafletLoading) return;
+    leafletLoading = true;
+    var providers = [
+      'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+      'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js'
+    ];
+    function tryProvider(idx) {
+      if (idx >= providers.length) {
+        leafletLoading = false;
+        console.warn('Leaflet CDN unavailable; local map mode disabled, globe remains active.');
+        return;
+      }
+      var s = document.createElement('script');
+      s.src = providers[idx];
+      s.async = true;
+      s.onload = function () {
+        leafletLoading = false;
+        initMap();
+        applyModeVisibility();
+      };
+      s.onerror = function () {
+        s.remove();
+        tryProvider(idx + 1);
+      };
+      document.head.appendChild(s);
+    }
+    tryProvider(0);
   }
 
   function mapColor(kind) {
@@ -1871,6 +1897,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     renderPoiLists();
     applyStyleMode('normal');
+    loadLeaflet();
     document.body.addEventListener('click', function (ev) {
       var t = ev.target;
       if (t.classList && t.classList.contains('style-chip')) {
