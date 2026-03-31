@@ -497,6 +497,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var mapLayerImagery;
   var mapMarkers;
   var mapTrailLayer;
+  var mapLinkLayer;
+  var mapTargetLayer;
   var mapTargetPulse;
   var mapFocusCircle;
   var geocodeCache = Object.create(null);
@@ -679,7 +681,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function setViewMode(mode) {
-    viewMode = mode === 'local' ? 'local' : 'global';
+    var nextMode = mode === 'local' ? 'local' : 'global';
+    if (viewMode !== nextMode && mapReady) clearRenderedMapArtifacts();
+    viewMode = nextMode;
     if (viewMode === 'local') document.body.classList.add('local-mode');
     else document.body.classList.remove('local-mode');
     if (mapReady && viewMode === 'local') {
@@ -739,6 +743,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     mapMarkers = L.layerGroup().addTo(map);
     mapTrailLayer = L.layerGroup().addTo(map);
+    mapLinkLayer = L.layerGroup().addTo(map);
+    mapTargetLayer = L.layerGroup().addTo(map);
     mapTargetPulse = L.circle([0, 0], {
       radius: 0,
       color: '#ffe078',
@@ -768,8 +774,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function updateMapEntities() {
     if (!mapReady) return;
-    safeClearLayerGroup(mapMarkers);
-    safeClearLayerGroup(mapTrailLayer);
+    clearRenderedMapArtifacts();
     var entities = state.entities || [];
     if (mapTargetPulse) {
       mapTargetPulse.setStyle({ opacity: 0, fillOpacity: 0 });
@@ -853,6 +858,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       group.eachLayer(function (layer) { toRemove.push(layer); });
       for (var i = 0; i < toRemove.length; i++) group.removeLayer(toRemove[i]);
     }
+  }
+
+  function clearRenderedMapArtifacts() {
+    safeClearLayerGroup(mapMarkers);
+    safeClearLayerGroup(mapTrailLayer);
+    safeClearLayerGroup(mapLinkLayer);
+    safeClearLayerGroup(mapTargetLayer);
   }
 
   function focusSelectedEntity(forceLocal) {
@@ -1288,6 +1300,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function lockTarget(meta) {
     if (!meta) return;
+    if (mapReady) clearRenderedMapArtifacts();
     selected = meta.id;
     selectedMeta = meta;
     selectedAreaName = null;
@@ -1306,6 +1319,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function backToGlobe() {
+    if (mapReady) clearRenderedMapArtifacts();
     targetStatus = selected ? 'LOCKED' : 'IDLE';
     showTransition('RETURNING TO GLOBE');
     signalEvent('globe');
