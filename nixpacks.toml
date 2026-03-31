@@ -1,0 +1,5 @@
+[phases.install]
+cmds = ["npm install --omit=dev"]
+
+[start]
+cmd = "node server.js"
