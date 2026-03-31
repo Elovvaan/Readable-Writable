@@ -34,55 +34,108 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       font-family: Consolas, "Courier New", monospace;
       color: #c8dde8;
     }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(90, 175, 220, 0.02) 0,
+        rgba(90, 175, 220, 0.02) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+      mix-blend-mode: screen;
+      opacity: 0.32;
+      z-index: 8;
+    }
     #globe { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
     #hud-bar {
       position: fixed; top: 0; left: 0; right: 0; height: 46px;
       display: flex; align-items: center; justify-content: space-between;
       padding: 0 18px;
-      background: rgba(3,7,15,0.78);
-      border-bottom: 1px solid rgba(30,90,140,0.30);
+      background: linear-gradient(180deg, rgba(4, 12, 22, 0.88), rgba(3, 7, 15, 0.70));
+      border-bottom: 1px solid rgba(44, 130, 188, 0.30);
+      box-shadow: 0 6px 24px rgba(4, 28, 54, 0.28);
       z-index: 20; pointer-events: none;
     }
     #hud-title {
       font-size: 14px; letter-spacing: 4px; font-weight: 700;
       color: #66d9ff; text-shadow: 0 0 12px rgba(102,217,255,0.55);
     }
-    #hud-status { font-size: 10px; letter-spacing: 2px; color: #5cf2b6; }
+    #hud-status {
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: #5cf2b6;
+      border: 1px solid rgba(92, 242, 182, 0.35);
+      padding: 2px 7px;
+      background: rgba(92, 242, 182, 0.08);
+      box-shadow: 0 0 10px rgba(92, 242, 182, 0.18) inset;
+    }
     #hud-status.offline { color: #ff7d6e; }
     .side-panel {
       position: fixed; top: 62px; width: 172px;
-      background: rgba(3,7,15,0.68);
-      border: 1px solid rgba(30,90,140,0.28);
-      padding: 10px 12px;
+      background: linear-gradient(180deg, rgba(5, 14, 24, 0.76), rgba(3, 8, 15, 0.68));
+      border: 1px solid rgba(44, 130, 188, 0.28);
+      padding: 11px 12px;
+      box-shadow: 0 0 22px rgba(12, 56, 94, 0.24);
       z-index: 15; pointer-events: none;
     }
     #panel-left  { left: 14px; }
     #panel-right { right: 14px; }
     .pnl-head {
-      font-size: 9px; letter-spacing: 3px; color: #3a7fa8;
+      font-size: 9px; letter-spacing: 3px; color: #56afd8;
       margin-bottom: 9px;
-      border-bottom: 1px solid rgba(30,90,140,0.25);
+      border-bottom: 1px solid rgba(44,130,188,0.28);
       padding-bottom: 5px;
+      text-shadow: 0 0 8px rgba(78, 178, 224, 0.35);
     }
     .pnl-row {
-      font-size: 10px; color: #7aaabb; margin: 5px 0;
+      font-size: 10px; color: #7aaabb; margin: 6px 0;
       display: flex; justify-content: space-between;
     }
-    .pnl-row .lbl { color: #3a6878; }
-    .pnl-row .val { color: #9ed4e8; font-variant-numeric: tabular-nums; }
-    #selected-detail {
-      margin-top: 8px; padding-top: 7px;
-      border-top: 1px solid rgba(30,90,140,0.22);
-      font-size: 10px; color: #547a8a; line-height: 1.7; min-height: 44px;
+    .pnl-row .lbl { color: #4d7789; }
+    .pnl-row .val {
+      color: #b3e6fb;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 0 7px rgba(140, 225, 255, 0.24);
+      font-weight: 700;
     }
-    #selected-detail .sel-id { color: #9ed4e8; }
+    #selected-detail {
+      margin-top: 9px; padding-top: 8px;
+      border-top: 1px solid rgba(44,130,188,0.22);
+      font-size: 10px;
+      color: #5d8799;
+      line-height: 1.75;
+      min-height: 50px;
+    }
+    #selected-detail.locked {
+      color: #7fd3ff;
+      text-shadow: 0 0 10px rgba(96, 193, 246, 0.26);
+    }
+    #selected-detail .sel-id { color: #c7eeff; font-weight: 700; }
     #hud-foot {
       position: fixed; bottom: 0; left: 0; right: 0; height: 28px;
       display: flex; align-items: center; justify-content: center;
-      background: rgba(3,7,15,0.60);
-      border-top: 1px solid rgba(30,90,140,0.20);
-      font-size: 9px; letter-spacing: 3px; color: #2e5a70;
+      background: linear-gradient(180deg, rgba(3, 7, 15, 0.56), rgba(3, 7, 15, 0.78));
+      border-top: 1px solid rgba(44,130,188,0.22);
+      font-size: 9px; letter-spacing: 3px; color: #3d6e86;
       z-index: 20; pointer-events: none;
+    }
+    body.admin .side-panel { width: 186px; padding: 9px 11px; }
+    body.admin .pnl-row { margin: 4px 0; font-size: 9.5px; }
+    body.admin #hud-bar { height: 42px; }
+    body.admin #hud-foot { height: 24px; font-size: 8.5px; }
+
+    @media (max-width: 900px) {
+      .side-panel {
+        width: 148px;
+        top: 58px;
+        padding: 8px 9px;
+      }
+      .pnl-row { margin: 4px 0; font-size: 9px; }
+      #hud-title { font-size: 12px; letter-spacing: 3px; }
     }
   </style>
 </head>
@@ -113,6 +166,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   console.log("NEW WORLDVIEW RENDERER ACTIVE");
 
+  var IS_ADMIN = location.pathname.indexOf('/admin/') === 0;
+  if (IS_ADMIN) document.body.classList.add('admin');
+
   var canvas    = document.getElementById('globe');
   var ctx       = canvas.getContext('2d');
   var statusEl  = document.getElementById('hud-status');
@@ -121,6 +177,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   var state    = { entities: [], tick: 0, started: null };
   var rot      = 0;
   var selected = null;
+  var selectedPulse = 0;
   var hits     = [];
   var ws, wsDelay = 1000;
 
@@ -148,7 +205,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.fillStyle = '#03070f';
     ctx.fillRect(0, 0, W, H);
 
-    var halo = ctx.createRadialGradient(cx, cy, r*0.92, cx, cy, r*1.30);
+    var halo = ctx.createRadialGradient(cx, cy, r*0.88, cx, cy, r*1.36);
     halo.addColorStop(0, 'rgba(30,100,190,0.16)');
     halo.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.beginPath(); ctx.arc(cx, cy, r*1.30, 0, Math.PI*2);
@@ -164,6 +221,29 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
     ctx.strokeStyle = 'rgba(100,210,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    var night = ctx.createRadialGradient(cx + r * 0.46, cy + r * 0.18, r * 0.14, cx, cy, r * 1.08);
+    night.addColorStop(0, 'rgba(0,0,0,0.02)');
+    night.addColorStop(1, 'rgba(0,0,0,0.48)');
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = night;
+    ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+    ctx.restore();
+
+    var sheenY = cy + Math.sin(rot * Math.PI / 180) * r * 0.48;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(130, 218, 255, 0.13)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(cx, sheenY, r * 0.88, r * 0.24, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
 
     var pars = [-60, -30, 0, 30, 60];
     for (var pi = 0; pi < pars.length; pi++) {
@@ -194,18 +274,44 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (typeof ent.lat !== 'number' || typeof ent.lng !== 'number') continue;
       var ep = project(ent.lat, ent.lng, cx, cy, r);
       if (ep.z <= 0.04) continue;
-      var dotR = 1.8 + ep.z * 2.6;
+      var dotR = 2.0 + ep.z * 2.6;
       var color = ent.kind === 'satellite' ? 'rgba(255,170,80,0.95)'
         : ent.kind === 'region' ? 'rgba(255,222,100,0.90)'
         : ent.kind === 'flight' ? 'rgba(180,255,180,0.90)'
         :                          'rgba(100,218,255,0.95)';
+
+      ctx.beginPath();
+      ctx.arc(ep.x, ep.y, dotR + 3.2, 0, Math.PI*2);
+      ctx.fillStyle = color.replace('0.95', '0.16').replace('0.90', '0.14');
+      ctx.fill();
+
       ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR, 0, Math.PI*2);
       ctx.fillStyle = color; ctx.fill();
+      ctx.beginPath();
+      ctx.arc(ep.x, ep.y, Math.max(1.2, dotR * 0.45), 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(245, 252, 255, 0.92)';
+      ctx.fill();
+
       ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR+2.5, 0, Math.PI*2);
       ctx.strokeStyle = 'rgba(100,200,255,0.15)'; ctx.lineWidth = 0.7; ctx.stroke();
       if (selected === ent.id) {
-        ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR+6, 0, Math.PI*2);
-        ctx.strokeStyle = 'rgba(255,200,80,0.85)'; ctx.lineWidth = 1.2; ctx.stroke();
+        var pulse = 7 + Math.sin(selectedPulse) * 2.6;
+        ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR + pulse, 0, Math.PI*2);
+        ctx.strokeStyle = 'rgba(255,200,80,0.92)'; ctx.lineWidth = 1.3; ctx.stroke();
+        ctx.beginPath(); ctx.arc(ep.x, ep.y, dotR + pulse + 4.3, 0, Math.PI*2);
+        ctx.strokeStyle = 'rgba(255,200,80,0.38)'; ctx.lineWidth = 0.9; ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(ep.x + dotR + 2, ep.y);
+        ctx.lineTo(ep.x + dotR + 11, ep.y);
+        ctx.moveTo(ep.x - dotR - 2, ep.y);
+        ctx.lineTo(ep.x - dotR - 11, ep.y);
+        ctx.moveTo(ep.x, ep.y + dotR + 2);
+        ctx.lineTo(ep.x, ep.y + dotR + 11);
+        ctx.moveTo(ep.x, ep.y - dotR - 2);
+        ctx.lineTo(ep.x, ep.y - dotR - 11);
+        ctx.strokeStyle = 'rgba(255, 220, 120, 0.62)';
+        ctx.lineWidth = 0.9;
+        ctx.stroke();
       }
       hits.push({ id: ent.id, x: ep.x, y: ep.y, meta: ent });
     }
@@ -230,12 +336,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         (hh?hh+'h ':'')+(mm?mm+'m ':'')+ ss+'s';
     }
     if (selected) {
-      var ent = entities.find(function(e) {{ return e.id === selected; }});
+      var ent = entities.find(function(e) { return e.id === selected; });
       if (ent) {
+        selDetail.className = 'locked';
         selDetail.innerHTML = '<span class="sel-id">'+ent.id+'</span><br/>'
-          +ent.kind+'<br/>'+ent.lat.toFixed(2)+'°'+', '+ent.lng.toFixed(2)+'°';
-      } else { selDetail.textContent = '—'; selected = null; }
-    } else { selDetail.textContent = '—'; }
+          +'LOCKED: '+ent.kind.toUpperCase()+'<br/>'
+          +ent.lat.toFixed(2)+'°'+', '+ent.lng.toFixed(2)+'°';
+      } else {
+        selDetail.className = '';
+        selDetail.textContent = '—';
+        selected = null;
+      }
+    } else {
+      selDetail.className = '';
+      selDetail.textContent = '—';
+    }
   }
 
   canvas.addEventListener('click', function(e) {
@@ -253,6 +368,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function animTick() {
     rot = (rot + 0.055) % 360;
+    selectedPulse += 0.12;
     drawFrame();
     updatePanels();
     requestAnimationFrame(animTick);
