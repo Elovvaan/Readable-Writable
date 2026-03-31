@@ -2182,6 +2182,15 @@ function wsUpgrade(req, socket) {
 
   socket.on('close', () => { wsClients.delete(socket); });
   socket.on('error', () => { wsClients.delete(socket); socket.destroy(); });
+
+  process.nextTick(() => {
+    if (!socket.destroyed && socket.writable) {
+      wsSend(socket, JSON.stringify({ type: 'snapshot', data: snapshot() }));
+      for (const ev of eventLog.slice(-20)) {
+        wsSend(socket, JSON.stringify({ type: 'event', data: ev }));
+      }
+    }
+  });
 }
 
 // ─── HTTP Routes ──────────────────────────────────────────────────────────────
