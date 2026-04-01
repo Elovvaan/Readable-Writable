@@ -7,8 +7,6 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 4001;
 const RW_OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED || 'true';
 const OPENSKY_ENABLED = RW_OPENSKY_ENABLED === 'true';
-const OPENSKY_CLIENT_ID = process.env.OPENSKY_CLIENT_ID || '';
-const OPENSKY_CLIENT_SECRET = process.env.OPENSKY_CLIENT_SECRET || '';
 const OPENSKY_STATES_URL = process.env.OPENSKY_STATES_URL || 'https://opensky-network.org/api/states/all';
 const OPENSKY_POLL_INTERVAL_MS = Math.max(5000, Number(process.env.RW_OPENSKY_POLL_INTERVAL_MS || 15000));
 const OPENSKY_GLOBE_MIN_Z = Number.isFinite(Number(process.env.RW_OPENSKY_GLOBE_MIN_Z))
@@ -39,7 +37,7 @@ const openSkyLiveState = {
   lastErrorAt: null,
   lastFetchedCount: 0,
   lastNormalizedCount: 0,
-  authConfigured: !!(OPENSKY_CLIENT_ID && OPENSKY_CLIENT_SECRET),
+  authConfigured: true,
 };
 
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
@@ -2177,11 +2175,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       : (Number.isFinite(Number(openskyStatus.merged)) ? Number(openskyStatus.merged) : 0);
     const visibleFlights = Number.isFinite(Number(lastFlightDebugCounts.visible)) ? Number(lastFlightDebugCounts.visible) : 0;
     const drawnFlights = Number.isFinite(Number(lastFlightDebugCounts.drawn)) ? Number(lastFlightDebugCounts.drawn) : 0;
-    const openskyMisconfigured = !!openskyStatus.enabled && !openskyStatus.authConfigured;
     const openskyError = openskyStatus && openskyStatus.lastErrorAt ? ' ERR' : '';
-    const flightDebugText = openskyMisconfigured
-      ? 'OpenSky auth missing'
-      : ('fetched:' + fetched + ' merged:' + merged + ' visible:' + visibleFlights + ' drawn:' + drawnFlights + openskyError);
+    const flightDebugText = 'fetched:' + fetched + ' merged:' + merged + ' visible:' + visibleFlights + ' drawn:' + drawnFlights + openskyError;
     const layerDiagnostics = buildLayerDiagnostics();
     lastLayerDiagnostics = layerDiagnostics;
     const layerDebugText = 'L:' + layerDiagnostics.liveFlights
@@ -2672,39 +2667,11 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
   return entity;
 }
 
-async function getOpenSkyAccessToken() {
-  const now = Date.now();
-  if (openSkyLiveState.token && openSkyLiveState.tokenExpiresAtMs - now > 10000) {
-    return openSkyLiveState.token;
-  }
-  const body = new URLSearchParams({ grant_type: 'client_credentials' });
-  const authHeader = Buffer.from(OPENSKY_CLIENT_ID + ':' + OPENSKY_CLIENT_SECRET).toString('base64');
-  const res = await fetch(OPENSKY_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Authorization': 'Basic ' + authHeader,
-    },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    throw new Error('OpenSky token request failed with HTTP ' + res.status);
-  }
-  const payload = await res.json();
-  if (!payload || !payload.access_token) {
-    throw new Error('OpenSky token response missing access_token');
-  }
-  const expiresInSec = Number.isFinite(Number(payload.expires_in)) ? Number(payload.expires_in) : 300;
-  openSkyLiveState.token = payload.access_token;
-  openSkyLiveState.tokenExpiresAtMs = now + (expiresInSec * 1000);
-  return openSkyLiveState.token;
-}
-
 async function pollOpenSkyFlights() {
   if (!OPENSKY_ENABLED) return;
   console.log('Polling OpenSky...');
   try {
-    openSkyLiveState.authConfigured = !!(OPENSKY_CLIENT_ID && OPENSKY_CLIENT_SECRET);
+    openSkyLiveState.authConfigured = true;
     const res = await fetch(OPENSKY_STATES_URL, { method: 'GET' });
     if (!res.ok) {
       throw new Error('OpenSky live states request failed with HTTP ' + res.status);
@@ -2772,6 +2739,7 @@ function startOpenSkyPolling() {
     return;
   }
   console.log('[RW Worldview] OpenSky polling enabled; interval=' + OPENSKY_POLL_INTERVAL_MS + 'ms');
+  console.log('Using public OpenSky endpoint (no auth)');
   console.log('RW_OPENSKY_ENABLED', process.env.RW_OPENSKY_ENABLED);
   pollOpenSkyFlights().catch(() => {});
   setInterval(() => {
