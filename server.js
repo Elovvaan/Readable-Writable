@@ -32,7 +32,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     header h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: .04em; color: #7cf; }
     #status { font-size: .75rem; padding: 3px 8px; border-radius: 999px; background: #1e3a1e; color: #5f5; border: 1px solid #3a6a3a; }
     #status.disconnected { background: #3a1e1e; color: #f55; border-color: #6a3a3a; }
-    #controls { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: .68rem; color: #aaa; }
+    #controls { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: .68rem; color: #aaa; flex-wrap: wrap; justify-content: flex-end; }
     .ctrl-toggle { display: inline-flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap; cursor: pointer; }
     .ctrl-toggle input { width: 13px; height: 13px; accent-color: #7cf; cursor: pointer; }
     .ctrl-inline { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -51,6 +51,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .event-entry.region { color: #fc7; }
     .event-entry.system { color: #a7f; }
     .event-entry.related { background: #1a2330; box-shadow: inset 2px 0 0 #7cf; }
+    .event-entry.dimmed { opacity: 0.42; }
     #selected-panel { border-top: 1px solid #1c1c1c; padding: 10px 14px; font-size: .72rem; }
     .selected-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
     .selected-label { color: #555; }
@@ -59,6 +60,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #1c1c1c; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
     .stat-label { color: #555; }
     .stat-value { color: #ccc; font-family: monospace; text-align: right; }
+    .type-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #2a2f3a; border-radius: 999px; padding: 2px 7px; }
+    .type-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   </style>
 </head>
 <body>
@@ -69,6 +72,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <label class="ctrl-toggle"><input type="checkbox" id="toggle-agents" checked>Show Agents</label>
     <label class="ctrl-toggle"><input type="checkbox" id="toggle-regions" checked>Show Regions</label>
     <label class="ctrl-toggle"><input type="checkbox" id="toggle-trails" checked>Show Trails</label>
+    <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#7cc4ff"></span><input type="checkbox" id="toggle-type-agent" checked>Agents</label>
+    <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#ffb77d"></span><input type="checkbox" id="toggle-type-flight" checked>Flights</label>
+    <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#d0a3ff"></span><input type="checkbox" id="toggle-type-satellite" checked>Satellites</label>
     <label class="ctrl-inline" for="speed-select">Speed
       <select id="speed-select" aria-label="Simulation speed">
         <option value="0.5">0.5x</option>
@@ -109,6 +115,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleAgentsEl = document.getElementById('toggle-agents');
   const toggleRegionsEl = document.getElementById('toggle-regions');
   const toggleTrailsEl = document.getElementById('toggle-trails');
+  const toggleTypeAgentEl = document.getElementById('toggle-type-agent');
+  const toggleTypeFlightEl = document.getElementById('toggle-type-flight');
+  const toggleTypeSatelliteEl = document.getElementById('toggle-type-satellite');
   const pauseBtnEl = document.getElementById('pause-btn');
   const speedSelectEl = document.getElementById('speed-select');
   const AGENT_RENDER_RADIUS = 5;
@@ -125,10 +134,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let showAgents = true;
   let showRegions = true;
   let showTrails = true;
+  let visibleEntityTypes = { agent: true, flight: true, satellite: true, other: true };
   let paused = false;
   let simulationSpeed = 1;
   let snapshotQueue = [];
   let lastSnapshotApplyAt = 0;
+
+  const TYPE_STYLE = {
+    agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
+    flight: { fill: '#ffb77d', stroke: '#ffd2ad', trail: '#ffb77d55', trailSelected: '#ffe0c4cc' },
+    satellite: { fill: '#d0a3ff', stroke: '#e2c7ff', trail: '#d0a3ff55', trailSelected: '#ecdfffcc' },
+    other: { fill: '#8ea0b4', stroke: '#bac7d6', trail: '#8ea0b455', trailSelected: '#d6deebcc' },
+  };
 
   // ── Canvas resize ──
   function resize() {
@@ -148,6 +165,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     const regions = Object.values(state.regions);
     const agents  = Object.values(state.agents);
+    const visibleAgents = agents.filter(a => isEntityTypeVisible(getEntityType(a)));
 
     // grid
     ctx.strokeStyle = '#151520';
@@ -190,10 +208,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
 
     // trails
-    if (showTrails) agents.forEach(a => {
+    if (showTrails) visibleAgents.forEach(a => {
       const trail = agentTrails[a.id];
       if (!trail || trail.length < 2) return;
       const isSelected = selectedAgentId === a.id;
+      const typeStyle = getEntityTypeStyle(a);
       ctx.save();
       ctx.beginPath();
       const first = worldToCanvas(trail[0].x, trail[0].y, W, H);
@@ -202,16 +221,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         const pt = worldToCanvas(trail[i].x, trail[i].y, W, H);
         ctx.lineTo(pt.x, pt.y);
       }
-      ctx.strokeStyle = isSelected ? '#aee9' : '#7cf3';
+      ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
       ctx.lineWidth = isSelected ? 2 : 1;
       ctx.stroke();
       ctx.restore();
     });
 
     // agents
-    if (showAgents) agents.forEach(a => {
+    if (showAgents) visibleAgents.forEach(a => {
       const { x: ax, y: ay } = worldToCanvas(a.x, a.y, W, H);
       const isSelected = selectedAgentId === a.id;
+      const typeStyle = getEntityTypeStyle(a);
       ctx.save();
       if (isSelected) {
         const pulse = 1 + ((Math.sin(now / 220) + 1) * 0.18);
@@ -225,9 +245,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       ctx.beginPath();
       ctx.arc(ax, ay, AGENT_RENDER_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle = a.active ? '#7cf' : '#335';
+      ctx.fillStyle = a.active ? typeStyle.fill : '#2b3544';
       ctx.fill();
-      ctx.strokeStyle = isSelected ? '#cff' : (a.active ? '#aef' : '#224');
+      ctx.strokeStyle = isSelected ? '#e8f7ff' : (a.active ? typeStyle.stroke : '#223041');
       ctx.lineWidth = isSelected ? 2.5 : 1.5;
       ctx.stroke();
       ctx.fillStyle = '#ccc';
@@ -246,6 +266,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function pushEvent(ev) {
     const div = document.createElement('div');
     div.className = 'event-entry ' + (ev.kind || 'system');
+    const evType = eventEntityType(ev);
+    if (evType && !isEntityTypeVisible(evType)) div.classList.add('dimmed');
     if ((selectedAgentId || selectedRegionId) && eventMatchesSelected(ev)) div.classList.add('related');
     const ts = new Date(ev.ts || Date.now()).toISOString().substr(11, 8);
     div.innerHTML = '<span class="ts">' + ts + '</span>' + escHtml(ev.msg || JSON.stringify(ev));
@@ -290,6 +312,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
   }
 
+  function getEntityType(agent) {
+    const type = agent && agent.type ? String(agent.type).toLowerCase() : 'agent';
+    return Object.prototype.hasOwnProperty.call(TYPE_STYLE, type) ? type : 'other';
+  }
+
+  function getEntityTypeStyle(agent) {
+    return TYPE_STYLE[getEntityType(agent)] || TYPE_STYLE.other;
+  }
+
+  function isEntityTypeVisible(type) {
+    return !!visibleEntityTypes[type];
+  }
+
+  function eventEntityType(ev) {
+    if (!ev || !ev.entityType) return null;
+    const type = String(ev.entityType).toLowerCase();
+    return Object.prototype.hasOwnProperty.call(visibleEntityTypes, type) ? type : null;
+  }
+
   function renderSelectedPanel() {
     const selectedAgent = selectedAgentId ? state.agents[selectedAgentId] : null;
     const selectedRegion = selectedRegionId ? state.regions[selectedRegionId] : null;
@@ -302,6 +343,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const occupancy = getRegionOccupancy()[selectedRegion.id] || 0;
       const status = regionStatusFromOccupancy(occupancy);
       const insideIds = Object.values(state.agents)
+        .filter(a => isEntityTypeVisible(getEntityType(a)))
         .filter(a => a.region === selectedRegion.id)
         .map(a => a.id);
       const insideSummary = insideIds.length > 8 ? (insideIds.length + ' agents') : insideIds.join(', ');
@@ -321,7 +363,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     selectedPanel.innerHTML =
       '<div class="selected-grid">' +
       '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selected.id) + '</span>' +
-      '<span class="selected-label">TYPE</span><span class="selected-value">agent</span>' +
+      '<span class="selected-label">TYPE</span><span class="selected-value">' + escHtml(getEntityType(selected)) + '</span>' +
       '<span class="selected-label">X</span><span class="selected-value">' + selected.x.toFixed(2) + '</span>' +
       '<span class="selected-label">Y</span><span class="selected-value">' + selected.y.toFixed(2) + '</span>' +
       '<span class="selected-label">STATUS</span><span class="selected-value">' + escHtml(selected.state || (selected.active ? 'active' : 'inactive')) + '</span>' +
@@ -379,6 +421,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     let nearest = null;
     let nearestDistSq = Infinity;
     for (const a of Object.values(state.agents)) {
+      if (!isEntityTypeVisible(getEntityType(a))) continue;
       const pt = worldToCanvas(a.x, a.y, canvas.width, canvas.height);
       const dx = mx - pt.x;
       const dy = my - pt.y;
@@ -409,6 +452,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const occupancy = {};
     for (const id of Object.keys(state.regions || {})) occupancy[id] = 0;
     for (const a of Object.values(state.agents || {})) {
+      if (!isEntityTypeVisible(getEntityType(a))) continue;
       if (typeof occupancy[a.region] !== 'number') occupancy[a.region] = 0;
       occupancy[a.region]++;
     }
@@ -423,8 +467,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   // ── Stats ──
   function updateStats() {
+    const allAgents = Object.values(state.agents || {});
+    const visibleAgents = allAgents.filter(a => isEntityTypeVisible(getEntityType(a)));
     document.getElementById('s-tick').textContent    = state.tick;
-    document.getElementById('s-agents').textContent  = Object.keys(state.agents).length;
+    document.getElementById('s-agents').textContent  = visibleAgents.length + '/' + allAgents.length;
     document.getElementById('s-regions').textContent = Object.keys(state.regions).length;
     document.getElementById('s-speed').textContent   = simulationSpeed + 'x';
     if (state.started) {
@@ -441,6 +487,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!showAgents && selectedAgentId) {
       selectedAgentId = null;
       latestSelectedEvent = null;
+    }
+    if (selectedAgentId) {
+      const selected = state.agents[selectedAgentId];
+      if (!selected || !isEntityTypeVisible(getEntityType(selected))) {
+        selectedAgentId = null;
+        latestSelectedEvent = null;
+      }
     }
     if (!showRegions && selectedRegionId) {
       selectedRegionId = null;
@@ -470,6 +523,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     showTrails = !!toggleTrailsEl.checked;
     draw();
   });
+  function onTypeToggleChange() {
+    visibleEntityTypes.agent = !!toggleTypeAgentEl.checked;
+    visibleEntityTypes.flight = !!toggleTypeFlightEl.checked;
+    visibleEntityTypes.satellite = !!toggleTypeSatelliteEl.checked;
+    clearSelectionIfHidden();
+    refreshEventVisibilityStyling();
+    renderSelectedPanel();
+    updateStats();
+    draw();
+  }
+  toggleTypeAgentEl.addEventListener('change', onTypeToggleChange);
+  toggleTypeFlightEl.addEventListener('change', onTypeToggleChange);
+  toggleTypeSatelliteEl.addEventListener('change', onTypeToggleChange);
   pauseBtnEl.addEventListener('click', function () {
     paused = !paused;
     syncPauseButton();
@@ -515,6 +581,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     processSnapshotQueue(false);
   }, 100);
 
+  function refreshEventVisibilityStyling() {
+    for (const child of log.children) {
+      child.classList.remove('dimmed');
+      const text = child.textContent || '';
+      if (text.includes('[agent]') && !visibleEntityTypes.agent) child.classList.add('dimmed');
+      if (text.includes('[flight]') && !visibleEntityTypes.flight) child.classList.add('dimmed');
+      if (text.includes('[satellite]') && !visibleEntityTypes.satellite) child.classList.add('dimmed');
+    }
+  }
+
   let _selectionClickLogged = false;
   canvas.addEventListener('click', function (e) {
     const rect = canvas.getBoundingClientRect();
@@ -558,6 +634,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'snapshot') {
+        if (paused) {
+          pendingSnapshot = msg.data;
+          return;
+        }
+        updateAgentTrails(state.agents, msg.data.agents);
+        state = msg.data;
+        let selectionChanged = false;
+        if (selectedAgentId && !state.agents[selectedAgentId]) {
+          selectAgent(null);
+          selectionChanged = true;
+        } else if (selectedRegionId && !state.regions[selectedRegionId]) {
+          selectRegion(null);
+          selectionChanged = true;
+        }
+        if (!selectionChanged) {
+          renderSelectedPanel();
+          updateStats();
+          draw();
+        }
         snapshotQueue.push(msg.data);
         processSnapshotQueue(true);
       } else if (msg.type === 'event') {
@@ -604,8 +699,8 @@ function broadcast(type, data) {
   }
 }
 
-function emit(kind, msg, patch) {
-  const ev = { kind, msg, ts: new Date().toISOString(), patch };
+function emit(kind, msg, patch, entityType) {
+  const ev = { kind, msg, ts: new Date().toISOString(), patch, entityType: entityType || null };
   eventLog.push(ev);
   if (eventLog.length > 100) eventLog.shift();
   broadcast('event', ev);
@@ -642,6 +737,7 @@ function initWorld() {
     const region = keys[Math.floor(Math.random() * keys.length)];
     const agent = {
       id,
+      type: i < 4 ? 'agent' : (i < 6 ? 'flight' : 'satellite'),
       x: Math.random() * 100,
       y: Math.random() * 100,
       region,
@@ -664,7 +760,7 @@ function tickAgent(agent) {
 
   if (Math.random() < 0.08) {
     agent.state = states[Math.floor(Math.random() * states.length)];
-    emit('agent', agent.id + ' → ' + agent.state, null);
+    emit('agent', '[' + agent.type + '] ' + agent.id + ' → ' + agent.state, null, agent.type);
   }
 
   // re-assign region based on proximity
@@ -678,7 +774,7 @@ function tickAgent(agent) {
     if (old) old.agents = old.agents.filter(a => a !== agent.id);
     agent.region = closest.id;
     closest.agents.push(agent.id);
-    emit('region', agent.id + ' entered ' + closest.id, null);
+    emit('region', '[' + agent.type + '] ' + agent.id + ' entered ' + closest.id, null, agent.type);
   }
 }
 
