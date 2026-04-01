@@ -84,6 +84,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const log     = document.getElementById('event-log');
   const selectedPanel = document.getElementById('selected-panel');
   const statusEl = document.getElementById('status');
+  const AGENT_RENDER_RADIUS = 5;
+  const AGENT_HIT_RADIUS = 11;
   let state = { agents: {}, regions: {}, tick: 0, started: null };
   let eventLog = [];
   let selectedAgentId = null;
@@ -133,7 +135,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     // agents
     agents.forEach(a => {
-      const ax = (a.x / 100) * W, ay = (a.y / 100) * H;
+      const { x: ax, y: ay } = worldToCanvas(a.x, a.y, W, H);
       const isSelected = selectedAgentId === a.id;
       ctx.save();
       if (isSelected) {
@@ -147,7 +149,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.stroke();
       }
       ctx.beginPath();
-      ctx.arc(ax, ay, 5, 0, Math.PI * 2);
+      ctx.arc(ax, ay, AGENT_RENDER_RADIUS, 0, Math.PI * 2);
       ctx.fillStyle = a.active ? '#7cf' : '#335';
       ctx.fill();
       ctx.strokeStyle = isSelected ? '#cff' : (a.active ? '#aef' : '#224');
@@ -233,6 +235,29 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     draw();
   }
 
+  function worldToCanvas(x, y, width, height) {
+    return { x: (x / 100) * width, y: (y / 100) * height };
+  }
+
+  function findNearestAgentAtPoint(mx, my) {
+    let nearest = null;
+    let nearestDistSq = Infinity;
+    for (const a of Object.values(state.agents)) {
+      const pt = worldToCanvas(a.x, a.y, canvas.width, canvas.height);
+      const dx = mx - pt.x;
+      const dy = my - pt.y;
+      const distSq = (dx * dx) + (dy * dy);
+      if (distSq < nearestDistSq) {
+        nearestDistSq = distSq;
+        nearest = a;
+      }
+    }
+    const hitRadiusSq = AGENT_HIT_RADIUS * AGENT_HIT_RADIUS;
+    return (nearest && nearestDistSq <= hitRadiusSq)
+      ? { agent: nearest, distance: Math.sqrt(nearestDistSq) }
+      : { agent: null, distance: null };
+  }
+
   // ── Stats ──
   function updateStats() {
     document.getElementById('s-tick').textContent    = state.tick;
@@ -248,23 +273,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   setInterval(updateStats, 1000);
   renderSelectedPanel();
 
+  let _selectionClickLogged = false;
   canvas.addEventListener('click', function (e) {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-    const agents = Object.values(state.agents);
-    let nearest = null;
-    let nearestDist = Infinity;
-    for (const a of agents) {
-      const ax = (a.x / 100) * canvas.width;
-      const ay = (a.y / 100) * canvas.height;
-      const d = Math.hypot(mx - ax, my - ay);
-      if (d < nearestDist) {
-        nearestDist = d;
-        nearest = a;
-      }
+    const hit = findNearestAgentAtPoint(mx, my);
+    const chosenId = hit.agent ? hit.agent.id : null;
+    if (!_selectionClickLogged) {
+      console.debug('[selection-click]', {
+        x: Number(mx.toFixed(1)),
+        y: Number(my.toFixed(1)),
+        selectedEntityId: chosenId,
+      });
+      _selectionClickLogged = true;
     }
-    if (nearest && nearestDist <= 9) selectAgent(nearest.id);
+    if (chosenId) selectAgent(chosenId);
     else selectAgent(null);
   });
 
@@ -285,9 +309,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'snapshot') {
         state = msg.data;
-        if (selectedAgentId && !state.agents[selectedAgentId]) selectedAgentId = null;
-        renderSelectedPanel();
-        draw();
+        let selectionChanged = false;
+        if (selectedAgentId && !state.agents[selectedAgentId]) {
+          selectAgent(null);
+          selectionChanged = true;
+        }
+        if (!selectionChanged) {
+          renderSelectedPanel();
+          draw();
+        }
       } else if (msg.type === 'event') {
         eventLog.push(msg.data);
         if (eventLog.length > 120) eventLog.shift();
