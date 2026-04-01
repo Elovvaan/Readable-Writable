@@ -288,6 +288,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const VIEWPORT_PAN_STEP = 36;
   const CAMERA_LERP_FACTOR = 0.18;
   const CAMERA_EPSILON_PX = 0.6;
+  const CESIUM_PICK_RADIUS_PX = 18;
+  const CESIUM_FOLLOW_LERP = 0.16;
+  const CESIUM_FOCUS_LERP = 0.24;
   const REGION_ACTIVITY_WINDOW_TICKS = 24;
   const REGION_ACTIVE_EVENT_THRESHOLD = 2;
   const REGION_HOT_EVENT_THRESHOLD = 5;
@@ -320,6 +323,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
   let followTargetEnabled = false;
   let cameraLerpTarget = null;
+  let cesiumCameraLerpState = null;
+  let cesiumCameraMoveInternal = false;
+  let cesiumFollowDisengageMutedUntil = 0;
   let latestRegionIntelligence = {};
   let lastGlobeDebugLogAt = 0;
   let globeOverlayDiagnostics = null;
@@ -508,15 +514,51 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!cesiumViewer || cesiumSelectionHandler) return;
     cesiumSelectionHandler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
     cesiumSelectionHandler.setInputAction(function (click) {
-      const picked = cesiumViewer.scene.pick(click.position);
-      if (picked && picked.id && picked.id.rwMeta) {
-        const meta = picked.id.rwMeta;
+      const meta = pickCesiumTarget(click.position);
+      if (meta) {
         if (meta.kind === 'agent') { selectAgent(meta.id); return; }
         if (meta.kind === 'region') { selectRegion(meta.id); return; }
       }
       selectAgent(null);
       selectRegion(null);
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    if (cesiumViewer && cesiumViewer.camera) {
+      cesiumViewer.camera.moveStart.addEventListener(function () {
+        if (!followTargetEnabled) return;
+        if (Date.now() < cesiumFollowDisengageMutedUntil) return;
+        if (cesiumCameraMoveInternal) return;
+        disableFollowTarget('manual camera control');
+      });
+    }
+  }
+
+  function pickCesiumTarget(clickPosition) {
+    if (!cesiumViewer || !clickPosition) return null;
+    const picks = cesiumViewer.scene.drillPick(clickPosition, 10) || [];
+    for (const picked of picks) {
+      if (picked && picked.id && picked.id.rwMeta) return picked.id.rwMeta;
+    }
+    let nearest = null;
+    let nearestDistSq = Infinity;
+    const refs = [
+      ...Object.values(cesiumEntityRefs.agents || {}),
+      ...Object.values(cesiumEntityRefs.regions || {}),
+    ];
+    for (const ref of refs) {
+      if (!ref || !ref.position || !ref.rwMeta) continue;
+      const pos = Cesium.Property.getValueOrUndefined(ref.position, cesiumViewer.clock.currentTime);
+      if (!pos) continue;
+      const canvasPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(cesiumViewer.scene, pos);
+      if (!canvasPos) continue;
+      const dx = clickPosition.x - canvasPos.x;
+      const dy = clickPosition.y - canvasPos.y;
+      const distSq = (dx * dx) + (dy * dy);
+      if (distSq < nearestDistSq) {
+        nearestDistSq = distSq;
+        nearest = ref.rwMeta;
+      }
+    }
+    return nearestDistSq <= (CESIUM_PICK_RADIUS_PX * CESIUM_PICK_RADIUS_PX) ? nearest : null;
   }
 
   function toLatLngWithFallback(entity) {
@@ -562,6 +604,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (!ll) continue;
       const isFlight = entityType === 'flight';
       const isSatellite = entityType === 'satellite';
+      const isSelected = selectedAgentId === a.id;
+      const typeStyle = getEntityTypeStyle(a);
       if (isFlight && flightsLayerBlocked) continue;
       if (isFlight && (!Number.isFinite(ll.lat) || !Number.isFinite(ll.lng))) continue;
       const entityId = isFlight ? 'flight-' + a.id : 'agent-' + a.id;
@@ -570,13 +614,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         if (isFlight) {
           const rawAltitude = Number(a.altitude);
           const safeAltitude = Number.isFinite(rawAltitude) ? Math.max(0, rawAltitude) : 10000;
+          const pointColor = isSelected ? '#ffe8a8' : '#67f5ff';
           marker = cesiumViewer.entities.add({
             id: entityId,
             rwMeta: { kind: 'agent', id: a.id },
             position: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, safeAltitude),
             point: {
-              pixelSize: 10,
-              color: Cesium.Color.CYAN,
+              pixelSize: isSelected ? 15 : 10,
+              color: Cesium.Color.fromCssColorString(pointColor),
+              outlineColor: Cesium.Color.WHITE,
+              outlineWidth: isSelected ? 2 : 1,
             },
           });
           flightsDrawn++;
@@ -588,10 +635,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           });
           marker.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, height);
           marker.point = {
-            pixelSize: isSatellite ? (selectedAgentId === a.id ? 13 : 10) : (selectedAgentId === a.id ? 12 : 8),
-            color: Cesium.Color.fromCssColorString(isSatellite ? '#f0b7ff' : getEntityTypeStyle(a).fill),
+            pixelSize: isSatellite ? (isSelected ? 14 : 10) : (isSelected ? 12 : 8),
+            color: Cesium.Color.fromCssColorString(isSelected ? '#e8f5ff' : (isSatellite ? '#f0b7ff' : typeStyle.fill)),
             outlineColor: Cesium.Color.WHITE,
-            outlineWidth: selectedAgentId === a.id ? 2 : 1,
+            outlineWidth: isSelected ? 2 : 1,
           };
           marker.label = {
             text: a.id,
@@ -604,6 +651,27 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         marker.show = true;
         entitiesVisible++;
         if (isSatellite) satellitesRendered++;
+        if (isSelected) {
+          const selectedPulseColor = Cesium.Color.fromCssColorString(isFlight ? '#ffe8a8' : '#9fd9ff');
+          cesiumViewer.entities.add({
+            id: 'selection-ring-' + a.id,
+            rwMeta: { kind: 'agent', id: a.id },
+            position: marker.position,
+            ellipse: {
+              semiMajorAxis: new Cesium.CallbackProperty(function () {
+                return isSatellite ? 220000 : (isFlight ? 45000 + (Math.sin(Date.now() / 250) * 5000) : 28000 + (Math.sin(Date.now() / 250) * 3000));
+              }, false),
+              semiMinorAxis: new Cesium.CallbackProperty(function () {
+                return isSatellite ? 220000 : (isFlight ? 45000 + (Math.sin(Date.now() / 250) * 5000) : 28000 + (Math.sin(Date.now() / 250) * 3000));
+              }, false),
+              material: selectedPulseColor.withAlpha(0.12),
+              outline: true,
+              outlineColor: selectedPulseColor.withAlpha(0.9),
+              outlineWidth: 2,
+              height: isSatellite ? 380000 : (isFlight ? Math.max(1500, Number(a.altitude) || 10000) : 0),
+            },
+          });
+        }
       } catch (err) {
         if (isFlight) {
           flightsErrored++;
@@ -636,11 +704,29 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           trailEntity.polyline = {
             positions: Cesium.Cartesian3.fromDegreesArrayHeights(trailPoints),
             width: selectedAgentId === a.id ? 3 : 2,
-            material: Cesium.Color.fromCssColorString(getEntityTypeStyle(a).trailSelected),
+            material: new Cesium.PolylineGlowMaterialProperty({
+              glowPower: selectedAgentId === a.id ? 0.25 : 0.12,
+              color: Cesium.Color.fromCssColorString(selectedAgentId === a.id ? typeStyle.trailSelected : typeStyle.trail),
+            }),
             clampToGround: false,
           };
           trailEntity.show = true;
         }
+      }
+      const lookahead = getCesiumLookaheadPoint(a, ll);
+      if (lookahead) {
+        cesiumViewer.entities.add({
+          id: 'forward-' + a.id,
+          rwMeta: { kind: 'agent', id: a.id },
+          polyline: {
+            positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+              ll.lng, ll.lat, (isSatellite ? 400000 : Math.max(10, Number(a.altitude) || 1000)),
+              lookahead.lng, lookahead.lat, (isSatellite ? 400000 : Math.max(10, Number(a.altitude) || 1000)),
+            ]),
+            width: isSelected ? 2.8 : 1.5,
+            material: Cesium.Color.fromCssColorString(isSelected ? '#e7f5ff' : '#9cc6e6').withAlpha(isSelected ? 0.95 : 0.6),
+          },
+        });
       }
     }
     lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: flightsDrawn, errors: flightsErrored };
@@ -655,10 +741,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       reg.polyline = undefined;
       reg.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 0);
       reg.point = {
-        pixelSize: selectedRegionId === r.id ? 8 : 5,
-        color: Cesium.Color.CYAN.withAlpha(selectedRegionId === r.id ? 0.95 : 0.75),
+        pixelSize: selectedRegionId === r.id ? 10 : 5,
+        color: Cesium.Color.CYAN.withAlpha(selectedRegionId === r.id ? 1 : 0.75),
         outlineColor: Cesium.Color.WHITE,
-        outlineWidth: 1,
+        outlineWidth: selectedRegionId === r.id ? 2 : 1,
       };
       reg.label = {
         text: r.name || r.id,
@@ -667,6 +753,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         pixelOffset: new Cesium.Cartesian2(0, -16),
       };
       reg.show = true;
+      if (selectedRegionId === r.id) {
+        const intel = latestRegionIntelligence[r.id] || null;
+        const status = intel ? intel.status : 'IDLE';
+        const color = status === 'HOT' ? '#ff8f8f' : (status === 'ACTIVE' ? '#ffd08f' : '#8fc5ff');
+        cesiumViewer.entities.add({
+          id: 'region-emphasis-' + r.id,
+          rwMeta: { kind: 'region', id: r.id },
+          position: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 0),
+          ellipse: {
+            semiMajorAxis: 220000,
+            semiMinorAxis: 220000,
+            material: Cesium.Color.fromCssColorString(color).withAlpha(0.08),
+            outline: true,
+            outlineColor: Cesium.Color.fromCssColorString(color).withAlpha(0.9),
+            outlineWidth: 2,
+          },
+        });
+      }
       regionsVisible++;
     }
     lastCesiumRenderCounts = {
@@ -726,6 +830,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       points.push(point.lng, point.lat, height);
     }
     return points;
+  }
+
+  function getCesiumLookaheadPoint(agent, ll) {
+    if (!agent || !ll) return null;
+    const headingDeg = Number(agent.heading);
+    if (!Number.isFinite(headingDeg)) return null;
+    const speedMps = Number.isFinite(Number(agent.speed)) ? Number(agent.speed) : 0;
+    if (speedMps < FORWARD_VECTOR_MIN_SPEED_MPS) return null;
+    const lookAheadKm = Math.min(FORWARD_VECTOR_MAX_DISTANCE_KM, Math.max(8, (speedMps * FORWARD_VECTOR_LOOKAHEAD_SEC) / 1000));
+    const distanceRatio = lookAheadKm / 111;
+    const headingRad = headingDeg * (Math.PI / 180);
+    const latDelta = Math.cos(headingRad) * distanceRatio;
+    const lngDenom = Math.max(0.2, Math.cos((ll.lat || 0) * (Math.PI / 180)));
+    const lngDelta = (Math.sin(headingRad) * distanceRatio) / lngDenom;
+    return {
+      lat: Math.max(-89.8, Math.min(89.8, ll.lat + latDelta)),
+      lng: ((((ll.lng + lngDelta) + 540) % 360) - 180),
+    };
   }
 
   function renderWorldOverlays(width, height, now, globeDebug) {
@@ -901,40 +1023,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (!trail || trail.length < 2) {
         return;
       }
-      ctx.save();
-      ctx.beginPath();
-      const first = worldPointToCanvas(trail[0], width, height, GLOBE_PATH_MIN_Z, globeDebug);
-      if (!first) {
-        ctx.restore();
-        return;
-      }
-      ctx.moveTo(first.x, first.y);
       let hasSegment = false;
-      let penDown = true;
       for (let i = 1; i < trail.length; i++) {
+        const prevPt = worldPointToCanvas(trail[i - 1], width, height, GLOBE_PATH_MIN_Z, globeDebug);
         const pt = worldPointToCanvas(trail[i], width, height, GLOBE_PATH_MIN_Z, globeDebug);
-        if (!pt) {
-          penDown = false;
-          continue;
-        }
-        if (!penDown) {
-          ctx.moveTo(pt.x, pt.y);
-          penDown = true;
-          continue;
-        }
+        if (!prevPt || !pt) continue;
+        const ageRatio = i / (trail.length - 1);
+        const alpha = isSelected ? (0.35 + (ageRatio * 0.65)) : (0.18 + (ageRatio * 0.45));
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(prevPt.x, prevPt.y);
         ctx.lineTo(pt.x, pt.y);
+        ctx.strokeStyle = hexToRgba(isSelected ? typeStyle.stroke : typeStyle.fill, alpha);
+        ctx.lineWidth = isSelected ? 2 : 1;
+        ctx.stroke();
+        ctx.restore();
         hasSegment = true;
         if (globeDebug) globeDebug.pathSegmentsDrawn++;
       }
-      if (!hasSegment) {
-        ctx.restore();
-        return;
-      }
-      if (globeDebug) globeDebug.trailsVisible++;
-      ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
-      ctx.lineWidth = isSelected ? 2 : 1;
-      ctx.stroke();
-      ctx.restore();
+      if (hasSegment && globeDebug) globeDebug.trailsVisible++;
     });
   }
 
@@ -972,6 +1079,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       ctx.strokeStyle = isSelected ? '#e8f7ff' : (a.active ? typeStyle.stroke : '#223041');
       ctx.lineWidth = isSelected ? 2.5 : 1.5;
       ctx.stroke();
+      const headingDeg = Number(a.heading);
+      const speedMps = Number(a.speed);
+      if (Number.isFinite(headingDeg) && Number.isFinite(speedMps) && speedMps >= FORWARD_VECTOR_MIN_SPEED_MPS) {
+        const lookLen = Math.min(26, Math.max(10, (speedMps / 14))) * viewport.zoom;
+        const headingRad = headingDeg * (Math.PI / 180);
+        const tx = ax + (Math.sin(headingRad) * lookLen);
+        const ty = ay - (Math.cos(headingRad) * lookLen);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(tx, ty);
+        ctx.strokeStyle = isSelected ? '#ecf7ff' : '#9fc6e2';
+        ctx.lineWidth = isSelected ? 2 : 1.2;
+        ctx.stroke();
+      }
       if (isFlight) {
         ctx.shadowBlur = 8;
         ctx.shadowColor = '#ffe27a';
@@ -1061,6 +1182,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  function hexToRgba(hex, alpha) {
+    const clean = String(hex || '').replace('#', '').trim();
+    if (clean.length !== 6) return 'rgba(160,190,220,' + alpha + ')';
+    const r = parseInt(clean.slice(0, 2), 16);
+    const g = parseInt(clean.slice(2, 4), 16);
+    const b = parseInt(clean.slice(4, 6), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+  }
+
   function eventMatchesSelected(ev) {
     if (!ev || typeof ev.msg !== 'string') return false;
     if (selectedAgentId && ev.msg.includes(selectedAgentId)) return true;
@@ -1092,6 +1222,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const entityIds = intel ? intel.entitiesInside : [];
     for (const id of entityIds) {
       if (msg.includes(id)) return true;
+    }
+    if (intel && Array.isArray(intel.relatedEntities)) {
+      for (const id of intel.relatedEntities) {
+        if (msg.includes(id)) return true;
+      }
+    }
+    if (ev.kind === 'region' && typeof ev.msg === 'string' && /occupancy|status|activity|region/i.test(ev.msg)) {
+      return true;
     }
     return false;
   }
@@ -1178,6 +1316,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         .filter(a => a.region === selectedRegion.id)
         .map(a => a.id);
       const insideSummary = insideIds.length > 8 ? (insideIds.length + ' agents') : insideIds.join(', ');
+      const relatedSummary = intel && intel.relatedEntities && intel.relatedEntities.length
+        ? (intel.relatedEntities.length > 8 ? (intel.relatedEntities.length + ' nearby') : intel.relatedEntities.join(', '))
+        : '—';
       const lastRegionEventTs = intel && intel.lastEventTs ? new Date(intel.lastEventTs).toISOString() : '—';
       selectedPanel.innerHTML =
         '<div class="selected-grid">' +
@@ -1191,6 +1332,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         '<span class="selected-label">FLAGGED</span><span class="selected-value">' + (isFlagged ? 'yes' : 'no') + '</span>' +
         '<span class="selected-label">LAST ACTION</span><span class="selected-value">' + escHtml(lastAction) + '</span>' +
         '<span class="selected-label">ENTITIES</span><span class="selected-value">' + escHtml(insideSummary || '—') + '</span>' +
+        '<span class="selected-label">NEARBY</span><span class="selected-value">' + escHtml(relatedSummary) + '</span>' +
         '<span class="selected-label">LAST EVENT</span><span class="selected-value">' + escHtml(lastEvent) + '</span>' +
         '</div>';
       syncActionButtons();
@@ -1201,15 +1343,28 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const agentKey = getCurrentTargetKey('agent', selected.id);
     const isFlagged = !!flaggedTargets[agentKey];
     const lastAction = lastOperatorActionByTarget[agentKey] || '—';
+    const selectedPoint = getEntityWorldPoint(selected);
+    const speed = Number.isFinite(Number(selected.speed)) ? Number(selected.speed) : null;
+    const heading = Number.isFinite(Number(selected.heading)) ? Number(selected.heading) : null;
+    const altitude = Number.isFinite(Number(selected.altitude)) ? Number(selected.altitude) : null;
+    const source = selected.source || (isOpenSkyFlight(selected) ? 'opensky' : 'sim');
+    const lastUpdate = Number.isFinite(Number(selected.lastUpdateMs))
+      ? new Date(Number(selected.lastUpdateMs)).toISOString()
+      : (selected.updatedAt || selected.lastSeen || '—');
     selectedPanel.innerHTML =
       '<div class="selected-grid">' +
       '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selected.id) + '</span>' +
       '<span class="selected-label">TYPE</span><span class="selected-value">' + escHtml(getEntityType(selected)) + '</span>' +
+      '<span class="selected-label">SOURCE</span><span class="selected-value">' + escHtml(source) + '</span>' +
       '<span class="selected-label">X</span><span class="selected-value">' + selected.x.toFixed(2) + '</span>' +
       '<span class="selected-label">Y</span><span class="selected-value">' + selected.y.toFixed(2) + '</span>' +
-      '<span class="selected-label">LAT</span><span class="selected-value">' + (Number.isFinite(selected.lat) ? selected.lat.toFixed(2) : '—') + '</span>' +
-      '<span class="selected-label">LNG</span><span class="selected-value">' + (Number.isFinite(selected.lng) ? selected.lng.toFixed(2) : '—') + '</span>' +
+      '<span class="selected-label">LAT</span><span class="selected-value">' + (Number.isFinite(selectedPoint.lat) ? selectedPoint.lat.toFixed(4) : '—') + '</span>' +
+      '<span class="selected-label">LNG</span><span class="selected-value">' + (Number.isFinite(selectedPoint.lng) ? selectedPoint.lng.toFixed(4) : '—') + '</span>' +
+      '<span class="selected-label">SPEED</span><span class="selected-value">' + (speed === null ? '—' : (speed.toFixed(1) + ' m/s')) + '</span>' +
+      '<span class="selected-label">HEADING</span><span class="selected-value">' + (heading === null ? '—' : (heading.toFixed(0) + '°')) + '</span>' +
+      '<span class="selected-label">ALTITUDE</span><span class="selected-value">' + (altitude === null ? '—' : (altitude.toFixed(0) + ' m')) + '</span>' +
       '<span class="selected-label">STATUS</span><span class="selected-value">' + escHtml(selected.state || (selected.active ? 'active' : 'inactive')) + '</span>' +
+      '<span class="selected-label">LAST UPDATE</span><span class="selected-value">' + escHtml(lastUpdate) + '</span>' +
       '<span class="selected-label">FLAGGED</span><span class="selected-value">' + (isFlagged ? 'yes' : 'no') + '</span>' +
       '<span class="selected-label">LAST ACTION</span><span class="selected-value">' + escHtml(lastAction) + '</span>' +
       '<span class="selected-label">LAST EVENT</span><span class="selected-value">' + escHtml(lastEvent) + '</span>' +
@@ -1230,10 +1385,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     flagActionBtn.disabled = !hasSelection;
     followTargetToggleEl.disabled = !hasSelection;
     if (!hasSelection && followTargetEnabled) {
-      followTargetEnabled = false;
-      cameraLerpTarget = null;
-      followTargetToggleEl.checked = false;
-      pushOperatorEvent('operator follow disabled (no selection)');
+      disableFollowTarget('no selection');
     }
   }
 
@@ -1242,6 +1394,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     eventLog.push(ev);
     if (eventLog.length > 120) eventLog.shift();
     pushEvent(ev);
+  }
+
+  function disableFollowTarget(reason) {
+    if (!followTargetEnabled && !cameraLerpTarget && !cesiumCameraLerpState) return;
+    followTargetEnabled = false;
+    cameraLerpTarget = null;
+    cesiumCameraLerpState = null;
+    followTargetToggleEl.checked = false;
+    if (reason) pushOperatorEvent('operator follow disabled (' + reason + ')');
   }
 
   function runFocusAction() {
@@ -1253,7 +1414,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (USE_CESIUM && cesiumViewer) {
       const ll = toLatLngWithFallback(focusPoint);
       if (ll) {
-        cesiumViewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 1800000), duration: 1.1 });
+        cesiumCameraLerpState = {
+          lng: ll.lng,
+          lat: ll.lat,
+          height: 1800000,
+        };
       }
     }
     focusTargetKey = targetKey;
@@ -1357,12 +1522,36 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (USE_CESIUM && cesiumViewer) {
       const ll = toLatLngWithFallback(cameraLerpTarget);
       if (!ll) return false;
-      cesiumViewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, followTargetEnabled ? 1400000 : 1800000),
-        duration: followTargetEnabled ? 0.35 : 0.9,
+      const currentCarto = Cesium.Cartographic.fromCartesian(cesiumViewer.camera.position);
+      const currentLng = Cesium.Math.toDegrees(currentCarto.longitude);
+      const currentLat = Cesium.Math.toDegrees(currentCarto.latitude);
+      const desiredHeight = followTargetEnabled ? 1400000 : 1800000;
+      if (!cesiumCameraLerpState) {
+        cesiumCameraLerpState = { lng: currentLng, lat: currentLat, height: currentCarto.height };
+      }
+      const lerp = followTargetEnabled ? CESIUM_FOLLOW_LERP : CESIUM_FOCUS_LERP;
+      cesiumCameraLerpState.lng = Cesium.Math.lerp(cesiumCameraLerpState.lng, ll.lng, lerp);
+      cesiumCameraLerpState.lat = Cesium.Math.lerp(cesiumCameraLerpState.lat, ll.lat, lerp);
+      cesiumCameraLerpState.height = Cesium.Math.lerp(cesiumCameraLerpState.height, desiredHeight, lerp);
+      cesiumCameraMoveInternal = true;
+      cesiumFollowDisengageMutedUntil = Date.now() + 120;
+      cesiumViewer.camera.setView({
+        destination: Cesium.Cartesian3.fromDegrees(
+          cesiumCameraLerpState.lng,
+          cesiumCameraLerpState.lat,
+          cesiumCameraLerpState.height
+        ),
       });
-      if (!followTargetEnabled) cameraLerpTarget = null;
-      return !!followTargetEnabled;
+      cesiumCameraMoveInternal = false;
+      const closeEnough = Math.abs(cesiumCameraLerpState.lng - ll.lng) < 0.012
+        && Math.abs(cesiumCameraLerpState.lat - ll.lat) < 0.012
+        && Math.abs(cesiumCameraLerpState.height - desiredHeight) < 1500;
+      if (closeEnough && !followTargetEnabled) {
+        cameraLerpTarget = null;
+        cesiumCameraLerpState = null;
+        return false;
+      }
+      return true;
     }
     const targetOffset = getViewportOffsetToCenterWorld(
       cameraLerpTarget.x,
@@ -2149,6 +2338,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastEventTs: null,
         status: 'IDLE',
         entitiesInside: [],
+        relatedEntities: [],
       };
       regionToEntitySet[regionId] = new Set();
       movementCountByRegion[regionId] = 0;
@@ -2184,6 +2374,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const eventCount = recentEventCounts[regionId] || 0;
       const movementCount = movementCountByRegion[regionId] || 0;
       intel[regionId].entitiesInside = Array.from(regionToEntitySet[regionId] || []);
+      const region = state.regions[regionId];
+      const related = [];
+      if (region) {
+        const rp = getEntityWorldPoint(region);
+        for (const agent of Object.values(state.agents || {})) {
+          if (!isEntityTypeVisible(getEntityType(agent))) continue;
+          if (agent.region === regionId) continue;
+          const ap = getEntityWorldPoint(agent);
+          const dx = (Number(ap.x) - Number(rp.x));
+          const dy = (Number(ap.y) - Number(rp.y));
+          if (Math.hypot(dx, dy) <= 18) related.push(agent.id);
+        }
+      }
+      intel[regionId].relatedEntities = related.slice(0, 12);
       intel[regionId].activityLevel = eventCount + movementCount;
       intel[regionId].status = deriveRegionStatus(eventCount, movementCount);
     }
@@ -2239,19 +2443,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   followTargetToggleEl.addEventListener('change', function () {
     const shouldFollow = !!followTargetToggleEl.checked;
     if (!shouldFollow) {
-      followTargetEnabled = false;
-      cameraLerpTarget = null;
+      disableFollowTarget('toggle off');
       return;
     }
     const selectedFocusPoint = getSelectedFocusPoint();
     if (!selectedFocusPoint) {
-      followTargetEnabled = false;
-      cameraLerpTarget = null;
-      followTargetToggleEl.checked = false;
+      disableFollowTarget('no selection');
       return;
     }
     followTargetEnabled = true;
     cameraLerpTarget = selectedFocusPoint;
+    const ll = toLatLngWithFallback(selectedFocusPoint);
+    if (ll) {
+      cesiumCameraLerpState = { lng: ll.lng, lat: ll.lat, height: 1400000 };
+    }
     pushOperatorEvent('operator follow enabled for ' + (selectedAgentId || ('region ' + selectedRegionId)));
     draw();
   });
