@@ -15,7 +15,7 @@ const OPENSKY_GLOBE_MIN_Z = Number.isFinite(Number(process.env.RW_OPENSKY_GLOBE_
   ? Number(process.env.RW_OPENSKY_GLOBE_MIN_Z)
   : -1;
 const OPENSKY_TRAIL_MAX_POINTS = 24;
-const RW_USE_CESIUM = process.env.RW_USE_CESIUM !== 'false';
+const RW_USE_CESIUM = true;
 const RW_DEFAULT_VIEW = process.env.RW_DEFAULT_VIEW || 'earth';
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
 const CESIUM_ACCESS_TOKEN = process.env.CESIUM_ACCESS_TOKEN || '';
@@ -190,8 +190,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const cesiumContainer = document.getElementById('cesium-world');
   const bootstrapRaw = document.getElementById('rw-bootstrap');
   const BOOTSTRAP = bootstrapRaw ? JSON.parse(bootstrapRaw.textContent || '{}') : {};
-  const USE_CESIUM = BOOTSTRAP.useCesium !== false;
-  const LEGACY_CANVAS_RENDERER = !USE_CESIUM;
+  const USE_CESIUM = true;
+  const LEGACY_CANVAS_RENDERER = false;
   const DEFAULT_VIEW = BOOTSTRAP.defaultView || 'earth';
   const GOOGLE_TILESET_ROOT = 'https://tile.googleapis.com/v1/3dtiles/root.json';
   let cesiumViewer = null;
