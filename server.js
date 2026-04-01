@@ -130,6 +130,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #1c1c1c; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
     .stat-label { color: #555; }
     .stat-value { color: #ccc; font-family: monospace; text-align: right; }
+    .pod-lab { border-top: 1px solid #1c1c1c; padding: 10px 14px 14px; display: grid; gap: 10px; background: #0f1118; }
+    .pod-stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .pod-step-chip { border: 1px solid #2e3a46; border-radius: 999px; font-size: .62rem; text-align: center; padding: 3px 0; color: #9ab5cf; background: #121926; }
+    .pod-step-chip.active { border-color: #4f80b0; color: #d2e7ff; background: #1e2f45; }
+    .pod-step-chip.done { border-color: #2d6f52; color: #b6ffd2; background: #183127; }
+    .pod-lock { border: 1px dashed #52424a; border-radius: 6px; padding: 7px 8px; font-size: .68rem; color: #d8a9b8; background: #21151b; }
+    .pod-lock.unlocked { border-style: solid; border-color: #2d6f52; color: #b8ffd6; background: #14261d; }
+    .pod-lock.flash { animation: pod-unlock-flash 900ms ease; }
+    @keyframes pod-unlock-flash { 0% { box-shadow: 0 0 0 0 rgba(120,255,180,.65); } 100% { box-shadow: 0 0 0 14px rgba(120,255,180,0); } }
+    .pod-field { display: grid; gap: 4px; font-size: .66rem; color: #8ea4ba; }
+    .pod-field textarea { width: 100%; min-height: 52px; border: 1px solid #2e3a46; background: #151a22; color: #d7ebff; border-radius: 4px; padding: 6px; font-size: .68rem; resize: vertical; }
+    .pod-field textarea:disabled { opacity: .45; cursor: not-allowed; }
+    .pod-live-score { display: grid; gap: 4px; border: 1px solid #2e3a46; background: #121926; border-radius: 6px; padding: 7px 8px; }
+    .pod-live-score-row { display: flex; justify-content: space-between; font-size: .66rem; color: #a8c6e2; }
+    .pod-live-score strong { color: #ddf0ff; }
+    .pod-compare { border: 1px solid #3c4d63; border-radius: 6px; background: #131c28; padding: 7px 8px; font-size: .66rem; color: #b7d4ef; }
+    .pod-actions { display: flex; gap: 6px; }
+    .pod-actions button { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 8px; cursor: pointer; }
+    .pod-actions button:disabled { opacity: .45; cursor: not-allowed; }
     .type-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #2a2f3a; border-radius: 999px; padding: 2px 7px; }
     .type-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     #viewport-controls { position: absolute; top: 10px; left: 10px; display: grid; gap: 6px; z-index: 2; }
@@ -254,6 +273,44 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <span class="stat-label">Speed</span><span class="stat-value" id="s-speed">1x</span>
       <span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span>
     </div>
+    <div class="panel-title">Pod 1 Run Coach</div>
+    <section id="pod-lab" class="pod-lab">
+      <div class="pod-stepper" aria-label="Pod run steps">
+        <span class="pod-step-chip active" data-pod-step="1">1 Prompt</span>
+        <span class="pod-step-chip" data-pod-step="2">2 AI Gate</span>
+        <span class="pod-step-chip" data-pod-step="3">3 Verify</span>
+        <span class="pod-step-chip" data-pod-step="4">4 Compare</span>
+      </div>
+      <div id="pod-ai-lock" class="pod-lock">AI locked — submit your first answer to unlock.</div>
+      <label class="pod-field">Prompt
+        <textarea id="pod-user-answer" placeholder="Write your Pod 1 answer first..."></textarea>
+      </label>
+      <label class="pod-field">AI output (gated)
+        <textarea id="pod-ai-output" disabled placeholder="Locked until your first answer is submitted."></textarea>
+      </label>
+      <label class="pod-field">Verification: what's wrong
+        <textarea id="pod-verify-wrong" disabled placeholder="Required critique section #1"></textarea>
+      </label>
+      <label class="pod-field">Verification: what's missing
+        <textarea id="pod-verify-missing" disabled placeholder="Required critique section #2"></textarea>
+      </label>
+      <label class="pod-field">Verification: what would you change
+        <textarea id="pod-verify-change" disabled placeholder="Required critique section #3"></textarea>
+      </label>
+      <div id="pod-compare-box" class="pod-compare" hidden>
+        Compare moment (required): explicitly contrast your answer and AI output to continue.
+      </div>
+      <div class="pod-live-score" aria-live="polite">
+        <div class="pod-live-score-row"><span>Current step</span><strong id="pod-score-step">1 / 4</strong></div>
+        <div class="pod-live-score-row"><span>Structured critique</span><strong id="pod-score-critique">0 / 3</strong></div>
+        <div class="pod-live-score-row"><span>Comparison complete</span><strong id="pod-score-compare">No</strong></div>
+        <div class="pod-live-score-row"><span>Live score</span><strong id="pod-score-total">0</strong></div>
+      </div>
+      <div class="pod-actions">
+        <button id="pod-unlock-ai-btn" type="button">Unlock AI</button>
+        <button id="pod-compare-btn" type="button" disabled>Complete Compare</button>
+      </div>
+    </section>
   </aside>
 </main>
 <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
@@ -332,6 +389,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const fxVignetteEl = document.getElementById('fx-vignette');
   const fxPixelationEl = document.getElementById('fx-pixelation');
   const fxGlowEl = document.getElementById('fx-glow');
+  const podUserAnswerEl = document.getElementById('pod-user-answer');
+  const podAiOutputEl = document.getElementById('pod-ai-output');
+  const podVerifyWrongEl = document.getElementById('pod-verify-wrong');
+  const podVerifyMissingEl = document.getElementById('pod-verify-missing');
+  const podVerifyChangeEl = document.getElementById('pod-verify-change');
+  const podAiLockEl = document.getElementById('pod-ai-lock');
+  const podCompareBoxEl = document.getElementById('pod-compare-box');
+  const podUnlockAiBtnEl = document.getElementById('pod-unlock-ai-btn');
+  const podCompareBtnEl = document.getElementById('pod-compare-btn');
+  const podScoreStepEl = document.getElementById('pod-score-step');
+  const podScoreCritiqueEl = document.getElementById('pod-score-critique');
+  const podScoreCompareEl = document.getElementById('pod-score-compare');
+  const podScoreTotalEl = document.getElementById('pod-score-total');
+  const podStepChipEls = Array.from(document.querySelectorAll('[data-pod-step]'));
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
@@ -358,6 +429,76 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const GLOBE_OVERLAY_DEBUG = false;
   const GLOBE_DEBUG_LOG_INTERVAL_MS = 1500;
   const SNAPSHOT_BASE_INTERVAL_MS = 4000;
+  const podState = {
+    aiUnlocked: false,
+    compared: false,
+  };
+
+  function getStructuredCritiqueCount() {
+    return [podVerifyWrongEl, podVerifyMissingEl, podVerifyChangeEl]
+      .filter((el) => el && el.value.trim().length > 0).length;
+  }
+
+  function getPodCurrentStep() {
+    if (!podState.aiUnlocked) return 1;
+    if (getStructuredCritiqueCount() < 3) return 3;
+    if (!podState.compared) return 4;
+    return 4;
+  }
+
+  function syncPodRunCoachUI() {
+    const hasUserAnswer = podUserAnswerEl.value.trim().length > 0;
+    const critiqueCount = getStructuredCritiqueCount();
+    const hasAiText = podAiOutputEl.value.trim().length > 0;
+    podUnlockAiBtnEl.disabled = !hasUserAnswer || podState.aiUnlocked;
+    podAiOutputEl.disabled = !podState.aiUnlocked;
+    podVerifyWrongEl.disabled = !podState.aiUnlocked;
+    podVerifyMissingEl.disabled = !podState.aiUnlocked;
+    podVerifyChangeEl.disabled = !podState.aiUnlocked;
+    podCompareBoxEl.hidden = !(podState.aiUnlocked && critiqueCount === 3 && hasAiText);
+    podCompareBtnEl.disabled = !(podState.aiUnlocked && critiqueCount === 3 && hasAiText) || podState.compared;
+
+    podAiLockEl.textContent = podState.aiUnlocked
+      ? 'AI unlocked — now verify and compare before completion.'
+      : 'AI locked — submit your first answer to unlock.';
+    podAiLockEl.classList.toggle('unlocked', podState.aiUnlocked);
+
+    const currentStep = getPodCurrentStep();
+    podScoreStepEl.textContent = String(currentStep) + ' / 4';
+    podScoreCritiqueEl.textContent = String(critiqueCount) + ' / 3';
+    podScoreCompareEl.textContent = podState.compared ? 'Yes' : 'No';
+    const totalScore = (podState.aiUnlocked ? 30 : 0) + (critiqueCount * 20) + (podState.compared ? 10 : 0);
+    podScoreTotalEl.textContent = String(totalScore);
+
+    podStepChipEls.forEach((chip) => {
+      const stepNum = Number(chip.getAttribute('data-pod-step'));
+      chip.classList.toggle('active', stepNum === currentStep);
+      chip.classList.toggle('done', stepNum < currentStep || (stepNum === 4 && podState.compared));
+    });
+  }
+
+  podUnlockAiBtnEl.addEventListener('click', () => {
+    if (podState.aiUnlocked || podUserAnswerEl.value.trim().length === 0) return;
+    podState.aiUnlocked = true;
+    podAiOutputEl.value = 'AI suggestion: tighten your thesis, include one counterpoint, and make your next step explicit.';
+    podAiLockEl.classList.add('flash');
+    window.setTimeout(() => podAiLockEl.classList.remove('flash'), 900);
+    syncPodRunCoachUI();
+  });
+
+  podCompareBtnEl.addEventListener('click', () => {
+    if (!podState.aiUnlocked || getStructuredCritiqueCount() < 3) return;
+    podState.compared = true;
+    syncPodRunCoachUI();
+  });
+
+  [podUserAnswerEl, podAiOutputEl, podVerifyWrongEl, podVerifyMissingEl, podVerifyChangeEl].forEach((el) => {
+    el.addEventListener('input', () => {
+      if (el === podUserAnswerEl && podState.compared) podState.compared = false;
+      syncPodRunCoachUI();
+    });
+  });
+  syncPodRunCoachUI();
   const VIEWPORT_ZOOM_MIN = 0.5;
   const VIEWPORT_ZOOM_MAX = 3;
   const VIEWPORT_ZOOM_STEP = 0.2;
