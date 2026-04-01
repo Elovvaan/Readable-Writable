@@ -191,11 +191,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const bootstrapRaw = document.getElementById('rw-bootstrap');
   const BOOTSTRAP = bootstrapRaw ? JSON.parse(bootstrapRaw.textContent || '{}') : {};
   const USE_CESIUM = BOOTSTRAP.useCesium !== false;
+  const LEGACY_CANVAS_RENDERER = !USE_CESIUM;
   const DEFAULT_VIEW = BOOTSTRAP.defaultView || 'earth';
   const GOOGLE_TILESET_ROOT = 'https://tile.googleapis.com/v1/3dtiles/root.json';
   let cesiumViewer = null;
   let cesiumGoogleTileset = null;
-  const cesiumEntityRefs = { agents: {}, regions: {} };
+  const cesiumEntityRefs = { agents: {}, regions: {}, trails: {} };
   let cesiumSelectionHandler = null;
   let lastCesiumRenderCounts = { entities: 0, regions: 0 };
   let lastCesiumDiagAt = 0;
@@ -412,7 +413,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function isGlobeRenderMode() {
-    return true;
+    return LEGACY_CANVAS_RENDERER;
   }
 
   async function initCesium() {
@@ -423,15 +424,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
     });
+    cesiumViewer.scene.skyBox.show = false;
+    cesiumViewer.scene.backgroundColor = Cesium.Color.BLACK;
     cesiumViewer.scene.globe.show = false;
     cesiumViewer.scene.skyAtmosphere.show = true;
+    cesiumViewer.scene.sun.show = false;
+    cesiumViewer.scene.moon.show = false;
+    cesiumViewer.scene.requestRenderMode = false;
     try {
       if (BOOTSTRAP.googleMapsApiKey) {
-        const tileset = await Cesium.Cesium3DTileset.fromUrl(
-          GOOGLE_TILESET_ROOT + '?key=' + encodeURIComponent(BOOTSTRAP.googleMapsApiKey)
-        );
+        const tileset = (typeof Cesium.createGooglePhotorealistic3DTileset === 'function')
+          ? await Cesium.createGooglePhotorealistic3DTileset({ key: BOOTSTRAP.googleMapsApiKey })
+          : await Cesium.Cesium3DTileset.fromUrl(
+              GOOGLE_TILESET_ROOT + '?key=' + encodeURIComponent(BOOTSTRAP.googleMapsApiKey)
+            );
         cesiumViewer.scene.primitives.add(tileset);
         cesiumGoogleTileset = tileset;
+        if (typeof tileset.readyPromise?.then === 'function') {
+          tileset.readyPromise.then(function () {
+            if (cesiumGoogleTileset === tileset) {
+              console.info('[RW Cesium] Google Photorealistic 3D Tiles ready');
+            }
+          }).catch(function (err) {
+            console.error('[RW Cesium] Google Photorealistic 3D Tiles readyPromise failed', err);
+          });
+        }
         console.info('[RW Cesium] Google Photorealistic 3D Tiles loaded');
       } else {
         console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; base tiles unavailable');
@@ -470,6 +487,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!cesiumViewer) return;
     const seenAgents = {};
     const seenRegions = {};
+    const seenTrails = {};
     let entitiesVisible = 0;
     let regionsVisible = 0;
     for (const a of Object.values(state.agents || {})) {
@@ -493,9 +511,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       marker.point = { pixelSize: selectedAgentId === a.id ? 12 : 8, color: Cesium.Color.fromCssColorString(getEntityTypeStyle(a).fill), outlineColor: Cesium.Color.WHITE, outlineWidth: selectedAgentId === a.id ? 2 : 1 };
       marker.show = true;
       entitiesVisible++;
+
+      if (showTrails) {
+        const trailPoints = getCesiumTrailPointsForEntity(a);
+        if (trailPoints.length >= 2) {
+          seenTrails[a.id] = true;
+          let trailEntity = cesiumEntityRefs.trails[a.id];
+          if (!trailEntity) {
+            trailEntity = cesiumViewer.entities.add({
+              id: 'trail-' + a.id,
+              rwMeta: { kind: 'agent', id: a.id },
+            });
+            cesiumEntityRefs.trails[a.id] = trailEntity;
+          }
+          trailEntity.polyline = {
+            positions: Cesium.Cartesian3.fromDegreesArrayHeights(trailPoints),
+            width: selectedAgentId === a.id ? 3 : 2,
+            material: Cesium.Color.fromCssColorString(getEntityTypeStyle(a).trailSelected),
+            clampToGround: false,
+          };
+          trailEntity.show = true;
+        }
+      }
     }
     for (const [id,entity] of Object.entries(cesiumEntityRefs.agents)) {
       if (!seenAgents[id]) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.agents[id]; }
+    }
+    for (const [id,entity] of Object.entries(cesiumEntityRefs.trails)) {
+      if (!seenTrails[id] || !showTrails) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.trails[id]; }
     }
     for (const r of Object.values(state.regions || {})) {
       if (!showRegions) break;
@@ -536,6 +579,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         googleTilesLoaded: !!cesiumGoogleTileset,
       });
     }
+    cesiumViewer.scene.requestRender();
+  }
+
+  function getCesiumTrailPointsForEntity(agent) {
+    const entityType = getEntityType(agent);
+    const trail = entityType === 'flight'
+      ? getFlightTrailPoints(agent)
+      : (agentTrails[agent.id] || []);
+    if (!Array.isArray(trail) || trail.length < 2) return [];
+    const points = [];
+    for (const point of trail) {
+      if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) continue;
+      const height = entityType === 'satellite'
+        ? 400000
+        : (entityType === 'flight' ? Math.max(500, Number(agent.altitude) || 2000) : 12);
+      points.push(point.lng, point.lat, height);
+    }
+    return points;
   }
 
   function renderWorldOverlays(width, height, now, globeDebug) {
@@ -1472,6 +1533,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function drawGlobeBase(width, height) {
+    if (!LEGACY_CANVAS_RENDERER) return;
     const radius = Math.min(width, height) * 0.35 * viewport.zoom;
     const cx = applyViewportX(width / 2, width);
     const cy = applyViewportY(height / 2, height);
@@ -1487,7 +1549,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function drawGlobeContinents(width, height) {
-    if (!isGlobeRenderMode()) return;
+    if (!LEGACY_CANVAS_RENDERER) return;
     ctx.save();
     ctx.lineWidth = 0.9;
     ctx.strokeStyle = '#9fc8f033';
