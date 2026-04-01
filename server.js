@@ -268,7 +268,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.clearRect(0, 0, W, H);
     const now = Date.now();
     const globeDebug = renderMode === 'globe'
-      ? { projected: 0, skipped: 0, entitiesVisible: 0, regionsVisible: 0, trailsVisible: 0, pathSegmentsDrawn: 0 }
+      ? {
+          projected: 0,
+          skipped: 0,
+          entitiesVisible: 0,
+          regionsVisible: 0,
+          trailsVisible: 0,
+          pathSegmentsDrawn: 0,
+          zMin: Infinity,
+          zMax: -Infinity,
+        }
       : null;
 
     renderBaseSurface(W, H);
@@ -337,6 +346,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         projected: globeDebug.projected,
         skippedProjections: globeDebug.skipped,
         pathSegmentsDrawn: globeDebug.pathSegmentsDrawn,
+        zRange: {
+          min: Number.isFinite(globeDebug.zMin) ? globeDebug.zMin : null,
+          max: Number.isFinite(globeDebug.zMax) ? globeDebug.zMax : null,
+        },
       });
     }
   }
@@ -1273,8 +1286,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function vectorToCanvas(x, y, z, width, height, minZ) {
-    const visibleThreshold = Number.isFinite(minZ) ? minZ : 0;
-    if (!Number.isFinite(z) || z < visibleThreshold) return null;
+    if (!Number.isFinite(z)) return null;
     const radius = Math.min(width, height) * 0.35;
     const cx = width / 2;
     const cy = height / 2;
@@ -1302,10 +1314,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const unitY = Math.sin(latRad);
     const unitZ = cosLat * Math.cos(lon);
     if (globeDebug) globeDebug.projected++;
-    const visibleThreshold = Number.isFinite(minZ) ? minZ : 0;
-    if (!Number.isFinite(unitZ) || unitZ < visibleThreshold) {
+    if (!Number.isFinite(unitZ)) {
       if (globeDebug) globeDebug.skipped++;
       return null;
+    }
+    if (globeDebug) {
+      globeDebug.zMin = Math.min(globeDebug.zMin, unitZ);
+      globeDebug.zMax = Math.max(globeDebug.zMax, unitZ);
     }
     const baseX = cx + (radius * unitX);
     const baseY = cy - (radius * Math.sin(latRad));
