@@ -238,6 +238,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let latestRegionIntelligence = {};
   let lastGlobeDebugLogAt = 0;
   let globeOverlayDiagnostics = null;
+  let globeRegionOverlaySuppressed = false;
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -308,6 +309,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const visibleAgents = agents.filter(a => isEntityTypeVisible(getEntityType(a)));
     latestRegionIntelligence = computeRegionIntelligence();
 
+    globeRegionOverlaySuppressed = false;
     renderRegionOverlays(regions, width, height, now, globeDebug, deferredLabelDraws);
     renderTrailsAndArcs(visibleAgents, width, height, globeDebug);
     renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws);
@@ -320,6 +322,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           entitiesVisible: globeDebug.entitiesVisible,
           regionsVisible: globeDebug.regionsVisible,
           trailsVisible: globeDebug.trailsVisible,
+          regionOverlaySuppressed: globeRegionOverlaySuppressed,
         }
       : null;
 
@@ -347,7 +350,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function renderRegionOverlays(regions, width, height, now, globeDebug, deferredLabelDraws) {
     if (!showRegions) return;
-    if (isGlobeRenderMode() && HIDE_GRID_REGIONS_ON_GLOBE) return;
+    if (isGlobeRenderMode() && HIDE_GRID_REGIONS_ON_GLOBE) {
+      globeRegionOverlaySuppressed = true;
+      return;
+    }
     regions.forEach(function (r) {
       const regionPoint = getEntityWorldPoint(r);
       const regionPos = worldPointToCanvas(regionPoint, width, height, GLOBE_REGION_OUTLINE_MIN_Z, globeDebug);
@@ -969,6 +975,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         + ' r:' + globeOverlayDiagnostics.regionsVisible
         + ' t:' + globeOverlayDiagnostics.trailsVisible;
       if (GLOBE_DISABLE_VISIBILITY_CULLING) text += ' · culling off';
+      text += ' · dbg regions:' + (globeOverlayDiagnostics.regionOverlaySuppressed ? 'off' : 'on');
+      text += ' entities:' + (globeOverlayDiagnostics.entitiesVisible > 0 ? 'visible' : 'none');
+      text += ' trails:' + (globeOverlayDiagnostics.trailsVisible > 0 ? 'visible' : 'none');
     }
     viewportReadoutEl.textContent = text;
   }
