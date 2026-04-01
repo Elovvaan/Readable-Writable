@@ -37,6 +37,9 @@ const openSkyLiveState = {
   tokenExpiresAtMs: 0,
   lastPollAt: null,
   lastErrorAt: null,
+  lastFetchedCount: 0,
+  lastNormalizedCount: 0,
+  authConfigured: !!(OPENSKY_CLIENT_ID && OPENSKY_CLIENT_SECRET),
 };
 
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
@@ -173,6 +176,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <span class="stat-label">Tick</span><span class="stat-value" id="s-tick">—</span>
       <span class="stat-label">Agents</span><span class="stat-value" id="s-agents">—</span>
       <span class="stat-label">Regions</span><span class="stat-value" id="s-regions">—</span>
+      <span class="stat-label">FlightsDbg</span><span class="stat-value" id="s-flights-debug">—</span>
       <span class="stat-label">Speed</span><span class="stat-value" id="s-speed">1x</span>
       <span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span>
     </div>
@@ -292,6 +296,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let lastGlobeDebugLogAt = 0;
   let globeOverlayDiagnostics = null;
   let globeRegionOverlaySuppressed = false;
+  let openskyStatus = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null };
+  let lastFlightDebugCounts = { merged: 0, visible: 0, drawn: 0 };
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -496,9 +502,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const seenTrails = {};
     let entitiesVisible = 0;
     let regionsVisible = 0;
+    let flightsVisibleAfterFilters = 0;
+    let flightsDrawn = 0;
+    let flightsMerged = 0;
     for (const a of Object.values(state.agents || {})) {
       const entityType = getEntityType(a);
+      if (entityType === 'flight') flightsMerged++;
       if (!showAgents || !isEntityTypeVisible(entityType)) continue;
+      if (entityType === 'flight') flightsVisibleAfterFilters++;
       const p = getEntityWorldPoint(a, nowMs);
       const ll = toLatLngWithFallback(p);
       if (!ll) continue;
@@ -514,9 +525,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       const height = entityType === 'satellite' ? 400000 : (entityType === 'flight' ? Math.max(500, Number(a.altitude) || 2000) : 10);
       marker.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, height);
-      marker.point = { pixelSize: selectedAgentId === a.id ? 12 : 8, color: Cesium.Color.fromCssColorString(getEntityTypeStyle(a).fill), outlineColor: Cesium.Color.WHITE, outlineWidth: selectedAgentId === a.id ? 2 : 1 };
+      const isFlight = entityType === 'flight';
+      marker.point = {
+        pixelSize: isFlight ? (selectedAgentId === a.id ? 16 : 12) : (selectedAgentId === a.id ? 12 : 8),
+        color: Cesium.Color.fromCssColorString(isFlight ? '#ffd24d' : getEntityTypeStyle(a).fill),
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: selectedAgentId === a.id ? 2 : 1,
+      };
       marker.show = true;
       entitiesVisible++;
+      if (isFlight) flightsDrawn++;
 
       if (showTrails) {
         const trailPoints = getCesiumTrailPointsForEntity(a);
@@ -540,6 +558,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         }
       }
     }
+    lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: flightsDrawn };
     for (const [id,entity] of Object.entries(cesiumEntityRefs.agents)) {
       if (!seenAgents[id]) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.agents[id]; }
     }
@@ -614,12 +633,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const regions = Object.values(state.regions);
     const agents = Object.values(state.agents);
     const visibleAgents = agents.filter(a => isEntityTypeVisible(getEntityType(a)));
+    const flightsMerged = agents.filter(a => getEntityType(a) === 'flight').length;
+    const flightsVisibleAfterFilters = showAgents
+      ? visibleAgents.filter(a => getEntityType(a) === 'flight').length
+      : 0;
+    const drawCounts = { flightsDrawn: 0 };
     latestRegionIntelligence = computeRegionIntelligence();
 
     globeRegionOverlaySuppressed = false;
     renderRegionOverlays(regions, width, height, now, globeDebug, deferredLabelDraws);
     renderTrailsAndArcs(visibleAgents, width, height, globeDebug);
-    renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws);
+    renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts);
+    lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: drawCounts.flightsDrawn };
 
     deferredLabelDraws.forEach(function (drawLabel) { drawLabel(); });
     deferredSelectionDraws.forEach(function (drawSelection) { drawSelection(); });
@@ -812,7 +837,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
   }
 
-  function renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws) {
+  function renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts) {
     if (!showAgents) return;
     visibleAgents.forEach(function (a) {
       const agentPoint = getEntityWorldPoint(a, now);
@@ -831,15 +856,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const isFlagged = !!flaggedTargets[agentKey];
       const isFocused = focusTargetKey === agentKey && now < focusEffectUntil;
       const typeStyle = getEntityTypeStyle(a);
+      const entityType = getEntityType(a);
+      const isFlight = entityType === 'flight';
       ctx.save();
       ctx.beginPath();
-      const renderRadius = (isSelected && getEntityType(a) === 'flight') ? AGENT_RENDER_RADIUS * 1.25 : AGENT_RENDER_RADIUS;
+      const renderRadius = isFlight
+        ? (isSelected ? AGENT_RENDER_RADIUS * 1.9 : AGENT_RENDER_RADIUS * 1.5)
+        : AGENT_RENDER_RADIUS;
       ctx.arc(ax, ay, renderRadius * viewport.zoom, 0, Math.PI * 2);
-      ctx.fillStyle = a.active ? typeStyle.fill : '#2b3544';
+      ctx.fillStyle = isFlight
+        ? (a.active ? '#ffd24d' : '#8a7640')
+        : (a.active ? typeStyle.fill : '#2b3544');
       ctx.fill();
       ctx.strokeStyle = isSelected ? '#e8f7ff' : (a.active ? typeStyle.stroke : '#223041');
       ctx.lineWidth = isSelected ? 2.5 : 1.5;
       ctx.stroke();
+      if (isFlight) {
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = '#ffe27a';
+      }
+      if (isFlight && drawCounts) drawCounts.flightsDrawn++;
       if (isFlagged) {
         ctx.beginPath();
         ctx.arc(ax, ay, (AGENT_RENDER_RADIUS + 3.5) * viewport.zoom, 0, Math.PI * 2);
@@ -2029,9 +2065,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function updateStats() {
     const allAgents = Object.values(state.agents || {});
     const visibleAgents = allAgents.filter(a => isEntityTypeVisible(getEntityType(a)));
+    const fetched = Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0;
+    const merged = Number.isFinite(Number(lastFlightDebugCounts.merged))
+      ? Number(lastFlightDebugCounts.merged)
+      : (Number.isFinite(Number(openskyStatus.merged)) ? Number(openskyStatus.merged) : 0);
+    const visibleFlights = Number.isFinite(Number(lastFlightDebugCounts.visible)) ? Number(lastFlightDebugCounts.visible) : 0;
+    const drawnFlights = Number.isFinite(Number(lastFlightDebugCounts.drawn)) ? Number(lastFlightDebugCounts.drawn) : 0;
+    const openskyMisconfigured = !!openskyStatus.enabled && !openskyStatus.authConfigured;
+    const openskyError = openskyStatus && openskyStatus.lastErrorAt ? ' ERR' : '';
+    const flightDebugText = openskyMisconfigured
+      ? 'OpenSky auth missing'
+      : ('F' + fetched + ' M' + merged + ' V' + visibleFlights + ' D' + drawnFlights + openskyError);
     document.getElementById('s-tick').textContent    = state.tick;
     document.getElementById('s-agents').textContent  = visibleAgents.length + '/' + allAgents.length;
     document.getElementById('s-regions').textContent = Object.keys(state.regions).length;
+    document.getElementById('s-flights-debug').textContent = flightDebugText;
     document.getElementById('s-speed').textContent   = simulationSpeed + 'x';
     if (state.started) {
       const sec = Math.floor((Date.now() - new Date(state.started)) / 1000);
@@ -2155,6 +2203,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     updateFlightTracking(state.agents, nextSnapshot.agents, snapshotTsMs);
     previousAgentsById = state.agents || {};
     state = nextSnapshot;
+    openskyStatus = nextSnapshot && nextSnapshot.opensky
+      ? nextSnapshot.opensky
+      : { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null };
     latestRegionIntelligence = computeRegionIntelligence();
     clearSelectionIfHidden();
     if (selectedAgentId && !state.agents[selectedAgentId]) {
@@ -2337,6 +2388,15 @@ function snapshot() {
     regions: worldview.regions,
     tick: worldview.tick,
     started: worldview.started,
+    opensky: {
+      enabled: OPENSKY_ENABLED,
+      authConfigured: openSkyLiveState.authConfigured,
+      fetched: openSkyLiveState.lastFetchedCount,
+      normalized: openSkyLiveState.lastNormalizedCount,
+      merged: Object.keys(openSkyLiveState.flights).length,
+      lastPollAt: openSkyLiveState.lastPollAt,
+      lastErrorAt: openSkyLiveState.lastErrorAt,
+    },
   };
 }
 
@@ -2492,9 +2552,13 @@ async function pollOpenSkyFlights() {
       emit('system', warn, { source: 'opensky' });
     }
     openSkyLiveState.lastErrorAt = new Date().toISOString();
+    openSkyLiveState.authConfigured = false;
+    openSkyLiveState.lastFetchedCount = 0;
+    openSkyLiveState.lastNormalizedCount = 0;
     return;
   }
   try {
+    openSkyLiveState.authConfigured = true;
     const token = await getOpenSkyAccessToken();
     const res = await fetch(OPENSKY_STATES_URL, {
       method: 'GET',
@@ -2520,6 +2584,8 @@ async function pollOpenSkyFlights() {
       nextFlights[normalized.id] = normalized;
     }
     const visibilityStats = countVisibleOpenSkyFlights(nextFlights, OPENSKY_GLOBE_MIN_Z);
+    openSkyLiveState.lastFetchedCount = states.length;
+    openSkyLiveState.lastNormalizedCount = normalizedCount;
     console.log(
       '[RW Worldview] OpenSky visibility: fetched=' + states.length
       + ' normalized=' + normalizedCount
@@ -2553,6 +2619,8 @@ async function pollOpenSkyFlights() {
     const msg = 'OpenSky poll warning: ' + (err && err.message ? err.message : String(err));
     console.warn('[RW Worldview] ' + msg);
     openSkyLiveState.lastErrorAt = new Date().toISOString();
+    openSkyLiveState.lastFetchedCount = 0;
+    openSkyLiveState.lastNormalizedCount = 0;
     emit('system', msg, { source: 'opensky' });
   }
 }
@@ -2944,7 +3012,10 @@ function router(req, res) {
       websocketClients: wsClients.size,
       opensky: {
         enabled: OPENSKY_ENABLED,
+        authConfigured: openSkyLiveState.authConfigured,
         flights: Object.keys(openSkyLiveState.flights).length,
+        fetched: openSkyLiveState.lastFetchedCount,
+        normalized: openSkyLiveState.lastNormalizedCount,
         lastPollAt: openSkyLiveState.lastPollAt,
         lastErrorAt: openSkyLiveState.lastErrorAt,
       },
