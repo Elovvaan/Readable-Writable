@@ -68,9 +68,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .ctrl-toggle input { width: 13px; height: 13px; accent-color: #7cf; cursor: pointer; }
     .ctrl-inline { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
     .ctrl-compact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .62rem; color: #8ea4ba; }
-    .ctrl-compact input[type=range] { width: 58px; accent-color: #7cf; }
+    .ctrl-compact input[type=range] { width: 58px; accent-color: #7cf; transition: filter 220ms ease, transform 220ms ease; }
+    .ctrl-compact input[type=range]:hover { filter: brightness(1.12); transform: translateY(-1px); }
     .ctrl-compact select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .64rem; padding: 2px 4px; }
     #style-indicator { border: 1px solid #324154; border-radius: 999px; font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; color: #9ec9f5; background: #101820; }
+    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .62rem; color: #8fb6d8; border: 1px solid #283849; border-radius: 6px; padding: 3px 7px; background: #0f161fcc; }
+    .telemetry-item { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+    .telemetry-label { color: #65839f; letter-spacing: .07em; }
+    .telemetry-value { color: #b9ddff; }
+    #telemetry-rec.live { color: #ff7878; text-shadow: 0 0 8px rgba(255,80,80,.4); animation: rec-pulse 1.4s ease-in-out infinite; }
+    @keyframes rec-pulse { 0%, 100% { opacity: .62; } 50% { opacity: 1; } }
+    .preset-row { display: inline-flex; align-items: center; gap: 5px; }
+    .preset-btn { border: 1px solid #2b3c4d; background: #141c25; color: #9ec8e8; border-radius: 999px; font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; padding: 3px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; }
+    .preset-btn:hover { background: #1a2938; border-color: #3f658a; color: #d8efff; transform: translateY(-1px); }
+    .preset-btn.active { background: #213246; color: #d2e7ff; border-color: #4f80b0; }
     #speed-select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 3px 6px; }
     #pause-btn { border: 1px solid #2e3a46; background: #151a22; color: #a9d6ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
     #pause-btn.active { background: #2b1e1e; color: #ffc2c2; border-color: #5a3333; }
@@ -79,7 +90,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #cesium-world, canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
     #cesium-world { z-index: 1; }
     canvas { z-index: 2; pointer-events: auto; }
-    #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .45; }
+    #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .45; transition: opacity 320ms ease, background 320ms ease, filter 320ms ease; }
     #fx-overlay .scanlines, #fx-overlay .noise, #fx-overlay .vignette, #fx-overlay .pixel-grid { position: absolute; inset: 0; }
     #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(220,255,255,.07) 0, rgba(220,255,255,.07) 1px, transparent 1px, transparent 3px); opacity: .2; }
     #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.09) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .12; }
@@ -123,8 +134,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .type-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     #viewport-controls { position: absolute; top: 10px; left: 10px; display: grid; gap: 6px; z-index: 2; }
     .viewport-row { display: flex; gap: 4px; }
-    .viewport-btn { border: 1px solid #2e3a46; background: #151a22e0; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 7px; cursor: pointer; }
+    .viewport-btn { border: 1px solid #2e3a46; background: #151a22e0; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, transform 180ms ease; }
+    .viewport-btn:hover { background: #1b2633f0; border-color: #44627f; transform: translateY(-1px); }
     .viewport-readout { font-size: .62rem; color: #8ea4ba; background: #0d1219cc; border: 1px solid #253244; border-radius: 4px; padding: 2px 6px; width: fit-content; }
+    #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
   </style>
 </head>
 <body>
@@ -159,6 +172,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       </select>
     </label>
     <span id="style-indicator">mode: crt</span>
+    <div id="telemetry-bar" aria-live="polite">
+      <span class="telemetry-item"><span class="telemetry-label">MODE</span><span class="telemetry-value" id="telemetry-mode">CRT</span></span>
+      <span class="telemetry-item"><span class="telemetry-label">REC</span><span class="telemetry-value" id="telemetry-rec">●</span></span>
+      <span class="telemetry-item"><span class="telemetry-label">LAT/LNG</span><span class="telemetry-value" id="telemetry-coords">--.--, --.--</span></span>
+      <span class="telemetry-item"><span class="telemetry-label">UTC</span><span class="telemetry-value" id="telemetry-utc">--:--:--</span></span>
+    </div>
+    <div class="preset-row">
+      <button class="preset-btn active" type="button" data-style-preset="tactical">Tactical</button>
+      <button class="preset-btn" type="button" data-style-preset="surveillance">Surveillance</button>
+      <button class="preset-btn" type="button" data-style-preset="cinematic">Cinematic</button>
+      <button class="preset-btn" type="button" data-style-preset="minimal">Minimal</button>
+    </div>
     <label class="ctrl-compact" for="fx-bloom">Bloom<input id="fx-bloom" type="range" min="0" max="100" value="40"></label>
     <label class="ctrl-compact" for="fx-sharpen">Sharp<input id="fx-sharpen" type="range" min="0" max="100" value="35"></label>
     <label class="ctrl-compact" for="fx-noise">Noise<input id="fx-noise" type="range" min="0" max="100" value="28"></label>
@@ -293,6 +318,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const viewportReadoutEl = document.getElementById('viewport-readout');
   const styleModeSelectEl = document.getElementById('style-mode-select');
   const styleIndicatorEl = document.getElementById('style-indicator');
+  const telemetryModeEl = document.getElementById('telemetry-mode');
+  const telemetryRecEl = document.getElementById('telemetry-rec');
+  const telemetryCoordsEl = document.getElementById('telemetry-coords');
+  const telemetryUtcEl = document.getElementById('telemetry-utc');
+  const presetButtons = Array.from(document.querySelectorAll('[data-style-preset]'));
   const fxOverlayEl = document.getElementById('fx-overlay');
   const fxBloomEl = document.getElementById('fx-bloom');
   const fxSharpenEl = document.getElementById('fx-sharpen');
@@ -365,7 +395,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let eventSearchQuery = '';
   let activeEventFilter = 'all';
   let styleMode = 'crt';
-  let styleFx = { bloom: 40, sharpen: 35, noise: 28, vignette: 40, pixelation: 22, glow: 45 };
+  const STYLE_PRESETS = {
+    tactical: { bloom: 48, sharpen: 44, noise: 32, vignette: 50, pixelation: 28, glow: 54 },
+    surveillance: { bloom: 30, sharpen: 64, noise: 24, vignette: 62, pixelation: 34, glow: 36 },
+    cinematic: { bloom: 72, sharpen: 28, noise: 40, vignette: 70, pixelation: 18, glow: 66 },
+    minimal: { bloom: 18, sharpen: 40, noise: 8, vignette: 26, pixelation: 8, glow: 20 },
+  };
+  let activeStylePreset = 'tactical';
+  let styleFx = { ...STYLE_PRESETS.tactical };
   let viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
   let followTargetEnabled = false;
   let cameraLerpTarget = null;
@@ -374,6 +411,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let cesiumFollowDisengageMutedUntil = 0;
   let latestRegionIntelligence = {};
   let lastGlobeDebugLogAt = 0;
+  let styleAnimationLoopActive = false;
   let globeOverlayDiagnostics = null;
   let globeRegionOverlaySuppressed = false;
   let openskyStatus = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null };
@@ -385,6 +423,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     flight: { fill: '#ffb77d', stroke: '#ffd2ad', trail: '#ffb77d55', trailSelected: '#ffe0c4cc' },
     satellite: { fill: '#d0a3ff', stroke: '#e2c7ff', trail: '#d0a3ff55', trailSelected: '#ecdfffcc' },
     other: { fill: '#8ea0b4', stroke: '#bac7d6', trail: '#8ea0b455', trailSelected: '#d6deebcc' },
+  };
+  const TYPE_STYLE_BY_MODE = {
+    crt: {
+      agent: { fill: '#8fd6ff', stroke: '#c5e9ff', trail: '#8fd6ff57', trailSelected: '#d4efffcc' },
+      flight: { fill: '#ffc38f', stroke: '#ffe2bd', trail: '#ffc38f57', trailSelected: '#ffedd6cc' },
+      satellite: { fill: '#d6b2ff', stroke: '#ead7ff', trail: '#d6b2ff57', trailSelected: '#f0e6ffcc' },
+      other: { fill: '#93a6b8', stroke: '#c2cfdb', trail: '#93a6b857', trailSelected: '#dde4ebcc' },
+    },
+    nvg: {
+      agent: { fill: '#93ff79', stroke: '#d5ffc5', trail: '#93ff7958', trailSelected: '#e7ffd9d9' },
+      flight: { fill: '#bcff70', stroke: '#e2ffc7', trail: '#bcff7052', trailSelected: '#f0ffd9d2' },
+      satellite: { fill: '#75ff95', stroke: '#c7ffd7', trail: '#75ff954c', trailSelected: '#e1ffe8d0' },
+      other: { fill: '#6cb484', stroke: '#bde6c8', trail: '#6cb4844f', trailSelected: '#d9efe0c6' },
+    },
+    flir: {
+      agent: { fill: '#ffe88f', stroke: '#fff5c5', trail: '#ffe88f66', trailSelected: '#fff9dddb' },
+      flight: { fill: '#ff9348', stroke: '#ffbb8d', trail: '#ff934866', trailSelected: '#ffd4b8db' },
+      satellite: { fill: '#ff5f62', stroke: '#ff9b9d', trail: '#ff5f6266', trailSelected: '#ffc5c7db' },
+      other: { fill: '#5c5474', stroke: '#9f94c8', trail: '#5c54745a', trailSelected: '#c8c0e2c9' },
+    },
   };
 
   const GLOBE_CONTINENT_OUTLINES = [
@@ -495,44 +553,128 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function styleTuningByMode(mode) {
-    if (mode === 'nvg') return { tint: 'rgba(68, 255, 106, 0.26)', sat: 0.44, hue: 74, baseBright: 1.05, baseContrast: 1.12, scanline: 0.08 };
-    if (mode === 'flir') return { tint: 'rgba(255, 146, 46, 0.22)', sat: 1.45, hue: -16, baseBright: 1.03, baseContrast: 1.25, scanline: 0.03 };
-    return { tint: 'rgba(129, 213, 255, 0.16)', sat: 0.72, hue: -8, baseBright: 0.98, baseContrast: 1.1, scanline: 0.2 };
+    if (mode === 'nvg') return { tint: 'rgba(32, 255, 96, 0.34)', sat: 0.38, hue: 76, baseBright: 0.95, baseContrast: 1.44, scanline: 0.06, vignetteBoost: 0.22, overlayBlend: 'screen' };
+    if (mode === 'flir') return { tint: 'linear-gradient(155deg, rgba(14,18,34,.78) 0%, rgba(61,31,83,.42) 42%, rgba(255,106,42,.36) 84%, rgba(255,226,149,.24) 100%)', sat: 1.78, hue: -18, baseBright: 0.88, baseContrast: 1.52, scanline: 0.02, vignetteBoost: 0.18, overlayBlend: 'hard-light' };
+    return { tint: 'rgba(126, 211, 255, 0.18)', sat: 0.78, hue: -6, baseBright: 0.97, baseContrast: 1.18, scanline: 0.26, vignetteBoost: 0.15, overlayBlend: 'screen' };
+  }
+
+  function updateTelemetryBar() {
+    const now = new Date();
+    telemetryUtcEl.textContent = now.toISOString().slice(11, 19);
+    telemetryModeEl.textContent = styleMode.toUpperCase();
+    telemetryRecEl.classList.toggle('live', !paused);
+    const anchor = (selectedAgentId && state.agents[selectedAgentId]) || Object.values(state.agents || {})[0] || null;
+    const point = anchor ? getAgentBasePoint(anchor) : null;
+    telemetryCoordsEl.textContent = point && Number.isFinite(point.lat) && Number.isFinite(point.lng)
+      ? (point.lat.toFixed(3) + ', ' + point.lng.toFixed(3))
+      : '--.--, --.--';
+  }
+
+  function syncPresetUi() {
+    for (const btn of presetButtons) {
+      btn.classList.toggle('active', btn.dataset.stylePreset === activeStylePreset);
+    }
+  }
+
+  function applyTypeStyleByMode(mode) {
+    const modeStyles = TYPE_STYLE_BY_MODE[mode] || TYPE_STYLE_BY_MODE.crt;
+    for (const key of Object.keys(TYPE_STYLE)) {
+      if (!modeStyles[key]) continue;
+      TYPE_STYLE[key] = { ...modeStyles[key] };
+    }
+  }
+
+  function setStylePreset(name, silent) {
+    if (!Object.prototype.hasOwnProperty.call(STYLE_PRESETS, name)) return;
+    activeStylePreset = name;
+    styleFx = { ...STYLE_PRESETS[name] };
+    fxBloomEl.value = String(styleFx.bloom);
+    fxSharpenEl.value = String(styleFx.sharpen);
+    fxNoiseEl.value = String(styleFx.noise);
+    fxVignetteEl.value = String(styleFx.vignette);
+    fxPixelationEl.value = String(styleFx.pixelation);
+    fxGlowEl.value = String(styleFx.glow);
+    syncPresetUi();
+    applyVisualStyle();
+    if (!silent) pushOperatorEvent('operator style preset set to ' + name);
   }
 
   function applyVisualStyle() {
     const tuning = styleTuningByMode(styleMode);
-    const bloomPx = (styleFx.bloom / 100) * 2.4;
+    const bloomPx = (styleFx.bloom / 100) * 4.2;
     const sharpenEmphasis = 1 + ((styleFx.sharpen / 100) * 0.45);
     const glowStrength = styleFx.glow / 100;
-    const brightness = tuning.baseBright + glowStrength * 0.2;
-    const contrast = tuning.baseContrast + (styleFx.sharpen / 100) * 0.15;
-    const saturate = Math.max(0.2, tuning.sat + (glowStrength * 0.25));
+    const brightness = tuning.baseBright + glowStrength * 0.16 + (styleFx.bloom / 100) * 0.08;
+    const contrast = tuning.baseContrast + (styleFx.sharpen / 100) * 0.22;
+    const saturate = Math.max(0.2, tuning.sat + (glowStrength * 0.22));
     const hueRotate = tuning.hue;
+    const flicker = (styleMode === 'crt')
+      ? ((Math.sin(Date.now() / 780) + 1) / 2) * 0.06
+      : (styleMode === 'nvg' ? 0.02 : 0.01);
 
     document.body.setAttribute('data-style-mode', styleMode);
+    applyTypeStyleByMode(styleMode);
     styleIndicatorEl.textContent = 'mode: ' + styleMode;
     styleIndicatorEl.style.boxShadow = '0 0 ' + (6 + glowStrength * 12).toFixed(1) + 'px rgba(120,255,220,' + (0.12 + glowStrength * 0.22).toFixed(2) + ')';
-    const sceneFilter = 'brightness(' + brightness.toFixed(3) + ') contrast(' + contrast.toFixed(3) + ') saturate(' + saturate.toFixed(3) + ') hue-rotate(' + hueRotate.toFixed(1) + 'deg)';
-    cesiumContainer.style.filter = sceneFilter + ' drop-shadow(0 0 ' + bloomPx.toFixed(2) + 'px rgba(160,255,220,' + (0.08 + glowStrength * 0.2).toFixed(2) + '))';
+    const sceneFilter = 'brightness(' + (brightness + flicker).toFixed(3) + ') contrast(' + contrast.toFixed(3) + ') saturate(' + saturate.toFixed(3) + ') hue-rotate(' + hueRotate.toFixed(1) + 'deg)';
+    const bloomColor = styleMode === 'nvg'
+      ? 'rgba(114,255,141,' + (0.1 + glowStrength * 0.28).toFixed(2) + ')'
+      : (styleMode === 'flir'
+        ? 'rgba(255,164,89,' + (0.1 + glowStrength * 0.24).toFixed(2) + ')'
+        : 'rgba(160,255,220,' + (0.08 + glowStrength * 0.2).toFixed(2) + ')');
+    cesiumContainer.style.filter = sceneFilter + ' drop-shadow(0 0 ' + bloomPx.toFixed(2) + 'px ' + bloomColor + ')';
     canvas.style.filter = sceneFilter;
 
     const scan = fxOverlayEl.querySelector('.scanlines');
     const noise = fxOverlayEl.querySelector('.noise');
     const vignette = fxOverlayEl.querySelector('.vignette');
     const pixel = fxOverlayEl.querySelector('.pixel-grid');
-    fxOverlayEl.style.background = 'linear-gradient(120deg, transparent 0%, ' + tuning.tint + ' 100%)';
-    fxOverlayEl.style.opacity = (0.25 + glowStrength * 0.45).toFixed(3);
-    scan.style.opacity = (tuning.scanline + (styleFx.bloom / 100) * 0.08).toFixed(3);
-    noise.style.opacity = (styleFx.noise / 100 * 0.34).toFixed(3);
+    fxOverlayEl.style.background = tuning.tint.startsWith('linear-gradient')
+      ? tuning.tint
+      : ('linear-gradient(120deg, transparent 0%, ' + tuning.tint + ' 100%)');
+    fxOverlayEl.style.mixBlendMode = tuning.overlayBlend;
+    fxOverlayEl.style.opacity = (0.24 + glowStrength * 0.42 + flicker).toFixed(3);
+    scan.style.opacity = (tuning.scanline + (styleFx.bloom / 100) * 0.08 + flicker * 0.5).toFixed(3);
+    scan.style.backgroundSize = '100% ' + (styleMode === 'crt' ? '2px' : '3px');
+    noise.style.opacity = (styleFx.noise / 100 * (styleMode === 'flir' ? 0.28 : 0.34)).toFixed(3);
     noise.style.filter = 'blur(' + ((100 - styleFx.sharpen) / 100 * 0.8).toFixed(2) + 'px)';
-    vignette.style.opacity = (styleFx.vignette / 100 * 0.9).toFixed(3);
+    vignette.style.opacity = Math.min(0.95, (styleFx.vignette / 100 * 0.82) + tuning.vignetteBoost).toFixed(3);
+    vignette.style.background = styleMode === 'flir'
+      ? 'radial-gradient(circle at center, rgba(0,0,0,.05) 38%, rgba(0,0,0,.78) 100%)'
+      : 'radial-gradient(circle at center, transparent 45%, rgba(0,0,0,.62) 100%)';
     const pixelSize = (4 + (styleFx.pixelation / 100) * 18).toFixed(1) + 'px';
     pixel.style.backgroundSize = pixelSize + ' ' + pixelSize;
-    pixel.style.opacity = (styleFx.pixelation / 100 * 0.22).toFixed(3);
+    pixel.style.opacity = (styleFx.pixelation / 100 * (activeStylePreset === 'minimal' ? 0.08 : 0.2)).toFixed(3);
 
     // lightweight faux sharpen by balancing global contrast without replacing renderer.
     document.documentElement.style.setProperty('--rw-sharpen-emphasis', sharpenEmphasis.toFixed(3));
+    updateTelemetryBar();
+  }
+
+  function ensureStyleAnimationLoop() {
+    if (styleAnimationLoopActive) return;
+    styleAnimationLoopActive = true;
+    function tickStyleAnimation() {
+      applyVisualStyle();
+      requestAnimationFrame(tickStyleAnimation);
+    }
+    requestAnimationFrame(tickStyleAnimation);
+  }
+
+  function getRegionPaletteByMode(status, isSelected) {
+    if (styleMode === 'flir') {
+      if (status === 'HOT') return { stroke: '#ffb36bcc', strokeBold: '#ffd49fcc', fill: isSelected ? '#ff9b4a3a' : '#ff9b4a1f', label: '#ffd18e' };
+      if (status === 'ACTIVE') return { stroke: '#c482ffbb', strokeBold: '#d7a7ffcc', fill: isSelected ? '#8a5dca36' : '#8a5dca1e', label: '#e4c4ff' };
+      return { stroke: '#625b84aa', strokeBold: '#857ca7bb', fill: isSelected ? '#47405f38' : '#47405f20', label: '#a9a0cc' };
+    }
+    if (styleMode === 'nvg') {
+      if (status === 'HOT') return { stroke: '#c8ff8ecc', strokeBold: '#deffacdd', fill: isSelected ? '#8cd8632f' : '#8cd8631b', label: '#dbffb6' };
+      if (status === 'ACTIVE') return { stroke: '#97ff84cc', strokeBold: '#b8ff9edd', fill: isSelected ? '#74cb6430' : '#74cb641a', label: '#c9ffb2' };
+      return { stroke: '#85b89499', strokeBold: '#9ccfabaa', fill: isSelected ? '#5b7f6730' : '#5b7f6718', label: '#b1dcbe' };
+    }
+    if (status === 'HOT') return { stroke: '#ff8e8ecc', strokeBold: '#ff9b9bcc', fill: isSelected ? '#ff8e8e26' : '#ff8e8e1d', label: '#ffc57f' };
+    if (status === 'ACTIVE') return { stroke: '#fccb88cc', strokeBold: '#ffd293dd', fill: isSelected ? '#fccb8824' : '#fccb881b', label: '#ffc57f' };
+    return { stroke: '#a8b0cc88', strokeBold: '#b8d2ffaa', fill: isSelected ? '#8ec5ff22' : '#8ec5ff14', label: '#ffc57f' };
   }
 
   function renderBaseSurface(width, height) {
@@ -1008,10 +1150,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const regionKey = getCurrentTargetKey('region', r.id);
       const isFlagged = !!flaggedTargets[regionKey];
       const isFocused = focusTargetKey === regionKey && now < focusEffectUntil;
+      const palette = getRegionPaletteByMode(status, isSelected);
       const regionSize = 60 * viewport.zoom;
       const overlay = isGlobeRenderMode() ? getRegionGlobeOverlay(r, width, height, globeDebug) : null;
       ctx.save();
-      ctx.strokeStyle = status === 'HOT' ? '#ff8e8ecc' : status === 'ACTIVE' ? '#fccb88cc' : '#a8b0cc88';
+      ctx.strokeStyle = palette.stroke;
       ctx.lineWidth = isSelected ? 2.25 : 1.5;
       if (isFlagged) {
         ctx.shadowBlur = 6;
@@ -1019,12 +1162,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       if (overlay) {
         if (globeDebug) globeDebug.regionsVisible++;
-        ctx.strokeStyle = status === 'HOT' ? '#ff9d9ddd' : status === 'ACTIVE' ? '#ffd293dd' : '#b8d2ffaa';
-        ctx.fillStyle = status === 'HOT'
-          ? (isSelected ? '#ff8e8e30' : '#ff8e8e1d')
-          : status === 'ACTIVE'
-            ? (isSelected ? '#fccb8830' : '#fccb881b')
-            : (isSelected ? '#8ec5ff24' : '#8ec5ff14');
+        ctx.strokeStyle = palette.strokeBold;
+        ctx.fillStyle = palette.fill;
         drawRegionOverlayShape(overlay);
         ctx.fill();
         ctx.setLineDash([6, 5]);
@@ -1033,8 +1172,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.setLineDash([]);
         if (status === 'HOT') {
           ctx.shadowBlur = 10;
-          ctx.shadowColor = '#ff9b9b88';
-          ctx.strokeStyle = '#ff9b9bcc';
+          ctx.shadowColor = styleMode === 'flir' ? '#ffd09799' : '#ff9b9b88';
+          ctx.strokeStyle = palette.strokeBold;
           ctx.lineWidth = Math.max(ctx.lineWidth, 2.2);
           drawRegionOverlayShape(overlay, 2);
           ctx.stroke();
@@ -1049,14 +1188,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         const rectX = rx - (regionSize / 2);
         const rectY = ry - (regionSize / 2);
         if (isSelected) {
-          ctx.fillStyle = status === 'HOT' ? '#ff8e8e26' : status === 'ACTIVE' ? '#fccb8824' : '#8ec5ff22';
+          ctx.fillStyle = palette.fill;
           ctx.fillRect(rectX, rectY, regionSize, regionSize);
         }
         ctx.setLineDash([4, 4]);
         ctx.strokeRect(rectX, rectY, regionSize, regionSize);
         ctx.setLineDash([]);
         if (status === 'HOT') {
-          ctx.strokeStyle = '#ff9b9bcc';
+          ctx.strokeStyle = palette.strokeBold;
           ctx.lineWidth = 2;
           ctx.strokeRect(rectX - 1, rectY - 1, regionSize + 2, regionSize + 2);
         }
@@ -1074,7 +1213,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       deferredLabelDraws.push(function drawRegionLabel() {
         ctx.save();
         if (labelX >= -60 && labelX <= width + 60 && labelY >= -30 && labelY <= height + 30) {
-          ctx.fillStyle = '#fc7';
+          ctx.fillStyle = palette.label;
           ctx.font = Math.max(8, 10 * viewport.zoom).toFixed(1) + 'px monospace';
           ctx.fillText(regionLabel, labelX, labelY);
         }
@@ -2641,7 +2780,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   syncPauseButton();
   updateStats();
   updateViewportReadout();
-  applyVisualStyle();
+  setStylePreset('tactical', true);
+  ensureStyleAnimationLoop();
 
   zoomInBtnEl.addEventListener('click', function () {
     setViewportZoom(viewport.zoom + VIEWPORT_ZOOM_STEP);
@@ -2671,6 +2811,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     inputEl.addEventListener('input', function () {
       const value = Number(inputEl.value);
       styleFx[key] = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : styleFx[key];
+      activeStylePreset = 'custom';
+      syncPresetUi();
       applyVisualStyle();
     });
   }
@@ -2680,6 +2822,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   bindFxSlider(fxVignetteEl, 'vignette');
   bindFxSlider(fxPixelationEl, 'pixelation');
   bindFxSlider(fxGlowEl, 'glow');
+  for (const btn of presetButtons) {
+    btn.addEventListener('click', function () {
+      setStylePreset(btn.dataset.stylePreset || 'tactical', false);
+    });
+  }
 
   if (USE_CESIUM) {
     toggleLayerTrafficEl.title = 'Traffic layer unavailable in current renderer mode (Cesium + Google 3D Tiles)';
