@@ -1696,7 +1696,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (recEl) recEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
       var orbitEl = document.getElementById('meta-orbit');
       if (orbitEl) orbitEl.textContent = "PASS " + String((state.tick || 0) % 360).padStart(3, "0");
-      try { drawFrame(); } catch (fe) { console.error('WORLDVIEW drawFrame error:', fe); }
+      if (typeof viewMode === 'undefined' || viewMode === 'global') {
+        try { drawFrame(); } catch (fe) { console.error('WORLDVIEW drawFrame error:', fe); }
+      }
       if ((frameCount % 8) === 0) updatePanels();
     } catch (e) {
       console.error('WORLDVIEW animTick error:', e);
