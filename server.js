@@ -35,6 +35,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #controls { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: .68rem; color: #aaa; }
     .ctrl-toggle { display: inline-flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap; cursor: pointer; }
     .ctrl-toggle input { width: 13px; height: 13px; accent-color: #7cf; cursor: pointer; }
+    .ctrl-inline { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    #speed-select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 3px 6px; }
     #pause-btn { border: 1px solid #2e3a46; background: #151a22; color: #a9d6ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
     #pause-btn.active { background: #2b1e1e; color: #ffc2c2; border-color: #5a3333; }
     main { display: grid; grid-template-columns: 1fr 320px; flex: 1; overflow: hidden; }
@@ -67,6 +69,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <label class="ctrl-toggle"><input type="checkbox" id="toggle-agents" checked>Show Agents</label>
     <label class="ctrl-toggle"><input type="checkbox" id="toggle-regions" checked>Show Regions</label>
     <label class="ctrl-toggle"><input type="checkbox" id="toggle-trails" checked>Show Trails</label>
+    <label class="ctrl-inline" for="speed-select">Speed
+      <select id="speed-select" aria-label="Simulation speed">
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="2">2x</option>
+        <option value="4">4x</option>
+      </select>
+    </label>
     <button id="pause-btn" type="button" aria-pressed="false">Pause Simulation</button>
   </div>
 </header>
@@ -82,6 +92,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <span class="stat-label">Tick</span><span class="stat-value" id="s-tick">—</span>
       <span class="stat-label">Agents</span><span class="stat-value" id="s-agents">—</span>
       <span class="stat-label">Regions</span><span class="stat-value" id="s-regions">—</span>
+      <span class="stat-label">Speed</span><span class="stat-value" id="s-speed">1x</span>
       <span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span>
     </div>
   </aside>
@@ -99,9 +110,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleRegionsEl = document.getElementById('toggle-regions');
   const toggleTrailsEl = document.getElementById('toggle-trails');
   const pauseBtnEl = document.getElementById('pause-btn');
+  const speedSelectEl = document.getElementById('speed-select');
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
+  const SNAPSHOT_BASE_INTERVAL_MS = 4000;
   let state = { agents: {}, regions: {}, tick: 0, started: null };
   let eventLog = [];
   let agentTrails = {};
@@ -113,7 +126,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let showRegions = true;
   let showTrails = true;
   let paused = false;
-  let pendingSnapshot = null;
+  let simulationSpeed = 1;
+  let snapshotQueue = [];
+  let lastSnapshotApplyAt = 0;
 
   // ── Canvas resize ──
   function resize() {
@@ -411,6 +426,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     document.getElementById('s-tick').textContent    = state.tick;
     document.getElementById('s-agents').textContent  = Object.keys(state.agents).length;
     document.getElementById('s-regions').textContent = Object.keys(state.regions).length;
+    document.getElementById('s-speed').textContent   = simulationSpeed + 'x';
     if (state.started) {
       const sec = Math.floor((Date.now() - new Date(state.started)) / 1000);
       const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
@@ -457,22 +473,47 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   pauseBtnEl.addEventListener('click', function () {
     paused = !paused;
     syncPauseButton();
-    if (!paused && pendingSnapshot) {
-      updateAgentTrails(state.agents, pendingSnapshot.agents);
-      state = pendingSnapshot;
-      pendingSnapshot = null;
-      clearSelectionIfHidden();
-      if (selectedAgentId && !state.agents[selectedAgentId]) {
-        selectAgent(null);
-      } else if (selectedRegionId && !state.regions[selectedRegionId]) {
-        selectRegion(null);
-      } else {
-        renderSelectedPanel();
-        draw();
-      }
+    if (!paused) {
+      processSnapshotQueue(true);
     }
   });
   syncPauseButton();
+  updateStats();
+
+  speedSelectEl.addEventListener('change', function () {
+    const nextSpeed = Number(speedSelectEl.value);
+    simulationSpeed = Number.isFinite(nextSpeed) && nextSpeed > 0 ? nextSpeed : 1;
+    updateStats();
+  });
+
+  function applySnapshot(nextSnapshot) {
+    updateAgentTrails(state.agents, nextSnapshot.agents);
+    state = nextSnapshot;
+    clearSelectionIfHidden();
+    if (selectedAgentId && !state.agents[selectedAgentId]) {
+      selectAgent(null);
+      return;
+    }
+    if (selectedRegionId && !state.regions[selectedRegionId]) {
+      selectRegion(null);
+      return;
+    }
+    renderSelectedPanel();
+    draw();
+  }
+
+  function processSnapshotQueue(force) {
+    if (paused || snapshotQueue.length === 0) return;
+    const now = Date.now();
+    const applyEveryMs = SNAPSHOT_BASE_INTERVAL_MS / simulationSpeed;
+    if (!force && now - lastSnapshotApplyAt < applyEveryMs) return;
+    applySnapshot(snapshotQueue.shift());
+    lastSnapshotApplyAt = now;
+  }
+
+  setInterval(function () {
+    processSnapshotQueue(false);
+  }, 100);
 
   let _selectionClickLogged = false;
   canvas.addEventListener('click', function (e) {
@@ -517,24 +558,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'snapshot') {
-        if (paused) {
-          pendingSnapshot = msg.data;
-          return;
-        }
-        updateAgentTrails(state.agents, msg.data.agents);
-        state = msg.data;
-        let selectionChanged = false;
-        if (selectedAgentId && !state.agents[selectedAgentId]) {
-          selectAgent(null);
-          selectionChanged = true;
-        } else if (selectedRegionId && !state.regions[selectedRegionId]) {
-          selectRegion(null);
-          selectionChanged = true;
-        }
-        if (!selectionChanged) {
-          renderSelectedPanel();
-          draw();
-        }
+        snapshotQueue.push(msg.data);
+        processSnapshotQueue(true);
       } else if (msg.type === 'event') {
         eventLog.push(msg.data);
         if (eventLog.length > 120) eventLog.shift();
