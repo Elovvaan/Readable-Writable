@@ -273,17 +273,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   setInterval(updateStats, 1000);
   renderSelectedPanel();
 
+  let _selectionClickLogged = false;
   canvas.addEventListener('click', function (e) {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     const hit = findNearestAgentAtPoint(mx, my);
     const chosenId = hit.agent ? hit.agent.id : null;
-    console.debug('[selection-click]', {
-      x: Number(mx.toFixed(1)),
-      y: Number(my.toFixed(1)),
-      selectedEntityId: chosenId,
-    });
+    if (!_selectionClickLogged) {
+      console.debug('[selection-click]', {
+        x: Number(mx.toFixed(1)),
+        y: Number(my.toFixed(1)),
+        selectedEntityId: chosenId,
+      });
+      _selectionClickLogged = true;
+    }
     if (chosenId) selectAgent(chosenId);
     else selectAgent(null);
   });
@@ -305,9 +309,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'snapshot') {
         state = msg.data;
-        if (selectedAgentId && !state.agents[selectedAgentId]) selectAgent(null);
-        renderSelectedPanel();
-        draw();
+        let selectionChanged = false;
+        if (selectedAgentId && !state.agents[selectedAgentId]) {
+          selectAgent(null);
+          selectionChanged = true;
+        }
+        if (!selectionChanged) {
+          renderSelectedPanel();
+          draw();
+        }
       } else if (msg.type === 'event') {
         eventLog.push(msg.data);
         if (eventLog.length > 120) eventLog.shift();
