@@ -686,13 +686,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     canvasEl.style.visibility = 'visible';
     canvasEl.style.opacity = '1';
     canvasEl.style.zIndex = GLOBE_Z_INDEX;
-
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    canvasEl.width = w;
-    canvasEl.height = h;
-    canvasEl.style.width = w + 'px';
-    canvasEl.style.height = h + 'px';
   }
 
   function resize() {
