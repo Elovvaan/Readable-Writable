@@ -195,6 +195,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
+  const GLOBE_FLIGHT_ARC_SEGMENTS = 18;
+  const GLOBE_ORBIT_SEGMENTS = 48;
   const SNAPSHOT_BASE_INTERVAL_MS = 4000;
   const VIEWPORT_ZOOM_MIN = 0.5;
   const VIEWPORT_ZOOM_MAX = 3;
@@ -327,9 +329,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     // trails
     if (showTrails) visibleAgents.forEach(a => {
       const trail = agentTrails[a.id];
-      if (!trail || trail.length < 2) return;
       const isSelected = selectedAgentId === a.id;
       const typeStyle = getEntityTypeStyle(a);
+      const entityType = getEntityType(a);
+      if (renderMode === 'globe' && entityType === 'satellite') {
+        drawSatelliteOrbitBand(a, W, H, isSelected, typeStyle);
+      }
+      if (!trail || trail.length < 2) return;
+      if (renderMode === 'globe' && entityType === 'flight') {
+        drawFlightArcPath(a, trail, W, H, isSelected, typeStyle);
+        return;
+      }
       ctx.save();
       ctx.beginPath();
       const first = worldToCanvas(trail[0].x, trail[0].y, W, H, trail[0].lat, trail[0].lng);
@@ -880,6 +890,142 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.restore();
+  }
+
+  function drawFlightArcPath(agent, trail, width, height, isSelected, typeStyle) {
+    const currentPoint = getEntityWorldPoint(agent);
+    const prior = trail[Math.max(0, trail.length - 2)] || trail[0];
+    const start = worldPointToUnitVector(prior.x, prior.y, prior.lat, prior.lng);
+    const end = worldPointToUnitVector(currentPoint.x, currentPoint.y, currentPoint.lat, currentPoint.lng);
+    if (!start || !end) return;
+    const dot = Math.max(-1, Math.min(1, (start.x * end.x) + (start.y * end.y) + (start.z * end.z)));
+    const omega = Math.acos(dot);
+    const sinOmega = Math.sin(omega);
+    ctx.save();
+    ctx.beginPath();
+    let moved = false;
+    for (let i = 0; i <= GLOBE_FLIGHT_ARC_SEGMENTS; i++) {
+      const t = i / GLOBE_FLIGHT_ARC_SEGMENTS;
+      const interpolation = slerp(start, end, t, omega, sinOmega);
+      if (!interpolation) continue;
+      const lift = 1 + (0.11 * Math.sin(Math.PI * t));
+      const point = vectorToCanvas(interpolation.x * lift, interpolation.y * lift, interpolation.z * lift, width, height);
+      if (!point) continue;
+      if (!moved) {
+        ctx.moveTo(point.x, point.y);
+        moved = true;
+      } else {
+        ctx.lineTo(point.x, point.y);
+      }
+    }
+    if (!moved) {
+      ctx.restore();
+      return;
+    }
+    ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
+    ctx.lineWidth = isSelected ? 2.6 : 1.4;
+    if (isSelected) {
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = typeStyle.stroke;
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawSatelliteOrbitBand(agent, width, height, isSelected, typeStyle) {
+    const point = getEntityWorldPoint(agent);
+    const centerLat = Number.isFinite(point.lat) ? point.lat : 0;
+    const centerLng = Number.isFinite(point.lng) ? point.lng : ((point.x / 100) * 360) - 180;
+    ctx.save();
+    ctx.beginPath();
+    let moved = false;
+    for (let i = 0; i <= GLOBE_ORBIT_SEGMENTS; i++) {
+      const t = i / GLOBE_ORBIT_SEGMENTS;
+      const orbitLng = wrapLng(centerLng + ((t * 360) - 180));
+      const orbitLat = Math.max(-70, Math.min(70, centerLat + (10 * Math.sin((t * Math.PI * 2) + (centerLng * Math.PI / 180)))));
+      const vector = worldPointToUnitVector(50, 50, orbitLat, orbitLng);
+      if (!vector) continue;
+      const pointOnBand = vectorToCanvas(vector.x * 1.06, vector.y * 1.06, vector.z * 1.06, width, height);
+      if (!pointOnBand) continue;
+      if (!moved) {
+        ctx.moveTo(pointOnBand.x, pointOnBand.y);
+        moved = true;
+      } else {
+        ctx.lineTo(pointOnBand.x, pointOnBand.y);
+      }
+    }
+    if (!moved) {
+      ctx.restore();
+      return;
+    }
+    ctx.closePath();
+    ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
+    ctx.lineWidth = isSelected ? 2.4 : 1.1;
+    if (isSelected) {
+      ctx.shadowBlur = 7;
+      ctx.shadowColor = typeStyle.stroke;
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function wrapLng(lng) {
+    if (!Number.isFinite(lng)) return 0;
+    let wrapped = lng;
+    while (wrapped > 180) wrapped -= 360;
+    while (wrapped < -180) wrapped += 360;
+    return wrapped;
+  }
+
+  function slerp(a, b, t, omega, sinOmega) {
+    if (!Number.isFinite(omega) || Math.abs(sinOmega) < 1e-5) {
+      return normalizeVector({
+        x: a.x + ((b.x - a.x) * t),
+        y: a.y + ((b.y - a.y) * t),
+        z: a.z + ((b.z - a.z) * t),
+      });
+    }
+    const scaleA = Math.sin((1 - t) * omega) / sinOmega;
+    const scaleB = Math.sin(t * omega) / sinOmega;
+    return normalizeVector({
+      x: (a.x * scaleA) + (b.x * scaleB),
+      y: (a.y * scaleA) + (b.y * scaleB),
+      z: (a.z * scaleA) + (b.z * scaleB),
+    });
+  }
+
+  function worldPointToUnitVector(worldX, worldY, lat, lng) {
+    const hasLatLng = Number.isFinite(lat) && Number.isFinite(lng);
+    const lon = hasLatLng
+      ? (Math.max(-180, Math.min(180, lng)) * (Math.PI / 180))
+      : ((Math.max(0, Math.min(100, worldX)) / 100) * Math.PI * 2) - Math.PI;
+    const latRad = hasLatLng
+      ? (Math.max(-90, Math.min(90, lat)) * (Math.PI / 180))
+      : ((0.5 - (Math.max(0, Math.min(100, worldY)) / 100)) * Math.PI);
+    const cosLat = Math.cos(latRad);
+    return normalizeVector({
+      x: cosLat * Math.sin(lon),
+      y: Math.sin(latRad),
+      z: cosLat * Math.cos(lon),
+    });
+  }
+
+  function normalizeVector(v) {
+    const mag = Math.sqrt((v.x * v.x) + (v.y * v.y) + (v.z * v.z));
+    if (!Number.isFinite(mag) || mag <= 1e-6) return null;
+    return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
+  }
+
+  function vectorToCanvas(x, y, z, width, height) {
+    const radius = Math.min(width, height) * 0.35;
+    const cx = width / 2;
+    const cy = height / 2;
+    const baseX = cx + (radius * x);
+    const baseY = cy - (radius * y);
+    return {
+      x: applyViewportX(baseX, width),
+      y: applyViewportY(baseY, height),
+    };
   }
 
   function projectGlobePosition(worldX, worldY, width, height, lat, lng) {
