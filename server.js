@@ -204,8 +204,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const VIEWPORT_PAN_STEP = 36;
   const CAMERA_LERP_FACTOR = 0.18;
   const CAMERA_EPSILON_PX = 0.6;
+  const REGION_ACTIVITY_WINDOW_TICKS = 24;
+  const REGION_ACTIVE_EVENT_THRESHOLD = 2;
+  const REGION_HOT_EVENT_THRESHOLD = 5;
+  const REGION_ACTIVE_MOVEMENT_THRESHOLD = 2;
+  const REGION_HOT_MOVEMENT_THRESHOLD = 5;
   let state = { agents: {}, regions: {}, tick: 0, started: null };
   let eventLog = [];
+  let previousAgentsById = {};
   let agentTrails = {};
   let selectedAgentId = null;
   let selectedRegionId = null;
@@ -229,6 +235,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let renderMode = 'grid';
   let followTargetEnabled = false;
   let cameraLerpTarget = null;
+  let latestRegionIntelligence = {};
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -277,7 +284,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       drawGlobeBase(W, H);
     }
 
-    const regionOccupancy = getRegionOccupancy();
+    latestRegionIntelligence = computeRegionIntelligence();
 
     // regions
     if (showRegions) regions.forEach(r => {
@@ -285,8 +292,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const regionPos = worldToCanvas(regionPoint.x, regionPoint.y, W, H, regionPoint.lat, regionPoint.lng);
       if (!regionPos) return;
       const rx = regionPos.x, ry = regionPos.y;
-      const occupancy = regionOccupancy[r.id] || 0;
-      const status = regionStatusFromOccupancy(occupancy);
+      const regionIntel = latestRegionIntelligence[r.id] || null;
+      const occupancy = regionIntel ? regionIntel.occupancy : 0;
+      const status = regionIntel ? regionIntel.status : 'IDLE';
       const isSelected = selectedRegionId === r.id;
       const regionKey = getCurrentTargetKey('region', r.id);
       const isFlagged = !!flaggedTargets[regionKey];
@@ -304,13 +312,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.shadowColor = '#ffd37a';
       }
       if (overlay) {
-        ctx.fillStyle = isSelected ? '#8ec5ff24' : '#8ec5ff14';
+        ctx.fillStyle =
+          status === 'HOT'
+            ? (isSelected ? '#ff8e8e30' : '#ff8e8e1d')
+            : status === 'ACTIVE'
+              ? (isSelected ? '#fccb8830' : '#fccb881b')
+              : (isSelected ? '#8ec5ff24' : '#8ec5ff14');
         drawRegionOverlayShape(overlay);
         ctx.fill();
         ctx.setLineDash([6, 5]);
         drawRegionOverlayShape(overlay);
         ctx.stroke();
         ctx.setLineDash([]);
+        if (status === 'HOT') {
+          ctx.shadowBlur = 10;
+          ctx.shadowColor = '#ff9b9b88';
+          ctx.strokeStyle = '#ff9b9bcc';
+          ctx.lineWidth = Math.max(ctx.lineWidth, 2.2);
+          drawRegionOverlayShape(overlay, 2);
+          ctx.stroke();
+        }
         if (isFocused) {
           ctx.strokeStyle = '#9cf';
           ctx.lineWidth = 3;
@@ -322,12 +343,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         const rectY = ry - (regionSize / 2);
         const rectSize = regionSize;
         if (isSelected) {
-          ctx.fillStyle = '#8ec5ff22';
+          ctx.fillStyle =
+            status === 'HOT' ? '#ff8e8e26' :
+            status === 'ACTIVE' ? '#fccb8824' :
+            '#8ec5ff22';
           ctx.fillRect(rectX, rectY, rectSize, rectSize);
         }
         ctx.setLineDash([4, 4]);
         ctx.strokeRect(rectX, rectY, rectSize, rectSize);
         ctx.setLineDash([]);
+        if (status === 'HOT') {
+          ctx.strokeStyle = '#ff9b9bcc';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(rectX - 1, rectY - 1, rectSize + 2, rectSize + 2);
+        }
         if (isFocused) {
           ctx.strokeStyle = '#9cf';
           ctx.lineWidth = 3;
@@ -487,20 +516,36 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function eventMatchesSelected(ev) {
     if (!ev || typeof ev.msg !== 'string') return false;
     if (selectedAgentId && ev.msg.includes(selectedAgentId)) return true;
-    if (selectedRegionId && ev.msg.includes(selectedRegionId)) return true;
+    if (selectedRegionId && eventRelatesToSelectedRegion(ev, selectedRegionId)) return true;
     return false;
   }
 
   function eventMatchesFilters(ev) {
     const msg = String((ev && ev.msg) || '');
     const filter = activeEventFilter;
+    if (selectedRegionId && !latestRegionIntelligence[selectedRegionId]) {
+      latestRegionIntelligence = computeRegionIntelligence();
+    }
     if (filter === 'tick' && !msg.startsWith('tick ')) return false;
     if (filter === 'movement' && ev.kind !== 'agent') return false;
     if (filter === 'region' && ev.kind !== 'region') return false;
     if (filter === 'operator' && !msg.startsWith('operator ')) return false;
+    if (selectedRegionId && !eventRelatesToSelectedRegion(ev, selectedRegionId)) return false;
     if (!eventSearchQuery) return true;
     const haystack = [msg, ev.kind || '', ev.entityType || ''].join(' ').toLowerCase();
     return haystack.includes(eventSearchQuery);
+  }
+
+  function eventRelatesToSelectedRegion(ev, regionId) {
+    if (!regionId || !ev) return true;
+    const msg = String(ev.msg || '');
+    if (msg.includes(regionId)) return true;
+    const intel = latestRegionIntelligence[regionId];
+    const entityIds = intel ? intel.entitiesInside : [];
+    for (const id of entityIds) {
+      if (msg.includes(id)) return true;
+    }
+    return false;
   }
 
   function refreshRelatedEventHighlight() {
@@ -550,13 +595,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const regionKey = getCurrentTargetKey('region', selectedRegion.id);
       const isFlagged = !!flaggedTargets[regionKey];
       const lastAction = lastOperatorActionByTarget[regionKey] || '—';
-      const occupancy = getRegionOccupancy()[selectedRegion.id] || 0;
-      const status = regionStatusFromOccupancy(occupancy);
-      const insideIds = Object.values(state.agents)
+      const intel = latestRegionIntelligence[selectedRegion.id] || computeRegionIntelligence()[selectedRegion.id] || null;
+      const occupancy = intel ? intel.occupancy : (getRegionOccupancy()[selectedRegion.id] || 0);
+      const status = intel ? intel.status : 'IDLE';
+      const insideIds = intel ? intel.entitiesInside : Object.values(state.agents)
         .filter(a => isEntityTypeVisible(getEntityType(a)))
         .filter(a => a.region === selectedRegion.id)
         .map(a => a.id);
       const insideSummary = insideIds.length > 8 ? (insideIds.length + ' agents') : insideIds.join(', ');
+      const lastRegionEventTs = intel && intel.lastEventTs ? new Date(intel.lastEventTs).toISOString() : '—';
       selectedPanel.innerHTML =
         '<div class="selected-grid">' +
         '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selectedRegion.id) + '</span>' +
@@ -564,9 +611,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         '<span class="selected-label">TYPE</span><span class="selected-value">region</span>' +
         '<span class="selected-label">OCCUPANCY</span><span class="selected-value">' + occupancy + '</span>' +
         '<span class="selected-label">STATUS</span><span class="selected-value">' + status + '</span>' +
+        '<span class="selected-label">ACTIVITY</span><span class="selected-value">' + (intel ? intel.activityLevel : 0) + '</span>' +
+        '<span class="selected-label">LAST EVT TS</span><span class="selected-value">' + escHtml(lastRegionEventTs) + '</span>' +
         '<span class="selected-label">FLAGGED</span><span class="selected-value">' + (isFlagged ? 'yes' : 'no') + '</span>' +
         '<span class="selected-label">LAST ACTION</span><span class="selected-value">' + escHtml(lastAction) + '</span>' +
-        '<span class="selected-label">INSIDE</span><span class="selected-value">' + escHtml(insideSummary || '—') + '</span>' +
+        '<span class="selected-label">ENTITIES</span><span class="selected-value">' + escHtml(insideSummary || '—') + '</span>' +
         '<span class="selected-label">LAST EVENT</span><span class="selected-value">' + escHtml(lastEvent) + '</span>' +
         '</div>';
       syncActionButtons();
@@ -614,7 +663,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function pushOperatorEvent(msg) {
-    const ev = { kind: 'system', msg: msg, ts: new Date().toISOString(), entityType: null };
+    const ev = { kind: 'system', msg: msg, ts: new Date().toISOString(), entityType: null, _tick: state.tick };
     eventLog.push(ev);
     if (eventLog.length > 120) eventLog.shift();
     pushEvent(ev);
@@ -1146,10 +1195,86 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return occupancy;
   }
 
-  function regionStatusFromOccupancy(occupancy) {
-    if (occupancy <= 0) return 'IDLE';
-    if (occupancy <= 2) return 'ACTIVE';
-    return 'HOT';
+  function inferEventRegionIds(ev, regionToEntitySet) {
+    const matched = {};
+    const msg = String((ev && ev.msg) || '');
+    for (const regionId of Object.keys(state.regions || {})) {
+      if (msg.includes(regionId)) matched[regionId] = true;
+    }
+    for (const regionId of Object.keys(regionToEntitySet)) {
+      if (matched[regionId]) continue;
+      const entitySet = regionToEntitySet[regionId];
+      for (const entityId of entitySet) {
+        if (msg.includes(entityId)) {
+          matched[regionId] = true;
+          break;
+        }
+      }
+    }
+    return Object.keys(matched);
+  }
+
+  function deriveRegionStatus(eventCount, movementCount) {
+    if (eventCount >= REGION_HOT_EVENT_THRESHOLD || movementCount >= REGION_HOT_MOVEMENT_THRESHOLD) return 'HOT';
+    if (eventCount >= REGION_ACTIVE_EVENT_THRESHOLD || movementCount >= REGION_ACTIVE_MOVEMENT_THRESHOLD) return 'ACTIVE';
+    return 'IDLE';
+  }
+
+  function computeRegionIntelligence() {
+    const regionOccupancy = getRegionOccupancy();
+    const intel = {};
+    const regionToEntitySet = {};
+    const movementCountByRegion = {};
+    const currentTick = Number.isFinite(state.tick) ? state.tick : 0;
+    const minTick = currentTick - REGION_ACTIVITY_WINDOW_TICKS;
+
+    for (const regionId of Object.keys(state.regions || {})) {
+      intel[regionId] = {
+        occupancy: regionOccupancy[regionId] || 0,
+        activityLevel: 0,
+        lastEventTs: null,
+        status: 'IDLE',
+        entitiesInside: [],
+      };
+      regionToEntitySet[regionId] = new Set();
+      movementCountByRegion[regionId] = 0;
+    }
+
+    for (const agent of Object.values(state.agents || {})) {
+      if (!isEntityTypeVisible(getEntityType(agent))) continue;
+      if (!regionToEntitySet[agent.region]) regionToEntitySet[agent.region] = new Set();
+      regionToEntitySet[agent.region].add(agent.id);
+
+      const prev = previousAgentsById[agent.id];
+      if (!prev || prev.region !== agent.region) continue;
+      if ((prev.x !== agent.x) || (prev.y !== agent.y) || (prev.lat !== agent.lat) || (prev.lng !== agent.lng)) {
+        movementCountByRegion[agent.region] = (movementCountByRegion[agent.region] || 0) + 1;
+      }
+    }
+
+    const recentEventCounts = {};
+    for (const ev of eventLog) {
+      const eventTick = Number.isFinite(ev._tick) ? ev._tick : currentTick;
+      if (eventTick < minTick) continue;
+      const regions = inferEventRegionIds(ev, regionToEntitySet);
+      for (const regionId of regions) {
+        recentEventCounts[regionId] = (recentEventCounts[regionId] || 0) + 1;
+        const existingTs = intel[regionId] ? intel[regionId].lastEventTs : null;
+        if (intel[regionId] && (!existingTs || new Date(ev.ts || 0) > new Date(existingTs))) {
+          intel[regionId].lastEventTs = ev.ts || null;
+        }
+      }
+    }
+
+    for (const regionId of Object.keys(intel)) {
+      const eventCount = recentEventCounts[regionId] || 0;
+      const movementCount = movementCountByRegion[regionId] || 0;
+      intel[regionId].entitiesInside = Array.from(regionToEntitySet[regionId] || []);
+      intel[regionId].activityLevel = eventCount + movementCount;
+      intel[regionId].status = deriveRegionStatus(eventCount, movementCount);
+    }
+
+    return intel;
   }
 
   // ── Stats ──
@@ -1283,7 +1408,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function applySnapshot(nextSnapshot) {
     updateAgentTrails(state.agents, nextSnapshot.agents);
+    previousAgentsById = state.agents || {};
     state = nextSnapshot;
+    latestRegionIntelligence = computeRegionIntelligence();
     clearSelectionIfHidden();
     if (selectedAgentId && !state.agents[selectedAgentId]) {
       selectAgent(null);
@@ -1365,9 +1492,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       statusEl.textContent = 'connected';
       statusEl.className = '';
       wsRetryDelay = 1000;
-      eventLog.push({ kind: 'system', msg: 'WebSocket connected' });
+      eventLog.push({ kind: 'system', msg: 'WebSocket connected', _tick: state.tick });
       if (eventLog.length > 120) eventLog.shift();
-      pushEvent({ kind: 'system', msg: 'WebSocket connected' });
+      pushEvent({ kind: 'system', msg: 'WebSocket connected', _tick: state.tick });
     };
 
     ws.onmessage = function (e) {
@@ -1379,7 +1506,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           return;
         }
         updateAgentTrails(state.agents, msg.data.agents);
+        previousAgentsById = state.agents || {};
         state = msg.data;
+        latestRegionIntelligence = computeRegionIntelligence();
         let selectionChanged = false;
         if (selectedAgentId && !state.agents[selectedAgentId]) {
           selectAgent(null);
@@ -1396,8 +1525,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         snapshotQueue.push(msg.data);
         processSnapshotQueue(true);
       } else if (msg.type === 'event') {
+        if (!Number.isFinite(msg.data._tick)) msg.data._tick = state.tick;
         eventLog.push(msg.data);
         if (eventLog.length > 120) eventLog.shift();
+        latestRegionIntelligence = computeRegionIntelligence();
         pushEvent(msg.data);
         if (paused) return;
         if (msg.data.patch) Object.assign(state, msg.data.patch);
@@ -1409,9 +1540,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ws.onclose = function () {
       statusEl.textContent = 'disconnected';
       statusEl.className = 'disconnected';
-      eventLog.push({ kind: 'system', msg: 'WebSocket disconnected — retrying in ' + (wsRetryDelay/1000) + 's' });
+      eventLog.push({ kind: 'system', msg: 'WebSocket disconnected — retrying in ' + (wsRetryDelay/1000) + 's', _tick: state.tick });
       if (eventLog.length > 120) eventLog.shift();
-      pushEvent({ kind: 'system', msg: 'WebSocket disconnected — retrying in ' + (wsRetryDelay/1000) + 's' });
+      pushEvent({ kind: 'system', msg: 'WebSocket disconnected — retrying in ' + (wsRetryDelay/1000) + 's', _tick: state.tick });
       setTimeout(connect, wsRetryDelay);
       wsRetryDelay = Math.min(wsRetryDelay * 2, 16000);
     };
