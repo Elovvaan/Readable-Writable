@@ -197,6 +197,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const TRAIL_MAX_POINTS = 10;
   const GLOBE_FLIGHT_ARC_SEGMENTS = 18;
   const GLOBE_ORBIT_SEGMENTS = 48;
+  const GLOBE_REGION_OUTLINE_MIN_Z = 0.02;
+  const GLOBE_ENTITY_MIN_Z = 0.03;
+  const GLOBE_PATH_MIN_Z = 0.01;
+  const GLOBE_OVERLAY_DEBUG = false;
+  const GLOBE_DEBUG_LOG_INTERVAL_MS = 1500;
   const SNAPSHOT_BASE_INTERVAL_MS = 4000;
   const VIEWPORT_ZOOM_MIN = 0.5;
   const VIEWPORT_ZOOM_MAX = 3;
@@ -236,6 +241,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let followTargetEnabled = false;
   let cameraLerpTarget = null;
   let latestRegionIntelligence = {};
+  let lastGlobeDebugLogAt = 0;
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -260,6 +266,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const cameraUpdated = updateCameraMotion(W, H);
     ctx.clearRect(0, 0, W, H);
     const now = Date.now();
+    const deferredLabelDraws = [];
+    const globeDebug = renderMode === 'globe'
+      ? {
+          projected: 0,
+          skipped: 0,
+          entitiesVisible: 0,
+          regionsVisible: 0,
+          pathSegmentsDrawn: 0,
+        }
+      : null;
 
     const regions = Object.values(state.regions);
     const agents  = Object.values(state.agents);
@@ -289,7 +305,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     // regions
     if (showRegions) regions.forEach(r => {
       const regionPoint = getEntityWorldPoint(r);
-      const regionPos = worldToCanvas(regionPoint.x, regionPoint.y, W, H, regionPoint.lat, regionPoint.lng);
+      const regionPos = worldToCanvas(regionPoint.x, regionPoint.y, W, H, regionPoint.lat, regionPoint.lng, GLOBE_REGION_OUTLINE_MIN_Z, globeDebug);
       if (!regionPos) return;
       const rx = regionPos.x, ry = regionPos.y;
       const regionIntel = latestRegionIntelligence[r.id] || null;
@@ -300,7 +316,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const isFlagged = !!flaggedTargets[regionKey];
       const isFocused = focusTargetKey === regionKey && now < focusEffectUntil;
       const regionSize = 60 * viewport.zoom;
-      const overlay = renderMode === 'globe' ? getRegionGlobeOverlay(r, W, H) : null;
+      const overlay = renderMode === 'globe' ? getRegionGlobeOverlay(r, W, H, globeDebug) : null;
       ctx.save();
       ctx.strokeStyle =
         status === 'HOT' ? '#ff8e8ecc' :
@@ -312,6 +328,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.shadowColor = '#ffd37a';
       }
       if (overlay) {
+        if (globeDebug) globeDebug.regionsVisible++;
+        ctx.strokeStyle =
+          status === 'HOT' ? '#ff9d9ddd' :
+          status === 'ACTIVE' ? '#ffd293dd' :
+          '#b8d2ffaa';
         ctx.fillStyle =
           status === 'HOT'
             ? (isSelected ? '#ff8e8e30' : '#ff8e8e1d')
@@ -366,14 +387,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const regionLabel = r.name || r.id;
       const labelX = overlay ? overlay.labelX : (rx - (28 * viewport.zoom));
       const labelY = overlay ? (overlay.labelY - (6 * viewport.zoom)) : (ry - (33 * viewport.zoom));
-      if (labelX >= -60 && labelX <= W + 60 && labelY >= -30 && labelY <= H + 30) {
-        ctx.fillStyle = '#fc7';
-        ctx.font = Math.max(8, 10 * viewport.zoom).toFixed(1) + 'px monospace';
-        ctx.fillText(regionLabel, labelX, labelY);
-      }
-      ctx.fillStyle = '#bfc7d2';
-      ctx.font = Math.max(9, 11 * viewport.zoom).toFixed(1) + 'px monospace';
-      ctx.fillText(String(occupancy), (overlay ? overlay.labelX : rx) - (3 * viewport.zoom), (overlay ? overlay.labelY : ry) + (4 * viewport.zoom));
+      const occupancyX = (overlay ? overlay.labelX : rx) - (3 * viewport.zoom);
+      const occupancyY = (overlay ? overlay.labelY : ry) + (4 * viewport.zoom);
+      deferredLabelDraws.push(function drawRegionLabel() {
+        ctx.save();
+        if (labelX >= -60 && labelX <= W + 60 && labelY >= -30 && labelY <= H + 30) {
+          ctx.fillStyle = '#fc7';
+          ctx.font = Math.max(8, 10 * viewport.zoom).toFixed(1) + 'px monospace';
+          ctx.fillText(regionLabel, labelX, labelY);
+        }
+        ctx.fillStyle = '#d8e2f0';
+        ctx.font = Math.max(9, 11 * viewport.zoom).toFixed(1) + 'px monospace';
+        ctx.fillText(String(occupancy), occupancyX, occupancyY);
+        ctx.restore();
+      });
       ctx.restore();
     });
 
@@ -384,25 +411,41 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const typeStyle = getEntityTypeStyle(a);
       const entityType = getEntityType(a);
       if (renderMode === 'globe' && entityType === 'satellite') {
-        drawSatelliteOrbitBand(a, W, H, isSelected, typeStyle);
+        drawSatelliteOrbitBand(a, W, H, isSelected, typeStyle, globeDebug);
       }
       if (!trail || trail.length < 2) return;
       if (renderMode === 'globe' && entityType === 'flight') {
-        drawFlightArcPath(a, trail, W, H, isSelected, typeStyle);
+        drawFlightArcPath(a, trail, W, H, isSelected, typeStyle, globeDebug);
         return;
       }
       ctx.save();
       ctx.beginPath();
-      const first = worldToCanvas(trail[0].x, trail[0].y, W, H, trail[0].lat, trail[0].lng);
+      const first = worldToCanvas(trail[0].x, trail[0].y, W, H, trail[0].lat, trail[0].lng, GLOBE_PATH_MIN_Z, globeDebug);
       if (!first) {
         ctx.restore();
         return;
       }
       ctx.moveTo(first.x, first.y);
+      let hasSegment = false;
+      let penDown = true;
       for (let i = 1; i < trail.length; i++) {
-        const pt = worldToCanvas(trail[i].x, trail[i].y, W, H, trail[i].lat, trail[i].lng);
-        if (!pt) continue;
+        const pt = worldToCanvas(trail[i].x, trail[i].y, W, H, trail[i].lat, trail[i].lng, GLOBE_PATH_MIN_Z, globeDebug);
+        if (!pt) {
+          penDown = false;
+          continue;
+        }
+        if (!penDown) {
+          ctx.moveTo(pt.x, pt.y);
+          penDown = true;
+          continue;
+        }
         ctx.lineTo(pt.x, pt.y);
+        hasSegment = true;
+        if (globeDebug) globeDebug.pathSegmentsDrawn++;
+      }
+      if (!hasSegment) {
+        ctx.restore();
+        return;
       }
       ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
       ctx.lineWidth = isSelected ? 2 : 1;
@@ -413,8 +456,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     // agents
     if (showAgents) visibleAgents.forEach(a => {
       const agentPoint = getEntityWorldPoint(a);
-      const agentPos = worldToCanvas(agentPoint.x, agentPoint.y, W, H, agentPoint.lat, agentPoint.lng);
+      const agentPos = worldToCanvas(agentPoint.x, agentPoint.y, W, H, agentPoint.lat, agentPoint.lng, GLOBE_ENTITY_MIN_Z, globeDebug);
       if (!agentPos) return;
+      if (globeDebug) globeDebug.entitiesVisible++;
       const ax = agentPos.x;
       const ay = agentPos.y;
       const isSelected = selectedAgentId === a.id;
@@ -447,11 +491,30 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.lineWidth = 1.2;
         ctx.stroke();
       }
-      ctx.fillStyle = '#ccc';
-      ctx.font = Math.max(7, 9 * viewport.zoom).toFixed(1) + 'px monospace';
-      ctx.fillText(a.id, ax + (7 * viewport.zoom), ay + (4 * viewport.zoom));
+      const labelX = ax + (7 * viewport.zoom);
+      const labelY = ay + (4 * viewport.zoom);
+      deferredLabelDraws.push(function drawEntityLabel() {
+        ctx.save();
+        ctx.fillStyle = '#dbe5f2';
+        ctx.font = Math.max(7, 9 * viewport.zoom).toFixed(1) + 'px monospace';
+        ctx.fillText(a.id, labelX, labelY);
+        ctx.restore();
+      });
       ctx.restore();
     });
+
+    deferredLabelDraws.forEach(function (drawLabel) { drawLabel(); });
+
+    if (globeDebug && GLOBE_OVERLAY_DEBUG && now - lastGlobeDebugLogAt >= GLOBE_DEBUG_LOG_INTERVAL_MS) {
+      lastGlobeDebugLogAt = now;
+      console.debug('globe-overlay-debug', {
+        entitiesVisible: globeDebug.entitiesVisible,
+        regionsVisible: globeDebug.regionsVisible,
+        projected: globeDebug.projected,
+        skippedProjections: globeDebug.skipped,
+        pathSegmentsDrawn: globeDebug.pathSegmentsDrawn,
+      });
+    }
 
     // tick label
     ctx.fillStyle = '#222';
@@ -746,7 +809,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function getViewportOffsetToCenterWorld(worldX, worldY, width, height, lat, lng) {
     if (renderMode === 'globe') {
-      const globePoint = projectGlobePosition(worldX, worldY, width, height, lat, lng);
+      const globePoint = projectGlobePosition(worldX, worldY, width, height, lat, lng, GLOBE_ENTITY_MIN_Z);
       if (!globePoint) return { x: viewport.offsetX, y: viewport.offsetY };
       return {
         x: -((globePoint.baseX - (width / 2)) * viewport.zoom),
@@ -813,9 +876,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cameraLerpTarget = selectedFocusPoint;
   }
 
-  function worldToCanvas(x, y, width, height, lat, lng) {
+  function worldToCanvas(x, y, width, height, lat, lng, minZ, globeDebug) {
     if (renderMode === 'globe') {
-      const globePoint = projectGlobePosition(x, y, width, height, lat, lng);
+      const minVisibleZ = Number.isFinite(minZ) ? minZ : 0;
+      const globePoint = projectGlobePosition(x, y, width, height, lat, lng, minVisibleZ, globeDebug);
       if (!globePoint) return null;
       return {
         x: applyViewportX(globePoint.baseX, width),
@@ -1005,33 +1069,46 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.closePath();
   }
 
-  function getRegionGlobeOverlay(region, width, height) {
+  function getRegionGlobeOverlay(region, width, height, globeDebug) {
     if (!hasLatLng(region)) return null;
     if (region.bounds && Number.isFinite(region.bounds.north) && Number.isFinite(region.bounds.south)
       && Number.isFinite(region.bounds.west) && Number.isFinite(region.bounds.east)) {
       const b = region.bounds;
-      const rawPoints = [
-        { lat: b.north, lng: b.west },
-        { lat: b.north, lng: b.east },
-        { lat: b.south, lng: b.east },
-        { lat: b.south, lng: b.west },
-      ];
+      const rawPoints = [];
+      const segments = 8;
+      for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        rawPoints.push({ lat: b.north, lng: interpolateLng(b.west, b.east, t) });
+      }
+      for (let i = 1; i <= segments; i++) {
+        const t = i / segments;
+        rawPoints.push({ lat: b.north + ((b.south - b.north) * t), lng: b.east });
+      }
+      for (let i = 1; i <= segments; i++) {
+        const t = i / segments;
+        rawPoints.push({ lat: b.south, lng: interpolateLng(b.east, b.west, t) });
+      }
+      for (let i = 1; i < segments; i++) {
+        const t = i / segments;
+        rawPoints.push({ lat: b.south + ((b.north - b.south) * t), lng: b.west });
+      }
       const points = rawPoints.map(function (p) {
-        return worldToCanvas(50, 50, width, height, p.lat, p.lng);
+        return worldToCanvas(50, 50, width, height, p.lat, p.lng, GLOBE_REGION_OUTLINE_MIN_Z, globeDebug);
       }).filter(Boolean);
       if (points.length < 3) return null;
-      return { shape: 'polygon', points, labelX: points[0].x, labelY: points[0].y };
+      const labelPoint = averageCanvasPoint(points);
+      return { shape: 'polygon', points, labelX: labelPoint.x, labelY: labelPoint.y };
     }
     const radiusDeg = Number.isFinite(region.radiusDeg) ? region.radiusDeg : null;
     if (!radiusDeg) return null;
-    const center = worldToCanvas(region.x, region.y, width, height, region.lat, region.lng);
+    const center = worldToCanvas(region.x, region.y, width, height, region.lat, region.lng, GLOBE_REGION_OUTLINE_MIN_Z, globeDebug);
     if (!center) return null;
-    const edge = worldToCanvas(region.x, region.y, width, height, region.lat + radiusDeg, region.lng);
+    const edge = worldToCanvas(region.x, region.y, width, height, region.lat + radiusDeg, region.lng, GLOBE_REGION_OUTLINE_MIN_Z, globeDebug);
     const radiusPx = edge ? Math.hypot(edge.x - center.x, edge.y - center.y) : Math.max(10, radiusDeg * 1.2);
     return { shape: 'circle', cx: center.x, cy: center.y, radius: radiusPx, labelX: center.x, labelY: center.y };
   }
 
-  function drawFlightArcPath(agent, trail, width, height, isSelected, typeStyle) {
+  function drawFlightArcPath(agent, trail, width, height, isSelected, typeStyle, globeDebug) {
     const currentPoint = getEntityWorldPoint(agent);
     const prior = trail[Math.max(0, trail.length - 2)] || trail[0];
     const start = worldPointToUnitVector(prior.x, prior.y, prior.lat, prior.lng);
@@ -1048,13 +1125,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const interpolation = slerp(start, end, t, omega, sinOmega);
       if (!interpolation) continue;
       const lift = 1 + (0.11 * Math.sin(Math.PI * t));
-      const point = vectorToCanvas(interpolation.x * lift, interpolation.y * lift, interpolation.z * lift, width, height);
+      const point = vectorToCanvas(interpolation.x * lift, interpolation.y * lift, interpolation.z * lift, width, height, GLOBE_PATH_MIN_Z);
       if (!point) continue;
       if (!moved) {
         ctx.moveTo(point.x, point.y);
         moved = true;
       } else {
         ctx.lineTo(point.x, point.y);
+        if (globeDebug) globeDebug.pathSegmentsDrawn++;
       }
     }
     if (!moved) {
@@ -1071,7 +1149,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.restore();
   }
 
-  function drawSatelliteOrbitBand(agent, width, height, isSelected, typeStyle) {
+  function drawSatelliteOrbitBand(agent, width, height, isSelected, typeStyle, globeDebug) {
     const point = getEntityWorldPoint(agent);
     const centerLat = Number.isFinite(point.lat) ? point.lat : 0;
     const centerLng = Number.isFinite(point.lng) ? point.lng : ((point.x / 100) * 360) - 180;
@@ -1084,13 +1162,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const orbitLat = Math.max(-70, Math.min(70, centerLat + (10 * Math.sin((t * Math.PI * 2) + (centerLng * Math.PI / 180)))));
       const vector = worldPointToUnitVector(50, 50, orbitLat, orbitLng);
       if (!vector) continue;
-      const pointOnBand = vectorToCanvas(vector.x * 1.06, vector.y * 1.06, vector.z * 1.06, width, height);
+      const pointOnBand = vectorToCanvas(vector.x * 1.06, vector.y * 1.06, vector.z * 1.06, width, height, GLOBE_PATH_MIN_Z);
       if (!pointOnBand) continue;
       if (!moved) {
         ctx.moveTo(pointOnBand.x, pointOnBand.y);
         moved = true;
       } else {
         ctx.lineTo(pointOnBand.x, pointOnBand.y);
+        if (globeDebug) globeDebug.pathSegmentsDrawn++;
       }
     }
     if (!moved) {
@@ -1155,7 +1234,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
   }
 
-  function vectorToCanvas(x, y, z, width, height) {
+  function vectorToCanvas(x, y, z, width, height, minZ) {
+    const visibleThreshold = Number.isFinite(minZ) ? minZ : 0;
+    if (!Number.isFinite(z) || z < visibleThreshold) return null;
     const radius = Math.min(width, height) * 0.35;
     const cx = width / 2;
     const cy = height / 2;
@@ -1167,7 +1248,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     };
   }
 
-  function projectGlobePosition(worldX, worldY, width, height, lat, lng) {
+  function projectGlobePosition(worldX, worldY, width, height, lat, lng, minZ, globeDebug) {
     const radius = Math.min(width, height) * 0.35;
     const cx = width / 2;
     const cy = height / 2;
@@ -1179,9 +1260,32 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       ? (Math.max(-90, Math.min(90, lat)) * (Math.PI / 180))
       : ((0.5 - (Math.max(0, Math.min(100, worldY)) / 100)) * Math.PI);
     const cosLat = Math.cos(latRad);
-    const baseX = cx + (radius * cosLat * Math.sin(lon));
+    const unitX = cosLat * Math.sin(lon);
+    const unitY = Math.sin(latRad);
+    const unitZ = cosLat * Math.cos(lon);
+    if (globeDebug) globeDebug.projected++;
+    const visibleThreshold = Number.isFinite(minZ) ? minZ : 0;
+    if (!Number.isFinite(unitZ) || unitZ < visibleThreshold) {
+      if (globeDebug) globeDebug.skipped++;
+      return null;
+    }
+    const baseX = cx + (radius * unitX);
     const baseY = cy - (radius * Math.sin(latRad));
-    return { baseX, baseY };
+    return { baseX, baseY, z: unitZ, x: unitX, y: unitY };
+  }
+
+  function averageCanvasPoint(points) {
+    if (!points || points.length === 0) return { x: 0, y: 0 };
+    const sums = points.reduce(function (acc, p) {
+      acc.x += p.x;
+      acc.y += p.y;
+      return acc;
+    }, { x: 0, y: 0 });
+    return { x: sums.x / points.length, y: sums.y / points.length };
+  }
+
+  function interpolateLng(start, end, t) {
+    return wrapLng(start + ((end - start) * t));
   }
 
   function getRegionOccupancy() {
