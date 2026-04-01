@@ -43,6 +43,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .event-entry.agent { color: #7cf; }
     .event-entry.region { color: #fc7; }
     .event-entry.system { color: #a7f; }
+    .event-entry.related { background: #1a2330; box-shadow: inset 2px 0 0 #7cf; }
+    #selected-panel { border-top: 1px solid #1c1c1c; padding: 10px 14px; font-size: .72rem; }
+    .selected-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+    .selected-label { color: #555; }
+    .selected-value { color: #ccc; font-family: monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .selected-empty { color: #666; font-style: italic; }
     #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #1c1c1c; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
     .stat-label { color: #555; }
     .stat-value { color: #ccc; font-family: monospace; text-align: right; }
@@ -58,6 +64,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <aside>
     <div class="panel-title">Event Stream</div>
     <div id="event-log"></div>
+    <div class="panel-title">Selected Target</div>
+    <div id="selected-panel"></div>
     <div class="panel-title">Stats</div>
     <div id="stats">
       <span class="stat-label">Tick</span><span class="stat-value" id="s-tick">—</span>
@@ -74,8 +82,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const canvas  = document.getElementById('world');
   const ctx     = canvas.getContext('2d');
   const log     = document.getElementById('event-log');
+  const selectedPanel = document.getElementById('selected-panel');
   const statusEl = document.getElementById('status');
   let state = { agents: {}, regions: {}, tick: 0, started: null };
+  let eventLog = [];
+  let selectedAgentId = null;
+  let latestSelectedEvent = null;
   let ws, wsRetryDelay = 1000;
 
   // ── Canvas resize ──
@@ -92,6 +104,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function draw() {
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
+    const now = Date.now();
 
     const regions = Object.values(state.regions);
     const agents  = Object.values(state.agents);
@@ -121,13 +134,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     // agents
     agents.forEach(a => {
       const ax = (a.x / 100) * W, ay = (a.y / 100) * H;
+      const isSelected = selectedAgentId === a.id;
       ctx.save();
+      if (isSelected) {
+        const pulse = 1 + ((Math.sin(now / 220) + 1) * 0.18);
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = '#9cf';
+        ctx.beginPath();
+        ctx.arc(ax, ay, 8 * pulse, 0, Math.PI * 2);
+        ctx.strokeStyle = '#9cf8';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
       ctx.beginPath();
       ctx.arc(ax, ay, 5, 0, Math.PI * 2);
       ctx.fillStyle = a.active ? '#7cf' : '#335';
       ctx.fill();
-      ctx.strokeStyle = a.active ? '#aef' : '#224';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = isSelected ? '#cff' : (a.active ? '#aef' : '#224');
+      ctx.lineWidth = isSelected ? 2.5 : 1.5;
       ctx.stroke();
       ctx.fillStyle = '#ccc';
       ctx.font = '9px monospace';
@@ -145,14 +169,68 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function pushEvent(ev) {
     const div = document.createElement('div');
     div.className = 'event-entry ' + (ev.kind || 'system');
+    if (selectedAgentId && eventMatchesSelected(ev)) div.classList.add('related');
     const ts = new Date(ev.ts || Date.now()).toISOString().substr(11, 8);
     div.innerHTML = '<span class="ts">' + ts + '</span>' + escHtml(ev.msg || JSON.stringify(ev));
     log.prepend(div);
     while (log.children.length > 120) log.removeChild(log.lastChild);
+    if (selectedAgentId && eventMatchesSelected(ev)) {
+      latestSelectedEvent = ev;
+      renderSelectedPanel();
+    }
   }
 
   function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function eventMatchesSelected(ev) {
+    return !!(selectedAgentId && ev && typeof ev.msg === 'string' && ev.msg.includes(selectedAgentId));
+  }
+
+  function refreshRelatedEventHighlight() {
+    for (const child of log.children) child.classList.remove('related');
+    if (!selectedAgentId) return;
+    for (const child of log.children) {
+      if (child.textContent.includes(selectedAgentId)) child.classList.add('related');
+    }
+  }
+
+  function updateLatestSelectedEventFromLog() {
+    latestSelectedEvent = null;
+    if (!selectedAgentId) return;
+    for (const ev of eventLog.slice().reverse()) {
+      if (eventMatchesSelected(ev)) {
+        latestSelectedEvent = ev;
+        return;
+      }
+    }
+  }
+
+  function renderSelectedPanel() {
+    const selected = selectedAgentId ? state.agents[selectedAgentId] : null;
+    if (!selected) {
+      selectedPanel.innerHTML = '<div class="selected-empty">No target selected</div>';
+      return;
+    }
+    const lastEvent = latestSelectedEvent ? (latestSelectedEvent.msg || '—') : '—';
+    selectedPanel.innerHTML =
+      '<div class="selected-grid">' +
+      '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selected.id) + '</span>' +
+      '<span class="selected-label">TYPE</span><span class="selected-value">agent</span>' +
+      '<span class="selected-label">X</span><span class="selected-value">' + selected.x.toFixed(2) + '</span>' +
+      '<span class="selected-label">Y</span><span class="selected-value">' + selected.y.toFixed(2) + '</span>' +
+      '<span class="selected-label">STATUS</span><span class="selected-value">' + escHtml(selected.state || (selected.active ? 'active' : 'inactive')) + '</span>' +
+      '<span class="selected-label">LAST EVENT</span><span class="selected-value">' + escHtml(lastEvent) + '</span>' +
+      '</div>';
+  }
+
+  function selectAgent(agentId) {
+    selectedAgentId = agentId || null;
+    updateLatestSelectedEventFromLog();
+    refreshRelatedEventHighlight();
+    renderSelectedPanel();
+    draw();
   }
 
   // ── Stats ──
@@ -168,6 +246,27 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
   }
   setInterval(updateStats, 1000);
+  renderSelectedPanel();
+
+  canvas.addEventListener('click', function (e) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const agents = Object.values(state.agents);
+    let nearest = null;
+    let nearestDist = Infinity;
+    for (const a of agents) {
+      const ax = (a.x / 100) * canvas.width;
+      const ay = (a.y / 100) * canvas.height;
+      const d = Math.hypot(mx - ax, my - ay);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = a;
+      }
+    }
+    if (nearest && nearestDist <= 9) selectAgent(nearest.id);
+    else selectAgent(null);
+  });
 
   // ── WebSocket ──
   function connect() {
@@ -186,10 +285,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'snapshot') {
         state = msg.data;
+        if (selectedAgentId && !state.agents[selectedAgentId]) selectedAgentId = null;
+        renderSelectedPanel();
         draw();
       } else if (msg.type === 'event') {
+        eventLog.push(msg.data);
+        if (eventLog.length > 120) eventLog.shift();
         pushEvent(msg.data);
         if (msg.data.patch) Object.assign(state, msg.data.patch);
+        renderSelectedPanel();
         draw();
       }
     };
