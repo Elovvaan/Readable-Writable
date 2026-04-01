@@ -209,6 +209,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let cesiumGoogleTileset = null;
   const cesiumEntityRefs = { agents: {}, regions: {}, trails: {} };
   let cesiumSelectionHandler = null;
+  let cesiumSafetyViewApplied = false;
   let lastCesiumRenderCounts = {
     entities: 0,
     regions: 0,
@@ -520,46 +521,80 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function syncCesiumScene(nowMs) {
     if (!cesiumViewer) return;
-    const seenAgents = {};
-    const seenRegions = {};
-    const seenTrails = {};
     let entitiesVisible = 0;
     let regionsVisible = 0;
+    let flightsMerged = 0;
     let flightsVisibleAfterFilters = 0;
     let flightsDrawn = 0;
-    let flightsMerged = 0;
     let satellitesRendered = 0;
-    for (const a of Object.values(state.agents || {})) {
+    const allAgents = Object.values(state.agents || {});
+    const flights = allAgents.filter(function (a) { return getEntityType(a) === 'flight'; });
+    flightsMerged = flights.length;
+    if (flights.length) {
+      console.log('FLIGHT SAMPLE', flights[0]);
+    }
+
+    cesiumViewer.entities.removeAll();
+    cesiumEntityRefs.agents = {};
+    cesiumEntityRefs.regions = {};
+    cesiumEntityRefs.trails = {};
+
+    viewerCameraSafetyCheck();
+
+    cesiumViewer.entities.add({
+      id: 'TEST_FLIGHT',
+      position: Cesium.Cartesian3.fromDegrees(-111.8910, 40.7608, 10000),
+      point: {
+        pixelSize: 12,
+        color: Cesium.Color.RED
+      },
+      label: {
+        text: 'TEST',
+        fillColor: Cesium.Color.WHITE,
+        showBackground: true
+      }
+    });
+
+    const flightsLayerBlocked = !layerState.liveFlights;
+    if (flightsLayerBlocked) {
+      console.log('Flights skipped due to layer toggle');
+    }
+    for (const a of allAgents) {
       const entityType = getEntityType(a);
-      if (entityType === 'flight') flightsMerged++;
       if (!showAgents || !isEntityTypeVisible(entityType)) continue;
       if (entityType === 'flight') flightsVisibleAfterFilters++;
       const p = getEntityWorldPoint(a, nowMs);
       const ll = toLatLngWithFallback(p);
       if (!ll) continue;
-      seenAgents[a.id] = true;
-      let marker = cesiumEntityRefs.agents[a.id];
-      if (!marker) {
-        marker = cesiumViewer.entities.add({
-          id: 'agent-' + a.id,
-          rwMeta: { kind: 'agent', id: a.id },
-          label: { text: a.id, font: '12px monospace', fillColor: Cesium.Color.WHITE, pixelOffset: new Cesium.Cartesian2(10, -8), show: true },
-        });
-        cesiumEntityRefs.agents[a.id] = marker;
-      }
-      const height = entityType === 'satellite' ? 400000 : (entityType === 'flight' ? Math.max(500, Number(a.altitude) || 2000) : 10);
-      marker.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, height);
       const isFlight = entityType === 'flight';
       const isSatellite = entityType === 'satellite';
+      if (isFlight && flightsLayerBlocked) continue;
+      if (isFlight && (!Number.isFinite(ll.lat) || !Number.isFinite(ll.lng))) continue;
+      const entityId = isFlight ? 'flight-' + a.id : 'agent-' + a.id;
+      const marker = cesiumViewer.entities.add({
+        id: entityId,
+        rwMeta: { kind: 'agent', id: a.id },
+      });
+      cesiumEntityRefs.agents[a.id] = marker;
+      const height = isSatellite ? 400000 : (isFlight ? (Number(a.altitude) || 10000) : 10);
+      marker.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, height);
       marker.point = {
         pixelSize: isFlight
-          ? (selectedAgentId === a.id ? 16 : 12)
+          ? (selectedAgentId === a.id ? 12 : 10)
           : (isSatellite ? (selectedAgentId === a.id ? 13 : 10) : (selectedAgentId === a.id ? 12 : 8)),
         color: Cesium.Color.fromCssColorString(
-          isFlight ? '#ffd24d' : (isSatellite ? '#f0b7ff' : getEntityTypeStyle(a).fill)
+          isFlight ? '#00ffff' : (isSatellite ? '#f0b7ff' : getEntityTypeStyle(a).fill)
         ),
         outlineColor: Cesium.Color.WHITE,
         outlineWidth: selectedAgentId === a.id ? 2 : 1,
+      };
+      marker.label = {
+        text: isFlight ? (a.callsign || a.id) : a.id,
+        font: '12px monospace',
+        fillColor: Cesium.Color.WHITE,
+        pixelOffset: new Cesium.Cartesian2(10, -8),
+        show: !isFlight,
+        scale: isFlight ? 0.5 : 1,
       };
       marker.show = true;
       entitiesVisible++;
@@ -569,15 +604,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (showTrails) {
         const trailPoints = getCesiumTrailPointsForEntity(a);
         if (trailPoints.length >= 2) {
-          seenTrails[a.id] = true;
-          let trailEntity = cesiumEntityRefs.trails[a.id];
-          if (!trailEntity) {
-            trailEntity = cesiumViewer.entities.add({
-              id: 'trail-' + a.id,
-              rwMeta: { kind: 'agent', id: a.id },
-            });
-            cesiumEntityRefs.trails[a.id] = trailEntity;
-          }
+          const trailEntity = cesiumViewer.entities.add({
+            id: 'trail-' + a.id,
+            rwMeta: { kind: 'agent', id: a.id },
+          });
+          cesiumEntityRefs.trails[a.id] = trailEntity;
           trailEntity.polyline = {
             positions: Cesium.Cartesian3.fromDegreesArrayHeights(trailPoints),
             width: selectedAgentId === a.id ? 3 : 2,
@@ -588,23 +619,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         }
       }
     }
+    flightsDrawn = cesiumViewer.entities.values.filter(function (e) { return typeof e.id === 'string' && e.id.startsWith('flight-'); }).length;
     lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: flightsDrawn };
-    for (const [id,entity] of Object.entries(cesiumEntityRefs.agents)) {
-      if (!seenAgents[id]) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.agents[id]; }
-    }
-    for (const [id,entity] of Object.entries(cesiumEntityRefs.trails)) {
-      if (!seenTrails[id] || !showTrails) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.trails[id]; }
-    }
     for (const r of Object.values(state.regions || {})) {
       if (!showRegions || !layerState.regions) break;
       const ll = toLatLngWithFallback(r);
       if (!ll) continue;
-      seenRegions[r.id] = true;
-      let reg = cesiumEntityRefs.regions[r.id];
-      if (!reg) {
-        reg = cesiumViewer.entities.add({ id: 'region-' + r.id, rwMeta: { kind: 'region', id: r.id } });
-        cesiumEntityRefs.regions[r.id] = reg;
-      }
+      const reg = cesiumViewer.entities.add({ id: 'region-' + r.id, rwMeta: { kind: 'region', id: r.id } });
+      cesiumEntityRefs.regions[r.id] = reg;
       reg.polygon = undefined;
       reg.ellipse = undefined;
       reg.polyline = undefined;
@@ -623,9 +645,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       };
       reg.show = true;
       regionsVisible++;
-    }
-    for (const [id,entity] of Object.entries(cesiumEntityRefs.regions)) {
-      if (!seenRegions[id] || !showRegions || !layerState.regions) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.regions[id]; }
     }
     lastCesiumRenderCounts = {
       entities: entitiesVisible,
@@ -658,6 +677,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       });
     }
     cesiumViewer.scene.requestRender();
+  }
+
+  function viewerCameraSafetyCheck() {
+    if (!cesiumViewer || !cesiumViewer.camera || cesiumSafetyViewApplied) return;
+    cesiumViewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000)
+    });
+    cesiumSafetyViewApplied = true;
   }
 
   function getCesiumTrailPointsForEntity(agent) {
