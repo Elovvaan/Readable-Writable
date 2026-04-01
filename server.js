@@ -193,15 +193,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const GLOBE_REGION_OUTLINE_MIN_Z = 0.02;
   const GLOBE_ENTITY_MIN_Z = 0.03;
   const GLOBE_PATH_MIN_Z = 0.01;
-  const GLOBE_CONTINENT_CONFIG = [
-    { id: 'north-america', name: 'North America', bounds: { north: 72, south: 8, west: -168, east: -52 } },
-    { id: 'south-america', name: 'South America', bounds: { north: 13, south: -56, west: -82, east: -35 } },
-    { id: 'europe', name: 'Europe', bounds: { north: 72, south: 35, west: -12, east: 45 } },
-    { id: 'africa', name: 'Africa', bounds: { north: 37, south: -35, west: -18, east: 51 } },
-    { id: 'asia', name: 'Asia', bounds: { north: 77, south: 1, west: 45, east: 179 } },
-    { id: 'oceania', name: 'Oceania', bounds: { north: -5, south: -50, west: 110, east: 179 } },
-    { id: 'antarctica', name: 'Antarctica', bounds: { north: -60, south: -85, west: -180, east: 180 } },
-  ];
+  const GLOBE_DISABLE_VISIBILITY_CULLING = true; // temporary: verify render path while debugging
+  const HIDE_GRID_REGIONS_ON_GLOBE = true;
+
   const GLOBE_OVERLAY_DEBUG = false;
   const GLOBE_DEBUG_LOG_INTERVAL_MS = 1500;
   const SNAPSHOT_BASE_INTERVAL_MS = 4000;
@@ -278,6 +272,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           pathSegmentsDrawn: 0,
           zMin: Infinity,
           zMax: -Infinity,
+          invalidProjected: 0,
+          entitiesUsingLatLng: 0,
+          entitiesUsingGrid: 0,
         }
       : null;
 
@@ -339,12 +336,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           min: Number.isFinite(globeDebug.zMin) ? globeDebug.zMin : null,
           max: Number.isFinite(globeDebug.zMax) ? globeDebug.zMax : null,
         },
+        invalidProjected: globeDebug.invalidProjected,
+        coordinateSources: {
+          latLng: globeDebug.entitiesUsingLatLng,
+          gridXY: globeDebug.entitiesUsingGrid,
+        },
       });
     }
   }
 
   function renderRegionOverlays(regions, width, height, now, globeDebug, deferredLabelDraws) {
     if (!showRegions) return;
+    if (isGlobeRenderMode() && HIDE_GRID_REGIONS_ON_GLOBE) return;
     regions.forEach(function (r) {
       const regionPoint = getEntityWorldPoint(r);
       const regionPos = worldPointToCanvas(regionPoint, width, height, GLOBE_REGION_OUTLINE_MIN_Z, globeDebug);
@@ -492,6 +495,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!showAgents) return;
     visibleAgents.forEach(function (a) {
       const agentPoint = getEntityWorldPoint(a);
+      if (globeDebug) {
+        if (Number.isFinite(agentPoint.lat) && Number.isFinite(agentPoint.lng)) globeDebug.entitiesUsingLatLng++;
+        else globeDebug.entitiesUsingGrid++;
+      }
       const agentPos = worldPointToCanvas(agentPoint, width, height, GLOBE_ENTITY_MIN_Z, globeDebug);
       if (!agentPos) return;
       if (globeDebug) globeDebug.entitiesVisible++;
@@ -961,6 +968,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       text += ' · vis e:' + globeOverlayDiagnostics.entitiesVisible
         + ' r:' + globeOverlayDiagnostics.regionsVisible
         + ' t:' + globeOverlayDiagnostics.trailsVisible;
+      if (GLOBE_DISABLE_VISIBILITY_CULLING) text += ' · culling off';
     }
     viewportReadoutEl.textContent = text;
   }
@@ -1075,26 +1083,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.strokeStyle = '#355a86';
     ctx.lineWidth = 2;
     ctx.stroke();
-    drawGlobeContinents(width, height);
     ctx.restore();
-  }
-
-  function drawGlobeContinents(width, height) {
-    for (const continent of GLOBE_CONTINENT_CONFIG) {
-      const overlay = getBoundsOverlay(continent.bounds, width, height, 0.005);
-      if (!overlay || !overlay.points || overlay.points.length < 3) continue;
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(overlay.points[0].x, overlay.points[0].y);
-      for (let i = 1; i < overlay.points.length; i++) ctx.lineTo(overlay.points[i].x, overlay.points[i].y);
-      ctx.closePath();
-      ctx.fillStyle = '#1d4d6fcc';
-      ctx.strokeStyle = '#6cb6e1aa';
-      ctx.lineWidth = 1;
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-    }
   }
 
   function drawGlobeGridOverlay(width, height) {
@@ -1376,20 +1365,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const unitY = Math.sin(latRad);
     const unitZ = cosLat * Math.cos(lon);
     if (globeDebug) globeDebug.projected++;
-    if (!Number.isFinite(unitZ)) {
-      if (globeDebug) globeDebug.skipped++;
+    if (!Number.isFinite(unitX) || !Number.isFinite(unitY) || !Number.isFinite(unitZ)) {
+      if (globeDebug) { globeDebug.skipped++; globeDebug.invalidProjected++; }
       return null;
     }
     if (globeDebug) {
       globeDebug.zMin = Math.min(globeDebug.zMin, unitZ);
       globeDebug.zMax = Math.max(globeDebug.zMax, unitZ);
     }
-    if (Number.isFinite(minZ) && unitZ < minZ) {
+    if (!GLOBE_DISABLE_VISIBILITY_CULLING && Number.isFinite(minZ) && unitZ < minZ) {
       if (globeDebug) globeDebug.skipped++;
       return null;
     }
     const baseX = cx + (radius * unitX);
     const baseY = cy - (radius * Math.sin(latRad));
+    if (!Number.isFinite(baseX) || !Number.isFinite(baseY)) {
+      if (globeDebug) { globeDebug.skipped++; globeDebug.invalidProjected++; }
+      return null;
+    }
     return { baseX, baseY, z: unitZ, x: unitX, y: unitY };
   }
 
