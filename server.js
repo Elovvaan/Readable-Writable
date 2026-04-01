@@ -91,6 +91,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let eventLog = [];
   let agentTrails = {};
   let selectedAgentId = null;
+  let selectedRegionId = null;
   let latestSelectedEvent = null;
   let ws, wsRetryDelay = 1000;
 
@@ -120,18 +121,33 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     for (let x = 0; x < W; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
     for (let y = 0; y < H; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
 
+    const regionOccupancy = getRegionOccupancy();
+
     // regions
     regions.forEach(r => {
       const rx = (r.x / 100) * W, ry = (r.y / 100) * H;
+      const occupancy = regionOccupancy[r.id] || 0;
+      const status = regionStatusFromOccupancy(occupancy);
+      const isSelected = selectedRegionId === r.id;
       ctx.save();
-      ctx.strokeStyle = '#fc7a';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle =
+        status === 'HOT' ? '#ff8e8ecc' :
+        status === 'ACTIVE' ? '#fccb88cc' :
+        '#a8b0cc88';
+      ctx.lineWidth = isSelected ? 2.25 : 1.5;
       ctx.setLineDash([4, 4]);
       ctx.strokeRect(rx - 30, ry - 30, 60, 60);
       ctx.setLineDash([]);
+      if (isSelected) {
+        ctx.fillStyle = '#8ec5ff22';
+        ctx.fillRect(rx - 30, ry - 30, 60, 60);
+      }
       ctx.fillStyle = '#fc7';
       ctx.font = '10px monospace';
       ctx.fillText(r.id, rx - 28, ry - 33);
+      ctx.fillStyle = '#bfc7d2';
+      ctx.font = '11px monospace';
+      ctx.fillText(String(occupancy), rx - 3, ry + 4);
       ctx.restore();
     });
 
@@ -192,12 +208,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function pushEvent(ev) {
     const div = document.createElement('div');
     div.className = 'event-entry ' + (ev.kind || 'system');
-    if (selectedAgentId && eventMatchesSelected(ev)) div.classList.add('related');
+    if ((selectedAgentId || selectedRegionId) && eventMatchesSelected(ev)) div.classList.add('related');
     const ts = new Date(ev.ts || Date.now()).toISOString().substr(11, 8);
     div.innerHTML = '<span class="ts">' + ts + '</span>' + escHtml(ev.msg || JSON.stringify(ev));
     log.prepend(div);
     while (log.children.length > 120) log.removeChild(log.lastChild);
-    if (selectedAgentId && eventMatchesSelected(ev)) {
+    if ((selectedAgentId || selectedRegionId) && eventMatchesSelected(ev)) {
       latestSelectedEvent = ev;
       renderSelectedPanel();
     }
@@ -208,20 +224,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function eventMatchesSelected(ev) {
-    return !!(selectedAgentId && ev && typeof ev.msg === 'string' && ev.msg.includes(selectedAgentId));
+    if (!ev || typeof ev.msg !== 'string') return false;
+    if (selectedAgentId && ev.msg.includes(selectedAgentId)) return true;
+    if (selectedRegionId && ev.msg.includes(selectedRegionId)) return true;
+    return false;
   }
 
   function refreshRelatedEventHighlight() {
     for (const child of log.children) child.classList.remove('related');
-    if (!selectedAgentId) return;
+    if (!selectedAgentId && !selectedRegionId) return;
     for (const child of log.children) {
-      if (child.textContent.includes(selectedAgentId)) child.classList.add('related');
+      if ((selectedAgentId && child.textContent.includes(selectedAgentId)) ||
+          (selectedRegionId && child.textContent.includes(selectedRegionId))) {
+        child.classList.add('related');
+      }
     }
   }
 
   function updateLatestSelectedEventFromLog() {
     latestSelectedEvent = null;
-    if (!selectedAgentId) return;
+    if (!selectedAgentId && !selectedRegionId) return;
     for (const ev of eventLog.slice().reverse()) {
       if (eventMatchesSelected(ev)) {
         latestSelectedEvent = ev;
@@ -231,12 +253,33 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function renderSelectedPanel() {
-    const selected = selectedAgentId ? state.agents[selectedAgentId] : null;
-    if (!selected) {
+    const selectedAgent = selectedAgentId ? state.agents[selectedAgentId] : null;
+    const selectedRegion = selectedRegionId ? state.regions[selectedRegionId] : null;
+    if (!selectedAgent && !selectedRegion) {
       selectedPanel.innerHTML = '<div class="selected-empty">No target selected</div>';
       return;
     }
     const lastEvent = latestSelectedEvent ? (latestSelectedEvent.msg || '—') : '—';
+    if (selectedRegion) {
+      const occupancy = getRegionOccupancy()[selectedRegion.id] || 0;
+      const status = regionStatusFromOccupancy(occupancy);
+      const insideIds = Object.values(state.agents)
+        .filter(a => a.region === selectedRegion.id)
+        .map(a => a.id);
+      const insideSummary = insideIds.length > 8 ? (insideIds.length + ' agents') : insideIds.join(', ');
+      selectedPanel.innerHTML =
+        '<div class="selected-grid">' +
+        '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selectedRegion.id) + '</span>' +
+        '<span class="selected-label">TYPE</span><span class="selected-value">region</span>' +
+        '<span class="selected-label">OCCUPANCY</span><span class="selected-value">' + occupancy + '</span>' +
+        '<span class="selected-label">STATUS</span><span class="selected-value">' + status + '</span>' +
+        '<span class="selected-label">INSIDE</span><span class="selected-value">' + escHtml(insideSummary || '—') + '</span>' +
+        '<span class="selected-label">LAST EVENT</span><span class="selected-value">' + escHtml(lastEvent) + '</span>' +
+        '</div>';
+      return;
+    }
+
+    const selected = selectedAgent;
     selectedPanel.innerHTML =
       '<div class="selected-grid">' +
       '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selected.id) + '</span>' +
@@ -250,6 +293,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function selectAgent(agentId) {
     selectedAgentId = agentId || null;
+    selectedRegionId = null;
+    updateLatestSelectedEventFromLog();
+    refreshRelatedEventHighlight();
+    renderSelectedPanel();
+    draw();
+  }
+
+  function selectRegion(regionId) {
+    selectedRegionId = regionId || null;
+    selectedAgentId = null;
     updateLatestSelectedEventFromLog();
     refreshRelatedEventHighlight();
     renderSelectedPanel();
@@ -302,6 +355,32 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       : { agent: null, distance: null };
   }
 
+  function findRegionAtPoint(mx, my) {
+    for (const r of Object.values(state.regions)) {
+      const pt = worldToCanvas(r.x, r.y, canvas.width, canvas.height);
+      if (mx >= pt.x - 30 && mx <= pt.x + 30 && my >= pt.y - 30 && my <= pt.y + 30) {
+        return r;
+      }
+    }
+    return null;
+  }
+
+  function getRegionOccupancy() {
+    const occupancy = {};
+    for (const id of Object.keys(state.regions || {})) occupancy[id] = 0;
+    for (const a of Object.values(state.agents || {})) {
+      if (typeof occupancy[a.region] !== 'number') occupancy[a.region] = 0;
+      occupancy[a.region]++;
+    }
+    return occupancy;
+  }
+
+  function regionStatusFromOccupancy(occupancy) {
+    if (occupancy <= 0) return 'IDLE';
+    if (occupancy <= 2) return 'ACTIVE';
+    return 'HOT';
+  }
+
   // ── Stats ──
   function updateStats() {
     document.getElementById('s-tick').textContent    = state.tick;
@@ -332,8 +411,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       });
       _selectionClickLogged = true;
     }
-    if (chosenId) selectAgent(chosenId);
-    else selectAgent(null);
+    if (chosenId) {
+      selectAgent(chosenId);
+      return;
+    }
+    const regionHit = findRegionAtPoint(mx, my);
+    if (regionHit) {
+      selectRegion(regionHit.id);
+      return;
+    }
+    selectAgent(null);
   });
 
   // ── WebSocket ──
@@ -357,6 +444,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         let selectionChanged = false;
         if (selectedAgentId && !state.agents[selectedAgentId]) {
           selectAgent(null);
+          selectionChanged = true;
+        } else if (selectedRegionId && !state.regions[selectedRegionId]) {
+          selectRegion(null);
           selectionChanged = true;
         }
         if (!selectionChanged) {
