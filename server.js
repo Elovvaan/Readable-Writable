@@ -53,6 +53,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .event-entry.related { background: #1a2330; box-shadow: inset 2px 0 0 #7cf; }
     .event-entry.dimmed { opacity: 0.42; }
     #selected-panel { border-top: 1px solid #1c1c1c; padding: 10px 14px; font-size: .72rem; }
+    #action-panel { border-top: 1px solid #1c1c1c; padding: 8px 14px 10px; font-size: .72rem; }
+    .action-row { display: flex; gap: 6px; }
+    .action-btn { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
+    .action-btn:disabled { cursor: not-allowed; opacity: .45; }
     .selected-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
     .selected-label { color: #555; }
     .selected-value { color: #ccc; font-family: monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -93,6 +97,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div id="event-log"></div>
     <div class="panel-title">Selected Target</div>
     <div id="selected-panel"></div>
+    <div id="action-panel">
+      <div class="action-row">
+        <button id="action-focus" class="action-btn" type="button">Focus</button>
+        <button id="action-ping" class="action-btn" type="button">Ping</button>
+        <button id="action-flag" class="action-btn" type="button">Flag</button>
+      </div>
+    </div>
     <div class="panel-title">Stats</div>
     <div id="stats">
       <span class="stat-label">Tick</span><span class="stat-value" id="s-tick">—</span>
@@ -111,6 +122,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const ctx     = canvas.getContext('2d');
   const log     = document.getElementById('event-log');
   const selectedPanel = document.getElementById('selected-panel');
+  const focusActionBtn = document.getElementById('action-focus');
+  const pingActionBtn = document.getElementById('action-ping');
+  const flagActionBtn = document.getElementById('action-flag');
   const statusEl = document.getElementById('status');
   const toggleAgentsEl = document.getElementById('toggle-agents');
   const toggleRegionsEl = document.getElementById('toggle-regions');
@@ -139,6 +153,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let simulationSpeed = 1;
   let snapshotQueue = [];
   let lastSnapshotApplyAt = 0;
+  let flaggedTargets = {};
+  let lastOperatorActionByTarget = {};
+  let focusTargetKey = null;
+  let focusEffectUntil = 0;
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -182,6 +200,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const occupancy = regionOccupancy[r.id] || 0;
       const status = regionStatusFromOccupancy(occupancy);
       const isSelected = selectedRegionId === r.id;
+      const regionKey = getCurrentTargetKey('region', r.id);
+      const isFlagged = !!flaggedTargets[regionKey];
+      const isFocused = focusTargetKey === regionKey && now < focusEffectUntil;
       ctx.save();
       const rectX = rx - 30;
       const rectY = ry - 30;
@@ -195,9 +216,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         status === 'ACTIVE' ? '#fccb88cc' :
         '#a8b0cc88';
       ctx.lineWidth = isSelected ? 2.25 : 1.5;
+      if (isFlagged) {
+        ctx.shadowBlur = 6;
+        ctx.shadowColor = '#ffd37a';
+      }
       ctx.setLineDash([4, 4]);
       ctx.strokeRect(rectX, rectY, rectSize, rectSize);
       ctx.setLineDash([]);
+      if (isFocused) {
+        ctx.strokeStyle = '#9cf';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(rectX - 3, rectY - 3, rectSize + 6, rectSize + 6);
+      }
       ctx.fillStyle = '#fc7';
       ctx.font = '10px monospace';
       ctx.fillText(r.id, rx - 28, ry - 33);
@@ -231,16 +261,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (showAgents) visibleAgents.forEach(a => {
       const { x: ax, y: ay } = worldToCanvas(a.x, a.y, W, H);
       const isSelected = selectedAgentId === a.id;
+      const agentKey = getCurrentTargetKey('agent', a.id);
+      const isFlagged = !!flaggedTargets[agentKey];
+      const isFocused = focusTargetKey === agentKey && now < focusEffectUntil;
       const typeStyle = getEntityTypeStyle(a);
       ctx.save();
       if (isSelected) {
-        const pulse = 1 + ((Math.sin(now / 220) + 1) * 0.18);
+        const pulse = 1 + ((Math.sin(now / 220) + 1) * (isFocused ? 0.3 : 0.18));
         ctx.shadowBlur = 12;
-        ctx.shadowColor = '#9cf';
+        ctx.shadowColor = isFocused ? '#cfeaff' : '#9cf';
         ctx.beginPath();
-        ctx.arc(ax, ay, 8 * pulse, 0, Math.PI * 2);
-        ctx.strokeStyle = '#9cf8';
-        ctx.lineWidth = 1.5;
+        ctx.arc(ax, ay, (isFocused ? 11 : 8) * pulse, 0, Math.PI * 2);
+        ctx.strokeStyle = isFocused ? '#d7edff' : '#9cf8';
+        ctx.lineWidth = isFocused ? 2.2 : 1.5;
         ctx.stroke();
       }
       ctx.beginPath();
@@ -250,6 +283,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       ctx.strokeStyle = isSelected ? '#e8f7ff' : (a.active ? typeStyle.stroke : '#223041');
       ctx.lineWidth = isSelected ? 2.5 : 1.5;
       ctx.stroke();
+      if (isFlagged) {
+        ctx.beginPath();
+        ctx.arc(ax, ay, AGENT_RENDER_RADIUS + 3.5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ffd37a88';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      }
       ctx.fillStyle = '#ccc';
       ctx.font = '9px monospace';
       ctx.fillText(a.id, ax + 7, ay + 4);
@@ -336,10 +376,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const selectedRegion = selectedRegionId ? state.regions[selectedRegionId] : null;
     if (!selectedAgent && !selectedRegion) {
       selectedPanel.innerHTML = '<div class="selected-empty">No target selected</div>';
+      syncActionButtons();
       return;
     }
     const lastEvent = latestSelectedEvent ? (latestSelectedEvent.msg || '—') : '—';
     if (selectedRegion) {
+      const regionKey = getCurrentTargetKey('region', selectedRegion.id);
+      const isFlagged = !!flaggedTargets[regionKey];
+      const lastAction = lastOperatorActionByTarget[regionKey] || '—';
       const occupancy = getRegionOccupancy()[selectedRegion.id] || 0;
       const status = regionStatusFromOccupancy(occupancy);
       const insideIds = Object.values(state.agents)
@@ -353,13 +397,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         '<span class="selected-label">TYPE</span><span class="selected-value">region</span>' +
         '<span class="selected-label">OCCUPANCY</span><span class="selected-value">' + occupancy + '</span>' +
         '<span class="selected-label">STATUS</span><span class="selected-value">' + status + '</span>' +
+        '<span class="selected-label">FLAGGED</span><span class="selected-value">' + (isFlagged ? 'yes' : 'no') + '</span>' +
+        '<span class="selected-label">LAST ACTION</span><span class="selected-value">' + escHtml(lastAction) + '</span>' +
         '<span class="selected-label">INSIDE</span><span class="selected-value">' + escHtml(insideSummary || '—') + '</span>' +
         '<span class="selected-label">LAST EVENT</span><span class="selected-value">' + escHtml(lastEvent) + '</span>' +
         '</div>';
+      syncActionButtons();
       return;
     }
 
     const selected = selectedAgent;
+    const agentKey = getCurrentTargetKey('agent', selected.id);
+    const isFlagged = !!flaggedTargets[agentKey];
+    const lastAction = lastOperatorActionByTarget[agentKey] || '—';
     selectedPanel.innerHTML =
       '<div class="selected-grid">' +
       '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selected.id) + '</span>' +
@@ -367,8 +417,69 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       '<span class="selected-label">X</span><span class="selected-value">' + selected.x.toFixed(2) + '</span>' +
       '<span class="selected-label">Y</span><span class="selected-value">' + selected.y.toFixed(2) + '</span>' +
       '<span class="selected-label">STATUS</span><span class="selected-value">' + escHtml(selected.state || (selected.active ? 'active' : 'inactive')) + '</span>' +
+      '<span class="selected-label">FLAGGED</span><span class="selected-value">' + (isFlagged ? 'yes' : 'no') + '</span>' +
+      '<span class="selected-label">LAST ACTION</span><span class="selected-value">' + escHtml(lastAction) + '</span>' +
       '<span class="selected-label">LAST EVENT</span><span class="selected-value">' + escHtml(lastEvent) + '</span>' +
       '</div>';
+    syncActionButtons();
+  }
+
+  function getCurrentTargetKey(explicitType, explicitId) {
+    const type = explicitType || (selectedAgentId ? 'agent' : (selectedRegionId ? 'region' : null));
+    const id = explicitId || selectedAgentId || selectedRegionId;
+    return type && id ? (type + ':' + id) : null;
+  }
+
+  function syncActionButtons() {
+    const hasSelection = !!getCurrentTargetKey();
+    focusActionBtn.disabled = !hasSelection;
+    pingActionBtn.disabled = !hasSelection;
+    flagActionBtn.disabled = !hasSelection;
+  }
+
+  function pushOperatorEvent(msg) {
+    const ev = { kind: 'system', msg: msg, ts: new Date().toISOString(), entityType: null };
+    eventLog.push(ev);
+    if (eventLog.length > 120) eventLog.shift();
+    pushEvent(ev);
+  }
+
+  function runFocusAction() {
+    const targetKey = getCurrentTargetKey();
+    if (!targetKey) return;
+    focusTargetKey = targetKey;
+    focusEffectUntil = Date.now() + 2200;
+    const targetId = selectedAgentId || selectedRegionId;
+    const label = selectedAgentId ? targetId : ('region ' + targetId);
+    lastOperatorActionByTarget[targetKey] = 'focus';
+    pushOperatorEvent('operator focused ' + label);
+    renderSelectedPanel();
+    draw();
+  }
+
+  function runPingAction() {
+    const targetKey = getCurrentTargetKey();
+    if (!targetKey) return;
+    const targetId = selectedAgentId || selectedRegionId;
+    lastOperatorActionByTarget[targetKey] = 'ping';
+    if (selectedAgentId) {
+      pushOperatorEvent('operator pinged ' + targetId);
+    } else {
+      pushOperatorEvent('operator pinged region ' + targetId);
+    }
+    renderSelectedPanel();
+  }
+
+  function runFlagAction() {
+    const targetKey = getCurrentTargetKey();
+    if (!targetKey) return;
+    flaggedTargets[targetKey] = !flaggedTargets[targetKey];
+    lastOperatorActionByTarget[targetKey] = flaggedTargets[targetKey] ? 'flag' : 'unflag';
+    const targetId = selectedAgentId || selectedRegionId;
+    const label = selectedAgentId ? targetId : ('region ' + targetId);
+    pushOperatorEvent('operator ' + (flaggedTargets[targetKey] ? 'flagged ' : 'unflagged ') + label);
+    renderSelectedPanel();
+    draw();
   }
 
   function selectAgent(agentId) {
@@ -482,6 +593,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
   setInterval(updateStats, 1000);
   renderSelectedPanel();
+  syncActionButtons();
+  focusActionBtn.addEventListener('click', runFocusAction);
+  pingActionBtn.addEventListener('click', runPingAction);
+  flagActionBtn.addEventListener('click', runFlagAction);
 
   function clearSelectionIfHidden() {
     if (!showAgents && selectedAgentId) {
