@@ -183,6 +183,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <span class="stat-label">Regions</span><span class="stat-value" id="s-regions">—</span>
       <span class="stat-label">FlightsDbg</span><span class="stat-value" id="s-flights-debug">—</span>
       <span class="stat-label">Layers</span><span class="stat-value" id="s-layers-debug">—</span>
+      <span class="stat-label">RenderDbg</span><span class="stat-value" id="s-render-debug">—</span>
       <span class="stat-label">Speed</span><span class="stat-value" id="s-speed">1x</span>
       <span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span>
     </div>
@@ -208,7 +209,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let cesiumGoogleTileset = null;
   const cesiumEntityRefs = { agents: {}, regions: {}, trails: {} };
   let cesiumSelectionHandler = null;
-  let lastCesiumRenderCounts = { entities: 0, regions: 0 };
+  let lastCesiumRenderCounts = {
+    entities: 0,
+    regions: 0,
+    satellites: 0,
+    flightsDrawn: 0,
+    earthInitialized: false,
+    tilesLoaded: false,
+  };
   let lastCesiumDiagAt = 0;
   const log     = document.getElementById('event-log');
   const eventSearchEl = document.getElementById('event-search');
@@ -478,6 +486,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           url: 'https://tile.openstreetmap.org/',
         }));
       }
+      lastCesiumRenderCounts.earthInitialized = true;
+      lastCesiumRenderCounts.tilesLoaded = !!cesiumGoogleTileset;
       console.info('[RW Cesium] initialized');
     } catch (err) {
       console.error('[RW Cesium] init failed', err);
@@ -518,6 +528,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     let flightsVisibleAfterFilters = 0;
     let flightsDrawn = 0;
     let flightsMerged = 0;
+    let satellitesRendered = 0;
     for (const a of Object.values(state.agents || {})) {
       const entityType = getEntityType(a);
       if (entityType === 'flight') flightsMerged++;
@@ -539,15 +550,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const height = entityType === 'satellite' ? 400000 : (entityType === 'flight' ? Math.max(500, Number(a.altitude) || 2000) : 10);
       marker.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, height);
       const isFlight = entityType === 'flight';
+      const isSatellite = entityType === 'satellite';
       marker.point = {
-        pixelSize: isFlight ? (selectedAgentId === a.id ? 16 : 12) : (selectedAgentId === a.id ? 12 : 8),
-        color: Cesium.Color.fromCssColorString(isFlight ? '#ffd24d' : getEntityTypeStyle(a).fill),
+        pixelSize: isFlight
+          ? (selectedAgentId === a.id ? 16 : 12)
+          : (isSatellite ? (selectedAgentId === a.id ? 13 : 10) : (selectedAgentId === a.id ? 12 : 8)),
+        color: Cesium.Color.fromCssColorString(
+          isFlight ? '#ffd24d' : (isSatellite ? '#f0b7ff' : getEntityTypeStyle(a).fill)
+        ),
         outlineColor: Cesium.Color.WHITE,
         outlineWidth: selectedAgentId === a.id ? 2 : 1,
       };
       marker.show = true;
       entitiesVisible++;
       if (isFlight) flightsDrawn++;
+      if (isSatellite) satellitesRendered++;
 
       if (showTrails) {
         const trailPoints = getCesiumTrailPointsForEntity(a);
@@ -610,14 +627,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     for (const [id,entity] of Object.entries(cesiumEntityRefs.regions)) {
       if (!seenRegions[id] || !showRegions || !layerState.regions) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.regions[id]; }
     }
-    lastCesiumRenderCounts = { entities: entitiesVisible, regions: regionsVisible };
+    lastCesiumRenderCounts = {
+      entities: entitiesVisible,
+      regions: regionsVisible,
+      satellites: satellitesRendered,
+      flightsDrawn,
+      earthInitialized: !!cesiumViewer,
+      tilesLoaded: !!cesiumGoogleTileset,
+    };
     const now = Date.now();
     if (now - lastCesiumDiagAt > 15000) {
       lastCesiumDiagAt = now;
       console.info('[RW Cesium] render counts', {
+        earthInitialized: !!cesiumViewer,
+        tilesLoaded: !!cesiumGoogleTileset,
         entities: entitiesVisible,
+        satellites: satellitesRendered,
         regions: regionsVisible,
-        googleTilesLoaded: !!cesiumGoogleTileset,
+        flightsFetched: Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0,
+        flightsMerged,
+        flightsVisible: flightsVisibleAfterFilters,
+        flightsRendered: flightsDrawn,
+        layers: {
+          liveFlights: layerState.liveFlights,
+          satellites: layerState.satellites,
+          regions: layerState.regions,
+          traffic: layerState.traffic,
+          weather: layerState.weather,
+        },
       });
     }
     cesiumViewer.scene.requestRender();
@@ -1456,8 +1493,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function updateViewportReadout() {
     let text = 'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
     if (USE_CESIUM) {
-      text += ' · cesium e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions;
-      text += cesiumGoogleTileset ? ' · google tiles:on' : ' · google tiles:off';
+      text += ' · cesium e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions + ' s:' + lastCesiumRenderCounts.satellites;
+      text += (lastCesiumRenderCounts.tilesLoaded ? ' · google tiles:on' : ' · google tiles:off');
       if (layerState.traffic) text += ' · traffic:unavailable';
       if (layerState.weather) text += ' · weather:not configured';
     } else if (isGlobeRenderMode() && globeOverlayDiagnostics) {
@@ -2130,6 +2167,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     document.getElementById('s-regions').textContent = Object.keys(state.regions).length;
     document.getElementById('s-flights-debug').textContent = flightDebugText;
     document.getElementById('s-layers-debug').textContent = layerDebugText;
+    document.getElementById('s-render-debug').textContent =
+      'earth:' + (lastCesiumRenderCounts.earthInitialized ? 'ok' : 'pending')
+      + ' tiles:' + (lastCesiumRenderCounts.tilesLoaded ? 'ok' : 'pending')
+      + ' sat:' + (Number.isFinite(lastCesiumRenderCounts.satellites) ? lastCesiumRenderCounts.satellites : 0)
+      + ' reg:' + (Number.isFinite(lastCesiumRenderCounts.regions) ? lastCesiumRenderCounts.regions : 0);
     document.getElementById('s-speed').textContent   = simulationSpeed + 'x';
     if (state.started) {
       const sec = Math.floor((Date.now() - new Date(state.started)) / 1000);
