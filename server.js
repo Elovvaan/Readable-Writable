@@ -113,6 +113,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <label class="ctrl-toggle"><input type="checkbox" id="toggle-agents" checked>Show Agents</label>
     <label class="ctrl-toggle"><input type="checkbox" id="toggle-regions" checked>Show Regions</label>
     <label class="ctrl-toggle"><input type="checkbox" id="toggle-trails" checked>Show Trails</label>
+    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-flights" checked>Live Flights</label>
+    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-traffic" checked>Traffic</label>
+    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-satellites" checked>Satellites</label>
+    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-regions" checked>Regions Layer</label>
+    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-weather">Weather</label>
     <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#7cc4ff"></span><input type="checkbox" id="toggle-type-agent" checked>Agents</label>
     <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#ffb77d"></span><input type="checkbox" id="toggle-type-flight" checked>Flights</label>
     <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#d0a3ff"></span><input type="checkbox" id="toggle-type-satellite" checked>Satellites</label>
@@ -177,6 +182,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <span class="stat-label">Agents</span><span class="stat-value" id="s-agents">—</span>
       <span class="stat-label">Regions</span><span class="stat-value" id="s-regions">—</span>
       <span class="stat-label">FlightsDbg</span><span class="stat-value" id="s-flights-debug">—</span>
+      <span class="stat-label">Layers</span><span class="stat-value" id="s-layers-debug">—</span>
       <span class="stat-label">Speed</span><span class="stat-value" id="s-speed">1x</span>
       <span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span>
     </div>
@@ -216,6 +222,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleAgentsEl = document.getElementById('toggle-agents');
   const toggleRegionsEl = document.getElementById('toggle-regions');
   const toggleTrailsEl = document.getElementById('toggle-trails');
+  const toggleLayerFlightsEl = document.getElementById('toggle-layer-flights');
+  const toggleLayerTrafficEl = document.getElementById('toggle-layer-traffic');
+  const toggleLayerSatellitesEl = document.getElementById('toggle-layer-satellites');
+  const toggleLayerRegionsEl = document.getElementById('toggle-layer-regions');
+  const toggleLayerWeatherEl = document.getElementById('toggle-layer-weather');
   const toggleTypeAgentEl = document.getElementById('toggle-type-agent');
   const toggleTypeFlightEl = document.getElementById('toggle-type-flight');
   const toggleTypeSatelliteEl = document.getElementById('toggle-type-satellite');
@@ -279,6 +290,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let showRegions = true;
   let showTrails = true;
   let visibleEntityTypes = { agent: true, flight: true, satellite: true, other: true };
+  const layerState = { liveFlights: true, traffic: true, satellites: true, regions: true, weather: false };
   let paused = false;
   let simulationSpeed = 1;
   let snapshotQueue = [];
@@ -298,6 +310,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let globeRegionOverlaySuppressed = false;
   let openskyStatus = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null };
   let lastFlightDebugCounts = { merged: 0, visible: 0, drawn: 0 };
+  let lastLayerDiagnostics = {};
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -566,7 +579,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (!seenTrails[id] || !showTrails) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.trails[id]; }
     }
     for (const r of Object.values(state.regions || {})) {
-      if (!showRegions) break;
+      if (!showRegions || !layerState.regions) break;
       const ll = toLatLngWithFallback(r);
       if (!ll) continue;
       seenRegions[r.id] = true;
@@ -595,7 +608,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       regionsVisible++;
     }
     for (const [id,entity] of Object.entries(cesiumEntityRefs.regions)) {
-      if (!seenRegions[id] || !showRegions) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.regions[id]; }
+      if (!seenRegions[id] || !showRegions || !layerState.regions) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.regions[id]; }
     }
     lastCesiumRenderCounts = { entities: entitiesVisible, regions: regionsVisible };
     const now = Date.now();
@@ -681,7 +694,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function renderRegionOverlays(regions, width, height, now, globeDebug, deferredLabelDraws) {
-    if (!showRegions) return;
+    if (!showRegions || !layerState.regions) return;
     if (isGlobeRenderMode() && HIDE_GRID_REGIONS_ON_GLOBE) {
       globeRegionOverlaySuppressed = true;
       return;
@@ -1020,7 +1033,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function isEntityTypeVisible(type) {
-    return !!visibleEntityTypes[type];
+    if (!visibleEntityTypes[type]) return false;
+    if (type === 'flight' && !layerState.liveFlights) return false;
+    if (type === 'satellite' && !layerState.satellites) return false;
+    return true;
+  }
+
+  function buildLayerDiagnostics() {
+    const allAgents = Object.values(state.agents || {});
+    const flightsInState = allAgents.filter(a => getEntityType(a) === 'flight').length;
+    const satellitesInState = allAgents.filter(a => getEntityType(a) === 'satellite').length;
+    const regionsInState = Object.keys(state.regions || {}).length;
+    return {
+      liveFlights: layerState.liveFlights
+        ? (flightsInState > 0 ? 'active' : 'no data')
+        : 'off',
+      traffic: layerState.traffic
+        ? 'unavailable in current renderer mode'
+        : 'off',
+      satellites: layerState.satellites
+        ? (satellitesInState > 0 ? 'active' : 'no data')
+        : 'off',
+      regions: layerState.regions
+        ? (regionsInState > 0 ? 'active' : 'no data')
+        : 'off',
+      weather: layerState.weather
+        ? 'not configured'
+        : 'off',
+    };
   }
 
   function eventEntityType(ev) {
@@ -1418,6 +1458,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (USE_CESIUM) {
       text += ' · cesium e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions;
       text += cesiumGoogleTileset ? ' · google tiles:on' : ' · google tiles:off';
+      if (layerState.traffic) text += ' · traffic:unavailable';
+      if (layerState.weather) text += ' · weather:not configured';
     } else if (isGlobeRenderMode() && globeOverlayDiagnostics) {
       text += ' · vis e:' + globeOverlayDiagnostics.entitiesVisible
         + ' r:' + globeOverlayDiagnostics.regionsVisible
@@ -1552,7 +1594,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function findRegionAtPoint(mx, my) {
-    if (!showRegions) return null;
+    if (!showRegions || !layerState.regions) return null;
     for (const r of Object.values(state.regions)) {
       if (isGlobeRenderMode()) {
         const overlay = getRegionGlobeOverlay(r, canvas.width, canvas.height);
@@ -2075,11 +2117,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const openskyError = openskyStatus && openskyStatus.lastErrorAt ? ' ERR' : '';
     const flightDebugText = openskyMisconfigured
       ? 'OpenSky auth missing'
-      : ('F' + fetched + ' M' + merged + ' V' + visibleFlights + ' D' + drawnFlights + openskyError);
+      : ('fetched:' + fetched + ' merged:' + merged + ' visible:' + visibleFlights + ' drawn:' + drawnFlights + openskyError);
+    const layerDiagnostics = buildLayerDiagnostics();
+    lastLayerDiagnostics = layerDiagnostics;
+    const layerDebugText = 'L:' + layerDiagnostics.liveFlights
+      + ' T:' + layerDiagnostics.traffic
+      + ' S:' + layerDiagnostics.satellites
+      + ' R:' + layerDiagnostics.regions
+      + ' W:' + layerDiagnostics.weather;
     document.getElementById('s-tick').textContent    = state.tick;
     document.getElementById('s-agents').textContent  = visibleAgents.length + '/' + allAgents.length;
     document.getElementById('s-regions').textContent = Object.keys(state.regions).length;
     document.getElementById('s-flights-debug').textContent = flightDebugText;
+    document.getElementById('s-layers-debug').textContent = layerDebugText;
     document.getElementById('s-speed').textContent   = simulationSpeed + 'x';
     if (state.started) {
       const sec = Math.floor((Date.now() - new Date(state.started)) / 1000);
@@ -2127,7 +2177,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         latestSelectedEvent = null;
       }
     }
-    if (!showRegions && selectedRegionId) {
+    if ((!showRegions || !layerState.regions) && selectedRegionId) {
       selectedRegionId = null;
       latestSelectedEvent = null;
     }
@@ -2155,6 +2205,35 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   toggleTrailsEl.addEventListener('change', function () {
     showTrails = !!toggleTrailsEl.checked;
     draw();
+  });
+  toggleLayerFlightsEl.addEventListener('change', function () {
+    layerState.liveFlights = !!toggleLayerFlightsEl.checked;
+    clearSelectionIfHidden();
+    refreshEventVisibilityStyling();
+    updateStats();
+    draw();
+  });
+  toggleLayerTrafficEl.addEventListener('change', function () {
+    layerState.traffic = !!toggleLayerTrafficEl.checked;
+    updateStats();
+    draw();
+  });
+  toggleLayerSatellitesEl.addEventListener('change', function () {
+    layerState.satellites = !!toggleLayerSatellitesEl.checked;
+    clearSelectionIfHidden();
+    refreshEventVisibilityStyling();
+    updateStats();
+    draw();
+  });
+  toggleLayerRegionsEl.addEventListener('change', function () {
+    layerState.regions = !!toggleLayerRegionsEl.checked;
+    clearSelectionIfHidden();
+    updateStats();
+    draw();
+  });
+  toggleLayerWeatherEl.addEventListener('change', function () {
+    layerState.weather = !!toggleLayerWeatherEl.checked;
+    updateStats();
   });
   function onTypeToggleChange() {
     visibleEntityTypes.agent = !!toggleTypeAgentEl.checked;
@@ -2196,6 +2275,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     simulationSpeed = Number.isFinite(nextSpeed) && nextSpeed > 0 ? nextSpeed : 1;
     updateStats();
   });
+
+  if (USE_CESIUM) {
+    toggleLayerTrafficEl.title = 'Traffic layer unavailable in current renderer mode (Cesium + Google 3D Tiles)';
+  }
+  toggleLayerWeatherEl.title = 'Weather layer is present as a stub and currently not configured';
 
   function applySnapshot(nextSnapshot) {
     const snapshotTsMs = Date.now();
