@@ -86,8 +86,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const statusEl = document.getElementById('status');
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
+  const TRAIL_MAX_POINTS = 10;
   let state = { agents: {}, regions: {}, tick: 0, started: null };
   let eventLog = [];
+  let agentTrails = {};
   let selectedAgentId = null;
   let latestSelectedEvent = null;
   let ws, wsRetryDelay = 1000;
@@ -130,6 +132,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       ctx.fillStyle = '#fc7';
       ctx.font = '10px monospace';
       ctx.fillText(r.id, rx - 28, ry - 33);
+      ctx.restore();
+    });
+
+    // trails
+    agents.forEach(a => {
+      const trail = agentTrails[a.id];
+      if (!trail || trail.length < 2) return;
+      const isSelected = selectedAgentId === a.id;
+      ctx.save();
+      ctx.beginPath();
+      const first = worldToCanvas(trail[0].x, trail[0].y, W, H);
+      ctx.moveTo(first.x, first.y);
+      for (let i = 1; i < trail.length; i++) {
+        const pt = worldToCanvas(trail[i].x, trail[i].y, W, H);
+        ctx.lineTo(pt.x, pt.y);
+      }
+      ctx.strokeStyle = isSelected ? '#aee9' : '#7cf3';
+      ctx.lineWidth = isSelected ? 2 : 1;
+      ctx.stroke();
       ctx.restore();
     });
 
@@ -239,6 +260,29 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return { x: (x / 100) * width, y: (y / 100) * height };
   }
 
+  function updateAgentTrails(prevAgents, nextAgents) {
+    const prev = prevAgents || {};
+    const next = nextAgents || {};
+    const nextTrails = {};
+
+    for (const id of Object.keys(next)) {
+      const nextAgent = next[id];
+      const prevAgent = prev[id];
+      const existing = agentTrails[id] || [];
+      const trail = existing.slice(-TRAIL_MAX_POINTS);
+
+      if (trail.length === 0 || !prevAgent) {
+        trail.push({ x: nextAgent.x, y: nextAgent.y });
+      } else if (prevAgent.x !== nextAgent.x || prevAgent.y !== nextAgent.y) {
+        trail.push({ x: nextAgent.x, y: nextAgent.y });
+      }
+
+      nextTrails[id] = trail.slice(-TRAIL_MAX_POINTS);
+    }
+
+    agentTrails = nextTrails;
+  }
+
   function findNearestAgentAtPoint(mx, my) {
     let nearest = null;
     let nearestDistSq = Infinity;
@@ -308,6 +352,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'snapshot') {
+        updateAgentTrails(state.agents, msg.data.agents);
         state = msg.data;
         let selectionChanged = false;
         if (selectedAgentId && !state.agents[selectedAgentId]) {
