@@ -7,7 +7,7 @@ The worldview frontend now supports a single CesiumJS Earth view with Google Map
 
 ### Required / recommended environment variables
 
-- `RW_USE_CESIUM=true` enables Cesium rendering (default enabled unless explicitly set to `false`).
+- Cesium + Google Maps Platform 3D Tiles is now the only supported renderer.
 - `RW_DEFAULT_VIEW=earth` keeps the Earth view as the default mode.
 - `GOOGLE_MAPS_API_KEY=<google-maps-platform-key>` required for Google Photorealistic 3D Tiles (`tile.googleapis.com`).
 - `CESIUM_ACCESS_TOKEN=<token>` optional; only needed if you use Cesium Ion-hosted features.
@@ -24,7 +24,7 @@ The worldview frontend now supports a single CesiumJS Earth view with Google Map
 
 ```bash
 npm install
-RW_USE_CESIUM=true RW_DEFAULT_VIEW=earth GOOGLE_MAPS_API_KEY=your_key npm start
+RW_DEFAULT_VIEW=earth GOOGLE_MAPS_API_KEY=your_key npm start
 ```
 
 ## OpenSky live flight ingestion
