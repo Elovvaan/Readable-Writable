@@ -72,6 +72,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .stat-value { color: #ccc; font-family: monospace; text-align: right; }
     .type-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #2a2f3a; border-radius: 999px; padding: 2px 7px; }
     .type-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    #viewport-controls { position: absolute; top: 10px; left: 10px; display: grid; gap: 6px; z-index: 2; }
+    .viewport-row { display: flex; gap: 4px; }
+    .viewport-btn { border: 1px solid #2e3a46; background: #151a22e0; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 7px; cursor: pointer; }
+    .viewport-readout { font-size: .62rem; color: #8ea4ba; background: #0d1219cc; border: 1px solid #253244; border-radius: 4px; padding: 2px 6px; width: fit-content; }
   </style>
 </head>
 <body>
@@ -97,7 +101,23 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
 </header>
 <main>
-  <div id="canvas-wrap"><canvas id="world"></canvas></div>
+  <div id="canvas-wrap">
+    <div id="viewport-controls">
+      <div class="viewport-row">
+        <button id="zoom-out-btn" class="viewport-btn" type="button">−</button>
+        <button id="zoom-in-btn" class="viewport-btn" type="button">+</button>
+        <button id="reset-view-btn" class="viewport-btn" type="button">Reset View</button>
+      </div>
+      <div class="viewport-row">
+        <button id="pan-left-btn" class="viewport-btn" type="button">←</button>
+        <button id="pan-up-btn" class="viewport-btn" type="button">↑</button>
+        <button id="pan-down-btn" class="viewport-btn" type="button">↓</button>
+        <button id="pan-right-btn" class="viewport-btn" type="button">→</button>
+      </div>
+      <div id="viewport-readout" class="viewport-readout">zoom 1.00x</div>
+    </div>
+    <canvas id="world"></canvas>
+  </div>
   <aside>
     <div class="panel-title">Event Stream</div>
     <div id="event-tools">
@@ -152,10 +172,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleTypeSatelliteEl = document.getElementById('toggle-type-satellite');
   const pauseBtnEl = document.getElementById('pause-btn');
   const speedSelectEl = document.getElementById('speed-select');
+  const zoomOutBtnEl = document.getElementById('zoom-out-btn');
+  const zoomInBtnEl = document.getElementById('zoom-in-btn');
+  const resetViewBtnEl = document.getElementById('reset-view-btn');
+  const panLeftBtnEl = document.getElementById('pan-left-btn');
+  const panRightBtnEl = document.getElementById('pan-right-btn');
+  const panUpBtnEl = document.getElementById('pan-up-btn');
+  const panDownBtnEl = document.getElementById('pan-down-btn');
+  const viewportReadoutEl = document.getElementById('viewport-readout');
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
   const SNAPSHOT_BASE_INTERVAL_MS = 4000;
+  const VIEWPORT_ZOOM_MIN = 0.5;
+  const VIEWPORT_ZOOM_MAX = 3;
+  const VIEWPORT_ZOOM_STEP = 0.2;
+  const VIEWPORT_PAN_STEP = 36;
   let state = { agents: {}, regions: {}, tick: 0, started: null };
   let eventLog = [];
   let agentTrails = {};
@@ -177,6 +209,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let focusEffectUntil = 0;
   let eventSearchQuery = '';
   let activeEventFilter = 'all';
+  let viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -209,8 +242,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.strokeStyle = '#151520';
     ctx.lineWidth = 1;
     const step = 48;
-    for (let x = 0; x < W; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-    for (let y = 0; y < H; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+    for (let x = 0; x <= W; x += step) {
+      const sx = applyViewportX(x, W);
+      if (sx < -1 || sx > W + 1) continue;
+      ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); ctx.stroke();
+    }
+    for (let y = 0; y <= H; y += step) {
+      const sy = applyViewportY(y, H);
+      if (sy < -1 || sy > H + 1) continue;
+      ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+    }
 
     const regionOccupancy = getRegionOccupancy();
 
@@ -223,10 +264,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const regionKey = getCurrentTargetKey('region', r.id);
       const isFlagged = !!flaggedTargets[regionKey];
       const isFocused = focusTargetKey === regionKey && now < focusEffectUntil;
+      const regionSize = 60 * viewport.zoom;
       ctx.save();
-      const rectX = rx - 30;
-      const rectY = ry - 30;
-      const rectSize = 60;
+      const rectX = rx - (regionSize / 2);
+      const rectY = ry - (regionSize / 2);
+      const rectSize = regionSize;
       if (isSelected) {
         ctx.fillStyle = '#8ec5ff22';
         ctx.fillRect(rectX, rectY, rectSize, rectSize);
@@ -249,11 +291,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.strokeRect(rectX - 3, rectY - 3, rectSize + 6, rectSize + 6);
       }
       ctx.fillStyle = '#fc7';
-      ctx.font = '10px monospace';
-      ctx.fillText(r.id, rx - 28, ry - 33);
+      ctx.font = Math.max(8, 10 * viewport.zoom).toFixed(1) + 'px monospace';
+      ctx.fillText(r.id, rx - (28 * viewport.zoom), ry - (33 * viewport.zoom));
       ctx.fillStyle = '#bfc7d2';
-      ctx.font = '11px monospace';
-      ctx.fillText(String(occupancy), rx - 3, ry + 4);
+      ctx.font = Math.max(9, 11 * viewport.zoom).toFixed(1) + 'px monospace';
+      ctx.fillText(String(occupancy), rx - (3 * viewport.zoom), ry + (4 * viewport.zoom));
       ctx.restore();
     });
 
@@ -291,13 +333,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.shadowBlur = 12;
         ctx.shadowColor = isFocused ? '#cfeaff' : '#9cf';
         ctx.beginPath();
-        ctx.arc(ax, ay, (isFocused ? 11 : 8) * pulse, 0, Math.PI * 2);
+        ctx.arc(ax, ay, ((isFocused ? 11 : 8) * viewport.zoom) * pulse, 0, Math.PI * 2);
         ctx.strokeStyle = isFocused ? '#d7edff' : '#9cf8';
         ctx.lineWidth = isFocused ? 2.2 : 1.5;
         ctx.stroke();
       }
       ctx.beginPath();
-      ctx.arc(ax, ay, AGENT_RENDER_RADIUS, 0, Math.PI * 2);
+      ctx.arc(ax, ay, AGENT_RENDER_RADIUS * viewport.zoom, 0, Math.PI * 2);
       ctx.fillStyle = a.active ? typeStyle.fill : '#2b3544';
       ctx.fill();
       ctx.strokeStyle = isSelected ? '#e8f7ff' : (a.active ? typeStyle.stroke : '#223041');
@@ -305,14 +347,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       ctx.stroke();
       if (isFlagged) {
         ctx.beginPath();
-        ctx.arc(ax, ay, AGENT_RENDER_RADIUS + 3.5, 0, Math.PI * 2);
+        ctx.arc(ax, ay, (AGENT_RENDER_RADIUS + 3.5) * viewport.zoom, 0, Math.PI * 2);
         ctx.strokeStyle = '#ffd37a88';
         ctx.lineWidth = 1.2;
         ctx.stroke();
       }
       ctx.fillStyle = '#ccc';
-      ctx.font = '9px monospace';
-      ctx.fillText(a.id, ax + 7, ay + 4);
+      ctx.font = Math.max(7, 9 * viewport.zoom).toFixed(1) + 'px monospace';
+      ctx.fillText(a.id, ax + (7 * viewport.zoom), ay + (4 * viewport.zoom));
       ctx.restore();
     });
 
@@ -555,7 +597,55 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function worldToCanvas(x, y, width, height) {
-    return { x: (x / 100) * width, y: (y / 100) * height };
+    const baseX = (x / 100) * width;
+    const baseY = (y / 100) * height;
+    return {
+      x: applyViewportX(baseX, width),
+      y: applyViewportY(baseY, height),
+    };
+  }
+
+  function applyViewportX(baseX, width) {
+    return ((baseX - (width / 2)) * viewport.zoom) + (width / 2) + viewport.offsetX;
+  }
+
+  function applyViewportY(baseY, height) {
+    return ((baseY - (height / 2)) * viewport.zoom) + (height / 2) + viewport.offsetY;
+  }
+
+  function canvasToBase(mx, my) {
+    const W = canvas.width;
+    const H = canvas.height;
+    return {
+      x: ((mx - (W / 2) - viewport.offsetX) / viewport.zoom) + (W / 2),
+      y: ((my - (H / 2) - viewport.offsetY) / viewport.zoom) + (H / 2),
+    };
+  }
+
+  function updateViewportReadout() {
+    viewportReadoutEl.textContent =
+      'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
+  }
+
+  function setViewportZoom(nextZoom) {
+    viewport.zoom = Math.max(VIEWPORT_ZOOM_MIN, Math.min(VIEWPORT_ZOOM_MAX, nextZoom));
+    updateViewportReadout();
+    draw();
+  }
+
+  function panViewport(dx, dy) {
+    viewport.offsetX += dx;
+    viewport.offsetY += dy;
+    updateViewportReadout();
+    draw();
+  }
+
+  function resetViewport() {
+    viewport.zoom = 1;
+    viewport.offsetX = 0;
+    viewport.offsetY = 0;
+    updateViewportReadout();
+    draw();
   }
 
   function updateAgentTrails(prevAgents, nextAgents) {
@@ -583,20 +673,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function findNearestAgentAtPoint(mx, my) {
     if (!showAgents) return { agent: null, distance: null };
+    const clickBase = canvasToBase(mx, my);
     let nearest = null;
     let nearestDistSq = Infinity;
     for (const a of Object.values(state.agents)) {
       if (!isEntityTypeVisible(getEntityType(a))) continue;
-      const pt = worldToCanvas(a.x, a.y, canvas.width, canvas.height);
-      const dx = mx - pt.x;
-      const dy = my - pt.y;
+      const pt = { x: (a.x / 100) * canvas.width, y: (a.y / 100) * canvas.height };
+      const dx = clickBase.x - pt.x;
+      const dy = clickBase.y - pt.y;
       const distSq = (dx * dx) + (dy * dy);
       if (distSq < nearestDistSq) {
         nearestDistSq = distSq;
         nearest = a;
       }
     }
-    const hitRadiusSq = AGENT_HIT_RADIUS * AGENT_HIT_RADIUS;
+    const hitRadiusSq = (AGENT_HIT_RADIUS / viewport.zoom) * (AGENT_HIT_RADIUS / viewport.zoom);
     return (nearest && nearestDistSq <= hitRadiusSq)
       ? { agent: nearest, distance: Math.sqrt(nearestDistSq) }
       : { agent: null, distance: null };
@@ -604,9 +695,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function findRegionAtPoint(mx, my) {
     if (!showRegions) return null;
+    const clickBase = canvasToBase(mx, my);
     for (const r of Object.values(state.regions)) {
-      const pt = worldToCanvas(r.x, r.y, canvas.width, canvas.height);
-      if (mx >= pt.x - 30 && mx <= pt.x + 30 && my >= pt.y - 30 && my <= pt.y + 30) {
+      const pt = { x: (r.x / 100) * canvas.width, y: (r.y / 100) * canvas.height };
+      if (clickBase.x >= pt.x - 30 && clickBase.x <= pt.x + 30 && clickBase.y >= pt.y - 30 && clickBase.y <= pt.y + 30) {
         return r;
       }
     }
@@ -715,6 +807,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   });
   syncPauseButton();
   updateStats();
+  updateViewportReadout();
+
+  zoomInBtnEl.addEventListener('click', function () {
+    setViewportZoom(viewport.zoom + VIEWPORT_ZOOM_STEP);
+  });
+  zoomOutBtnEl.addEventListener('click', function () {
+    setViewportZoom(viewport.zoom - VIEWPORT_ZOOM_STEP);
+  });
+  resetViewBtnEl.addEventListener('click', resetViewport);
+  panLeftBtnEl.addEventListener('click', function () { panViewport(-VIEWPORT_PAN_STEP, 0); });
+  panRightBtnEl.addEventListener('click', function () { panViewport(VIEWPORT_PAN_STEP, 0); });
+  panUpBtnEl.addEventListener('click', function () { panViewport(0, -VIEWPORT_PAN_STEP); });
+  panDownBtnEl.addEventListener('click', function () { panViewport(0, VIEWPORT_PAN_STEP); });
 
   speedSelectEl.addEventListener('change', function () {
     const nextSpeed = Number(speedSelectEl.value);
