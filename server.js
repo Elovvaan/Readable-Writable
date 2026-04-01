@@ -242,6 +242,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let cameraLerpTarget = null;
   let latestRegionIntelligence = {};
   let lastGlobeDebugLogAt = 0;
+  let globeOverlayDiagnostics = null;
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -266,46 +267,85 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const cameraUpdated = updateCameraMotion(W, H);
     ctx.clearRect(0, 0, W, H);
     const now = Date.now();
-    const deferredLabelDraws = [];
     const globeDebug = renderMode === 'globe'
-      ? {
-          projected: 0,
-          skipped: 0,
-          entitiesVisible: 0,
-          regionsVisible: 0,
-          pathSegmentsDrawn: 0,
-        }
+      ? { projected: 0, skipped: 0, entitiesVisible: 0, regionsVisible: 0, trailsVisible: 0, pathSegmentsDrawn: 0 }
       : null;
 
-    const regions = Object.values(state.regions);
-    const agents  = Object.values(state.agents);
-    const visibleAgents = agents.filter(a => isEntityTypeVisible(getEntityType(a)));
+    renderBaseSurface(W, H);
+    renderWorldOverlays(W, H, now, globeDebug);
+    if (renderMode === 'globe') updateViewportReadout();
 
+    // tick label
+    ctx.fillStyle = '#222';
+    ctx.font = '11px monospace';
+    ctx.fillText('tick ' + state.tick, 8, H - 8);
+
+    if (cameraUpdated && (followTargetEnabled || cameraLerpTarget)) {
+      requestAnimationFrame(draw);
+    }
+  }
+
+  function renderBaseSurface(width, height) {
     if (renderMode === 'grid') {
-      // grid
       ctx.strokeStyle = '#151520';
       ctx.lineWidth = 1;
       const step = 48;
-      for (let x = 0; x <= W; x += step) {
-        const sx = applyViewportX(x, W);
-        if (sx < -1 || sx > W + 1) continue;
-        ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); ctx.stroke();
+      for (let x = 0; x <= width; x += step) {
+        const sx = applyViewportX(x, width);
+        if (sx < -1 || sx > width + 1) continue;
+        ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, height); ctx.stroke();
       }
-      for (let y = 0; y <= H; y += step) {
-        const sy = applyViewportY(y, H);
-        if (sy < -1 || sy > H + 1) continue;
-        ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+      for (let y = 0; y <= height; y += step) {
+        const sy = applyViewportY(y, height);
+        if (sy < -1 || sy > height + 1) continue;
+        ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(width, sy); ctx.stroke();
       }
-    } else {
-      drawGlobeBase(W, H);
+      return;
     }
+    drawGlobeBase(width, height);
+  }
 
+  function renderWorldOverlays(width, height, now, globeDebug) {
+    const deferredLabelDraws = [];
+    const deferredSelectionDraws = [];
+    const regions = Object.values(state.regions);
+    const agents = Object.values(state.agents);
+    const visibleAgents = agents.filter(a => isEntityTypeVisible(getEntityType(a)));
     latestRegionIntelligence = computeRegionIntelligence();
 
-    // regions
-    if (showRegions) regions.forEach(r => {
+    renderRegionOverlays(regions, width, height, now, globeDebug, deferredLabelDraws);
+    renderTrailsAndArcs(visibleAgents, width, height, globeDebug);
+    renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws);
+
+    deferredLabelDraws.forEach(function (drawLabel) { drawLabel(); });
+    deferredSelectionDraws.forEach(function (drawSelection) { drawSelection(); });
+
+    globeOverlayDiagnostics = globeDebug
+      ? {
+          entitiesVisible: globeDebug.entitiesVisible,
+          regionsVisible: globeDebug.regionsVisible,
+          trailsVisible: globeDebug.trailsVisible,
+        }
+      : null;
+
+    if (globeDebug && GLOBE_OVERLAY_DEBUG && now - lastGlobeDebugLogAt >= GLOBE_DEBUG_LOG_INTERVAL_MS) {
+      lastGlobeDebugLogAt = now;
+      console.debug('globe-overlay-debug', {
+        entitiesVisible: globeDebug.entitiesVisible,
+        regionsVisible: globeDebug.regionsVisible,
+        trailsVisible: globeDebug.trailsVisible,
+        projected: globeDebug.projected,
+        skippedProjections: globeDebug.skipped,
+        pathSegmentsDrawn: globeDebug.pathSegmentsDrawn,
+      });
+    }
+  }
+
+  function renderRegionOverlays(regions, width, height, now, globeDebug, deferredLabelDraws) {
+    if (!showRegions) return;
+    regions.forEach(function (r) {
       const regionPoint = getEntityWorldPoint(r);
-      const regionPos = worldToCanvas(regionPoint.x, regionPoint.y, W, H, regionPoint.lat, regionPoint.lng, GLOBE_REGION_OUTLINE_MIN_Z, globeDebug);
+      const regionPos = worldPointToCanvas(regionPoint, width, height, GLOBE_REGION_OUTLINE_MIN_Z, globeDebug);
       if (!regionPos) return;
       const rx = regionPos.x, ry = regionPos.y;
       const regionIntel = latestRegionIntelligence[r.id] || null;
@@ -316,12 +356,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const isFlagged = !!flaggedTargets[regionKey];
       const isFocused = focusTargetKey === regionKey && now < focusEffectUntil;
       const regionSize = 60 * viewport.zoom;
-      const overlay = renderMode === 'globe' ? getRegionGlobeOverlay(r, W, H, globeDebug) : null;
+      const overlay = renderMode === 'globe' ? getRegionGlobeOverlay(r, width, height, globeDebug) : null;
       ctx.save();
-      ctx.strokeStyle =
-        status === 'HOT' ? '#ff8e8ecc' :
-        status === 'ACTIVE' ? '#fccb88cc' :
-        '#a8b0cc88';
+      ctx.strokeStyle = status === 'HOT' ? '#ff8e8ecc' : status === 'ACTIVE' ? '#fccb88cc' : '#a8b0cc88';
       ctx.lineWidth = isSelected ? 2.25 : 1.5;
       if (isFlagged) {
         ctx.shadowBlur = 6;
@@ -329,16 +366,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       if (overlay) {
         if (globeDebug) globeDebug.regionsVisible++;
-        ctx.strokeStyle =
-          status === 'HOT' ? '#ff9d9ddd' :
-          status === 'ACTIVE' ? '#ffd293dd' :
-          '#b8d2ffaa';
-        ctx.fillStyle =
-          status === 'HOT'
-            ? (isSelected ? '#ff8e8e30' : '#ff8e8e1d')
-            : status === 'ACTIVE'
-              ? (isSelected ? '#fccb8830' : '#fccb881b')
-              : (isSelected ? '#8ec5ff24' : '#8ec5ff14');
+        ctx.strokeStyle = status === 'HOT' ? '#ff9d9ddd' : status === 'ACTIVE' ? '#ffd293dd' : '#b8d2ffaa';
+        ctx.fillStyle = status === 'HOT'
+          ? (isSelected ? '#ff8e8e30' : '#ff8e8e1d')
+          : status === 'ACTIVE'
+            ? (isSelected ? '#fccb8830' : '#fccb881b')
+            : (isSelected ? '#8ec5ff24' : '#8ec5ff14');
         drawRegionOverlayShape(overlay);
         ctx.fill();
         ctx.setLineDash([6, 5]);
@@ -362,26 +395,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       } else {
         const rectX = rx - (regionSize / 2);
         const rectY = ry - (regionSize / 2);
-        const rectSize = regionSize;
         if (isSelected) {
-          ctx.fillStyle =
-            status === 'HOT' ? '#ff8e8e26' :
-            status === 'ACTIVE' ? '#fccb8824' :
-            '#8ec5ff22';
-          ctx.fillRect(rectX, rectY, rectSize, rectSize);
+          ctx.fillStyle = status === 'HOT' ? '#ff8e8e26' : status === 'ACTIVE' ? '#fccb8824' : '#8ec5ff22';
+          ctx.fillRect(rectX, rectY, regionSize, regionSize);
         }
         ctx.setLineDash([4, 4]);
-        ctx.strokeRect(rectX, rectY, rectSize, rectSize);
+        ctx.strokeRect(rectX, rectY, regionSize, regionSize);
         ctx.setLineDash([]);
         if (status === 'HOT') {
           ctx.strokeStyle = '#ff9b9bcc';
           ctx.lineWidth = 2;
-          ctx.strokeRect(rectX - 1, rectY - 1, rectSize + 2, rectSize + 2);
+          ctx.strokeRect(rectX - 1, rectY - 1, regionSize + 2, regionSize + 2);
         }
         if (isFocused) {
           ctx.strokeStyle = '#9cf';
           ctx.lineWidth = 3;
-          ctx.strokeRect(rectX - 3, rectY - 3, rectSize + 6, rectSize + 6);
+          ctx.strokeRect(rectX - 3, rectY - 3, regionSize + 6, regionSize + 6);
         }
       }
       const regionLabel = r.name || r.id;
@@ -391,7 +420,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const occupancyY = (overlay ? overlay.labelY : ry) + (4 * viewport.zoom);
       deferredLabelDraws.push(function drawRegionLabel() {
         ctx.save();
-        if (labelX >= -60 && labelX <= W + 60 && labelY >= -30 && labelY <= H + 30) {
+        if (labelX >= -60 && labelX <= width + 60 && labelY >= -30 && labelY <= height + 30) {
           ctx.fillStyle = '#fc7';
           ctx.font = Math.max(8, 10 * viewport.zoom).toFixed(1) + 'px monospace';
           ctx.fillText(regionLabel, labelX, labelY);
@@ -403,24 +432,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       });
       ctx.restore();
     });
+  }
 
-    // trails
-    if (showTrails) visibleAgents.forEach(a => {
+  function renderTrailsAndArcs(visibleAgents, width, height, globeDebug) {
+    if (!showTrails) return;
+    visibleAgents.forEach(function (a) {
       const trail = agentTrails[a.id];
       const isSelected = selectedAgentId === a.id;
       const typeStyle = getEntityTypeStyle(a);
       const entityType = getEntityType(a);
       if (renderMode === 'globe' && entityType === 'satellite') {
-        drawSatelliteOrbitBand(a, W, H, isSelected, typeStyle, globeDebug);
+        if (drawSatelliteOrbitBand(a, width, height, isSelected, typeStyle, globeDebug) && globeDebug) globeDebug.trailsVisible++;
       }
       if (!trail || trail.length < 2) return;
       if (renderMode === 'globe' && entityType === 'flight') {
-        drawFlightArcPath(a, trail, W, H, isSelected, typeStyle, globeDebug);
+        if (drawFlightArcPath(a, trail, width, height, isSelected, typeStyle, globeDebug) && globeDebug) globeDebug.trailsVisible++;
         return;
       }
       ctx.save();
       ctx.beginPath();
-      const first = worldToCanvas(trail[0].x, trail[0].y, W, H, trail[0].lat, trail[0].lng, GLOBE_PATH_MIN_Z, globeDebug);
+      const first = worldPointToCanvas(trail[0], width, height, GLOBE_PATH_MIN_Z, globeDebug);
       if (!first) {
         ctx.restore();
         return;
@@ -429,7 +460,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       let hasSegment = false;
       let penDown = true;
       for (let i = 1; i < trail.length; i++) {
-        const pt = worldToCanvas(trail[i].x, trail[i].y, W, H, trail[i].lat, trail[i].lng, GLOBE_PATH_MIN_Z, globeDebug);
+        const pt = worldPointToCanvas(trail[i], width, height, GLOBE_PATH_MIN_Z, globeDebug);
         if (!pt) {
           penDown = false;
           continue;
@@ -447,16 +478,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.restore();
         return;
       }
+      if (globeDebug) globeDebug.trailsVisible++;
       ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
       ctx.lineWidth = isSelected ? 2 : 1;
       ctx.stroke();
       ctx.restore();
     });
+  }
 
-    // agents
-    if (showAgents) visibleAgents.forEach(a => {
+  function renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws) {
+    if (!showAgents) return;
+    visibleAgents.forEach(function (a) {
       const agentPoint = getEntityWorldPoint(a);
-      const agentPos = worldToCanvas(agentPoint.x, agentPoint.y, W, H, agentPoint.lat, agentPoint.lng, GLOBE_ENTITY_MIN_Z, globeDebug);
+      const agentPos = worldPointToCanvas(agentPoint, width, height, GLOBE_ENTITY_MIN_Z, globeDebug);
       if (!agentPos) return;
       if (globeDebug) globeDebug.entitiesVisible++;
       const ax = agentPos.x;
@@ -467,16 +501,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const isFocused = focusTargetKey === agentKey && now < focusEffectUntil;
       const typeStyle = getEntityTypeStyle(a);
       ctx.save();
-      if (isSelected) {
-        const pulse = 1 + ((Math.sin(now / 220) + 1) * (isFocused ? 0.3 : 0.18));
-        ctx.shadowBlur = 12;
-        ctx.shadowColor = isFocused ? '#cfeaff' : '#9cf';
-        ctx.beginPath();
-        ctx.arc(ax, ay, ((isFocused ? 11 : 8) * viewport.zoom) * pulse, 0, Math.PI * 2);
-        ctx.strokeStyle = isFocused ? '#d7edff' : '#9cf8';
-        ctx.lineWidth = isFocused ? 2.2 : 1.5;
-        ctx.stroke();
-      }
       ctx.beginPath();
       ctx.arc(ax, ay, AGENT_RENDER_RADIUS * viewport.zoom, 0, Math.PI * 2);
       ctx.fillStyle = a.active ? typeStyle.fill : '#2b3544';
@@ -500,30 +524,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.fillText(a.id, labelX, labelY);
         ctx.restore();
       });
+      if (isSelected) {
+        deferredSelectionDraws.push(function drawSelectionRing() {
+          const pulse = 1 + ((Math.sin(now / 220) + 1) * (isFocused ? 0.3 : 0.18));
+          ctx.save();
+          ctx.shadowBlur = 12;
+          ctx.shadowColor = isFocused ? '#cfeaff' : '#9cf';
+          ctx.beginPath();
+          ctx.arc(ax, ay, ((isFocused ? 11 : 8) * viewport.zoom) * pulse, 0, Math.PI * 2);
+          ctx.strokeStyle = isFocused ? '#d7edff' : '#9cf8';
+          ctx.lineWidth = isFocused ? 2.2 : 1.5;
+          ctx.stroke();
+          ctx.restore();
+        });
+      }
       ctx.restore();
     });
-
-    deferredLabelDraws.forEach(function (drawLabel) { drawLabel(); });
-
-    if (globeDebug && GLOBE_OVERLAY_DEBUG && now - lastGlobeDebugLogAt >= GLOBE_DEBUG_LOG_INTERVAL_MS) {
-      lastGlobeDebugLogAt = now;
-      console.debug('globe-overlay-debug', {
-        entitiesVisible: globeDebug.entitiesVisible,
-        regionsVisible: globeDebug.regionsVisible,
-        projected: globeDebug.projected,
-        skippedProjections: globeDebug.skipped,
-        pathSegmentsDrawn: globeDebug.pathSegmentsDrawn,
-      });
-    }
-
-    // tick label
-    ctx.fillStyle = '#222';
-    ctx.font = '11px monospace';
-    ctx.fillText('tick ' + state.tick, 8, H - 8);
-
-    if (cameraUpdated && (followTargetEnabled || cameraLerpTarget)) {
-      requestAnimationFrame(draw);
-    }
   }
 
   // ── Event log ──
@@ -877,21 +893,36 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function worldToCanvas(x, y, width, height, lat, lng, minZ, globeDebug) {
+    return worldPointToCanvas({ x, y, lat, lng }, width, height, minZ, globeDebug);
+  }
+
+  function worldPointToCanvas(point, width, height, minZ, globeDebug) {
+    return projectWorldPosition(
+      Number.isFinite(point && point.x) ? point.x : 50,
+      Number.isFinite(point && point.y) ? point.y : 50,
+      width,
+      height,
+      point ? point.lat : null,
+      point ? point.lng : null,
+      minZ,
+      globeDebug
+    );
+  }
+
+  function projectWorldPosition(worldX, worldY, width, height, lat, lng, minZ, globeDebug) {
     if (renderMode === 'globe') {
       const minVisibleZ = Number.isFinite(minZ) ? minZ : 0;
-      const globePoint = projectGlobePosition(x, y, width, height, lat, lng, minVisibleZ, globeDebug);
+      const globePoint = projectGlobePosition(worldX, worldY, width, height, lat, lng, minVisibleZ, globeDebug);
       if (!globePoint) return null;
-      return {
-        x: applyViewportX(globePoint.baseX, width),
-        y: applyViewportY(globePoint.baseY, height),
-      };
+      return { x: applyViewportX(globePoint.baseX, width), y: applyViewportY(globePoint.baseY, height) };
     }
-    const baseX = (x / 100) * width;
-    const baseY = (y / 100) * height;
-    return {
-      x: applyViewportX(baseX, width),
-      y: applyViewportY(baseY, height),
-    };
+    return projectGridPosition(worldX, worldY, width, height);
+  }
+
+  function projectGridPosition(worldX, worldY, width, height) {
+    const baseX = (worldX / 100) * width;
+    const baseY = (worldY / 100) * height;
+    return { x: applyViewportX(baseX, width), y: applyViewportY(baseY, height) };
   }
 
   function getEntityWorldPoint(entity) {
@@ -923,8 +954,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function updateViewportReadout() {
-    viewportReadoutEl.textContent =
-      'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
+    let text = 'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
+    if (renderMode === 'globe' && globeOverlayDiagnostics) {
+      text += ' · vis e:' + globeOverlayDiagnostics.entitiesVisible
+        + ' r:' + globeOverlayDiagnostics.regionsVisible
+        + ' t:' + globeOverlayDiagnostics.trailsVisible;
+    }
+    viewportReadoutEl.textContent = text;
   }
 
   function setViewportZoom(nextZoom) {
@@ -1113,7 +1149,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const prior = trail[Math.max(0, trail.length - 2)] || trail[0];
     const start = worldPointToUnitVector(prior.x, prior.y, prior.lat, prior.lng);
     const end = worldPointToUnitVector(currentPoint.x, currentPoint.y, currentPoint.lat, currentPoint.lng);
-    if (!start || !end) return;
+    if (!start || !end) return false;
     const dot = Math.max(-1, Math.min(1, (start.x * end.x) + (start.y * end.y) + (start.z * end.z)));
     const omega = Math.acos(dot);
     const sinOmega = Math.sin(omega);
@@ -1137,7 +1173,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     if (!moved) {
       ctx.restore();
-      return;
+      return false;
     }
     ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
     ctx.lineWidth = isSelected ? 2.6 : 1.4;
@@ -1147,6 +1183,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     ctx.stroke();
     ctx.restore();
+    return true;
   }
 
   function drawSatelliteOrbitBand(agent, width, height, isSelected, typeStyle, globeDebug) {
@@ -1174,7 +1211,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     if (!moved) {
       ctx.restore();
-      return;
+      return false;
     }
     ctx.closePath();
     ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
@@ -1185,6 +1222,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     ctx.stroke();
     ctx.restore();
+    return true;
   }
 
   function wrapLng(lng) {
