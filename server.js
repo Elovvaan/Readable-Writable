@@ -67,6 +67,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .ctrl-toggle { display: inline-flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap; cursor: pointer; }
     .ctrl-toggle input { width: 13px; height: 13px; accent-color: #7cf; cursor: pointer; }
     .ctrl-inline { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .ctrl-compact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .62rem; color: #8ea4ba; }
+    .ctrl-compact input[type=range] { width: 58px; accent-color: #7cf; }
+    .ctrl-compact select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .64rem; padding: 2px 4px; }
+    #style-indicator { border: 1px solid #324154; border-radius: 999px; font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; color: #9ec9f5; background: #101820; }
     #speed-select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 3px 6px; }
     #pause-btn { border: 1px solid #2e3a46; background: #151a22; color: #a9d6ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
     #pause-btn.active { background: #2b1e1e; color: #ffc2c2; border-color: #5a3333; }
@@ -75,6 +79,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #cesium-world, canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
     #cesium-world { z-index: 1; }
     canvas { z-index: 2; pointer-events: auto; }
+    #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .45; }
+    #fx-overlay .scanlines, #fx-overlay .noise, #fx-overlay .vignette, #fx-overlay .pixel-grid { position: absolute; inset: 0; }
+    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(220,255,255,.07) 0, rgba(220,255,255,.07) 1px, transparent 1px, transparent 3px); opacity: .2; }
+    #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.09) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .12; }
+    #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px); background-size: 10px 10px; opacity: .06; }
+    #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 48%, rgba(0,0,0,.58) 100%); opacity: .55; }
+    body[data-style-mode="crt"] { --style-accent: #8fd7ff; --style-shell: #90caf2; }
+    body[data-style-mode="nvg"] { --style-accent: #9dff95; --style-shell: #a3ffae; }
+    body[data-style-mode="flir"] { --style-accent: #ffd47f; --style-shell: #ffc983; }
+    header h1, .event-entry.agent, .viewport-readout, #style-indicator { color: var(--style-accent, #7cf); border-color: color-mix(in srgb, var(--style-accent, #7cf) 30%, #2e3a46); }
+    .panel-title, .selected-label, .stat-label { color: color-mix(in srgb, var(--style-shell, #9cb4cb) 48%, #3b4652); }
     aside { background: #111; border-left: 1px solid #222; display: flex; flex-direction: column; overflow: hidden; }
     .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #555; padding: 10px 14px 6px; border-bottom: 1px solid #1c1c1c; }
     #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #1a1a1a; display: grid; gap: 6px; }
@@ -136,6 +151,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         <option value="4">4x</option>
       </select>
     </label>
+    <label class="ctrl-compact" for="style-mode-select">Style
+      <select id="style-mode-select" aria-label="Visual style mode">
+        <option value="crt" selected>CRT</option>
+        <option value="nvg">NVG</option>
+        <option value="flir">FLIR</option>
+      </select>
+    </label>
+    <span id="style-indicator">mode: crt</span>
+    <label class="ctrl-compact" for="fx-bloom">Bloom<input id="fx-bloom" type="range" min="0" max="100" value="40"></label>
+    <label class="ctrl-compact" for="fx-sharpen">Sharp<input id="fx-sharpen" type="range" min="0" max="100" value="35"></label>
+    <label class="ctrl-compact" for="fx-noise">Noise<input id="fx-noise" type="range" min="0" max="100" value="28"></label>
+    <label class="ctrl-compact" for="fx-vignette">Vignette<input id="fx-vignette" type="range" min="0" max="100" value="40"></label>
+    <label class="ctrl-compact" for="fx-pixelation">Density<input id="fx-pixelation" type="range" min="0" max="100" value="22"></label>
+    <label class="ctrl-compact" for="fx-glow">Glow<input id="fx-glow" type="range" min="0" max="100" value="45"></label>
     <button id="pause-btn" type="button" aria-pressed="false">Pause Simulation</button>
   </div>
 </header>
@@ -157,6 +186,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
     <div id="cesium-world"></div>
     <canvas id="world"></canvas>
+    <div id="fx-overlay" aria-hidden="true">
+      <div class="scanlines"></div>
+      <div class="noise"></div>
+      <div class="pixel-grid"></div>
+      <div class="vignette"></div>
+    </div>
   </div>
   <aside>
     <div class="panel-title">Event Stream</div>
@@ -256,6 +291,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const panUpBtnEl = document.getElementById('pan-up-btn');
   const panDownBtnEl = document.getElementById('pan-down-btn');
   const viewportReadoutEl = document.getElementById('viewport-readout');
+  const styleModeSelectEl = document.getElementById('style-mode-select');
+  const styleIndicatorEl = document.getElementById('style-indicator');
+  const fxOverlayEl = document.getElementById('fx-overlay');
+  const fxBloomEl = document.getElementById('fx-bloom');
+  const fxSharpenEl = document.getElementById('fx-sharpen');
+  const fxNoiseEl = document.getElementById('fx-noise');
+  const fxVignetteEl = document.getElementById('fx-vignette');
+  const fxPixelationEl = document.getElementById('fx-pixelation');
+  const fxGlowEl = document.getElementById('fx-glow');
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
@@ -320,6 +364,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let focusEffectUntil = 0;
   let eventSearchQuery = '';
   let activeEventFilter = 'all';
+  let styleMode = 'crt';
+  let styleFx = { bloom: 40, sharpen: 35, noise: 28, vignette: 40, pixelation: 22, glow: 45 };
   let viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
   let followTargetEnabled = false;
   let cameraLerpTarget = null;
@@ -446,6 +492,47 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (cameraUpdated && (followTargetEnabled || cameraLerpTarget)) {
       requestAnimationFrame(draw);
     }
+  }
+
+  function styleTuningByMode(mode) {
+    if (mode === 'nvg') return { tint: 'rgba(68, 255, 106, 0.26)', sat: 0.44, hue: 74, baseBright: 1.05, baseContrast: 1.12, scanline: 0.08 };
+    if (mode === 'flir') return { tint: 'rgba(255, 146, 46, 0.22)', sat: 1.45, hue: -16, baseBright: 1.03, baseContrast: 1.25, scanline: 0.03 };
+    return { tint: 'rgba(129, 213, 255, 0.16)', sat: 0.72, hue: -8, baseBright: 0.98, baseContrast: 1.1, scanline: 0.2 };
+  }
+
+  function applyVisualStyle() {
+    const tuning = styleTuningByMode(styleMode);
+    const bloomPx = (styleFx.bloom / 100) * 2.4;
+    const sharpenEmphasis = 1 + ((styleFx.sharpen / 100) * 0.45);
+    const glowStrength = styleFx.glow / 100;
+    const brightness = tuning.baseBright + glowStrength * 0.2;
+    const contrast = tuning.baseContrast + (styleFx.sharpen / 100) * 0.15;
+    const saturate = Math.max(0.2, tuning.sat + (glowStrength * 0.25));
+    const hueRotate = tuning.hue;
+
+    document.body.setAttribute('data-style-mode', styleMode);
+    styleIndicatorEl.textContent = 'mode: ' + styleMode;
+    styleIndicatorEl.style.boxShadow = '0 0 ' + (6 + glowStrength * 12).toFixed(1) + 'px rgba(120,255,220,' + (0.12 + glowStrength * 0.22).toFixed(2) + ')';
+    const sceneFilter = 'brightness(' + brightness.toFixed(3) + ') contrast(' + contrast.toFixed(3) + ') saturate(' + saturate.toFixed(3) + ') hue-rotate(' + hueRotate.toFixed(1) + 'deg)';
+    cesiumContainer.style.filter = sceneFilter + ' drop-shadow(0 0 ' + bloomPx.toFixed(2) + 'px rgba(160,255,220,' + (0.08 + glowStrength * 0.2).toFixed(2) + '))';
+    canvas.style.filter = sceneFilter;
+
+    const scan = fxOverlayEl.querySelector('.scanlines');
+    const noise = fxOverlayEl.querySelector('.noise');
+    const vignette = fxOverlayEl.querySelector('.vignette');
+    const pixel = fxOverlayEl.querySelector('.pixel-grid');
+    fxOverlayEl.style.background = 'linear-gradient(120deg, transparent 0%, ' + tuning.tint + ' 100%)';
+    fxOverlayEl.style.opacity = (0.25 + glowStrength * 0.45).toFixed(3);
+    scan.style.opacity = (tuning.scanline + (styleFx.bloom / 100) * 0.08).toFixed(3);
+    noise.style.opacity = (styleFx.noise / 100 * 0.34).toFixed(3);
+    noise.style.filter = 'blur(' + ((100 - styleFx.sharpen) / 100 * 0.8).toFixed(2) + 'px)';
+    vignette.style.opacity = (styleFx.vignette / 100 * 0.9).toFixed(3);
+    const pixelSize = (4 + (styleFx.pixelation / 100) * 18).toFixed(1) + 'px';
+    pixel.style.backgroundSize = pixelSize + ' ' + pixelSize;
+    pixel.style.opacity = (styleFx.pixelation / 100 * 0.22).toFixed(3);
+
+    // lightweight faux sharpen by balancing global contrast without replacing renderer.
+    document.documentElement.style.setProperty('--rw-sharpen-emphasis', sharpenEmphasis.toFixed(3));
   }
 
   function renderBaseSurface(width, height) {
@@ -2554,6 +2641,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   syncPauseButton();
   updateStats();
   updateViewportReadout();
+  applyVisualStyle();
 
   zoomInBtnEl.addEventListener('click', function () {
     setViewportZoom(viewport.zoom + VIEWPORT_ZOOM_STEP);
@@ -2571,6 +2659,27 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     simulationSpeed = Number.isFinite(nextSpeed) && nextSpeed > 0 ? nextSpeed : 1;
     updateStats();
   });
+  styleModeSelectEl.addEventListener('change', function () {
+    const nextMode = styleModeSelectEl.value;
+    if (nextMode === 'crt' || nextMode === 'nvg' || nextMode === 'flir') {
+      styleMode = nextMode;
+      applyVisualStyle();
+      pushOperatorEvent('operator style mode set to ' + styleMode);
+    }
+  });
+  function bindFxSlider(inputEl, key) {
+    inputEl.addEventListener('input', function () {
+      const value = Number(inputEl.value);
+      styleFx[key] = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : styleFx[key];
+      applyVisualStyle();
+    });
+  }
+  bindFxSlider(fxBloomEl, 'bloom');
+  bindFxSlider(fxSharpenEl, 'sharpen');
+  bindFxSlider(fxNoiseEl, 'noise');
+  bindFxSlider(fxVignetteEl, 'vignette');
+  bindFxSlider(fxPixelationEl, 'pixelation');
+  bindFxSlider(fxGlowEl, 'glow');
 
   if (USE_CESIUM) {
     toggleLayerTrafficEl.title = 'Traffic layer unavailable in current renderer mode (Cesium + Google 3D Tiles)';
