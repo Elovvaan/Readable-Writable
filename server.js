@@ -11,6 +11,9 @@ const OPENSKY_CLIENT_SECRET = process.env.OPENSKY_CLIENT_SECRET || '';
 const OPENSKY_TOKEN_URL = process.env.OPENSKY_TOKEN_URL || 'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token';
 const OPENSKY_STATES_URL = process.env.OPENSKY_STATES_URL || 'https://opensky-network.org/api/states/all';
 const OPENSKY_POLL_INTERVAL_MS = Math.max(5000, Number(process.env.RW_OPENSKY_POLL_INTERVAL_MS || 15000));
+const OPENSKY_GLOBE_MIN_Z = Number.isFinite(Number(process.env.RW_OPENSKY_GLOBE_MIN_Z))
+  ? Number(process.env.RW_OPENSKY_GLOBE_MIN_Z)
+  : -1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const worldview = {
@@ -205,6 +208,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const GLOBE_ORBIT_SEGMENTS = 48;
   const GLOBE_REGION_OUTLINE_MIN_Z = 0.02;
   const GLOBE_ENTITY_MIN_Z = 0.03;
+  const GLOBE_FLIGHT_MIN_Z = -1;
   const GLOBE_PATH_MIN_Z = 0.01;
   const GLOBE_CONTINENT_MIN_Z = -1;
   const GLOBE_DISABLE_VISIBILITY_CULLING = true; // temporary: verify render path while debugging
@@ -572,7 +576,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         if (Number.isFinite(agentPoint.lat) && Number.isFinite(agentPoint.lng)) globeDebug.entitiesUsingLatLng++;
         else globeDebug.entitiesUsingGrid++;
       }
-      const agentPos = worldPointToCanvas(agentPoint, width, height, GLOBE_ENTITY_MIN_Z, globeDebug);
+      const entityMinZ = a && a.type === 'flight' && a.source === 'opensky' ? GLOBE_FLIGHT_MIN_Z : GLOBE_ENTITY_MIN_Z;
+      const agentPos = worldPointToCanvas(agentPoint, width, height, entityMinZ, globeDebug);
       if (!agentPos) return;
       if (globeDebug) globeDebug.entitiesVisible++;
       const ax = agentPos.x;
@@ -1323,6 +1328,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const dot = Math.max(-1, Math.min(1, (start.x * end.x) + (start.y * end.y) + (start.z * end.z)));
     const omega = Math.acos(dot);
     const sinOmega = Math.sin(omega);
+    const flightMinZ = agent && agent.source === 'opensky' ? GLOBE_FLIGHT_MIN_Z : GLOBE_PATH_MIN_Z;
     ctx.save();
     ctx.beginPath();
     let moved = false;
@@ -1331,7 +1337,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const interpolation = slerp(start, end, t, omega, sinOmega);
       if (!interpolation) continue;
       const lift = 1 + (0.11 * Math.sin(Math.PI * t));
-      const point = vectorToCanvas(interpolation.x * lift, interpolation.y * lift, interpolation.z * lift, width, height, GLOBE_PATH_MIN_Z);
+      const point = vectorToCanvas(interpolation.x * lift, interpolation.y * lift, interpolation.z * lift, width, height, flightMinZ);
       if (!point) continue;
       if (!moved) {
         ctx.moveTo(point.x, point.y);
@@ -1444,6 +1450,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function vectorToCanvas(x, y, z, width, height, minZ) {
     if (!Number.isFinite(z)) return null;
+    if (!GLOBE_DISABLE_VISIBILITY_CULLING && Number.isFinite(minZ) && z < minZ) return null;
     const radius = Math.min(width, height) * 0.35;
     const cx = width / 2;
     const cy = height / 2;
@@ -1934,6 +1941,30 @@ function safeNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function getGlobeUnitVectorFromLatLng(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const latRad = Math.max(-90, Math.min(90, lat)) * (Math.PI / 180);
+  const lngRad = Math.max(-180, Math.min(180, lng)) * (Math.PI / 180);
+  const cosLat = Math.cos(latRad);
+  const x = cosLat * Math.sin(lngRad);
+  const y = Math.sin(latRad);
+  const z = cosLat * Math.cos(lngRad);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+  return { x, y, z };
+}
+
+function countVisibleOpenSkyFlights(flights, minZ) {
+  let passProjection = 0;
+  let passMinZ = 0;
+  for (const flight of Object.values(flights || {})) {
+    const vector = getGlobeUnitVectorFromLatLng(flight.lat, flight.lng);
+    if (!vector) continue;
+    passProjection++;
+    if (!Number.isFinite(minZ) || vector.z >= minZ) passMinZ++;
+  }
+  return { passProjection, passMinZ };
+}
+
 function resolveClosestRegion(entity) {
   let closest = null;
   let bestDist = Infinity;
@@ -2039,11 +2070,21 @@ async function pollOpenSkyFlights() {
     const payload = await res.json();
     const states = Array.isArray(payload && payload.states) ? payload.states : [];
     const nextFlights = {};
+    let normalizedCount = 0;
     for (const row of states) {
       const normalized = buildOpenSkyFlightEntity(row);
       if (!normalized) continue;
+      normalizedCount++;
       nextFlights[normalized.id] = normalized;
     }
+    const visibilityStats = countVisibleOpenSkyFlights(nextFlights, OPENSKY_GLOBE_MIN_Z);
+    console.log(
+      '[RW Worldview] OpenSky visibility: fetched=' + states.length
+      + ' normalized=' + normalizedCount
+      + ' projection=' + visibilityStats.passProjection
+      + ' minZ=' + visibilityStats.passMinZ
+      + ' (threshold=' + OPENSKY_GLOBE_MIN_Z + ')'
+    );
 
     const previous = openSkyLiveState.flights;
     let updatedCount = 0;

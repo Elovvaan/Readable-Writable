@@ -11,5 +11,6 @@ The RW Worldview server can add OpenSky live flights as an additive layer (witho
 - `OPENSKY_CLIENT_ID=<oauth-client-id>` OpenSky OAuth2 client id.
 - `OPENSKY_CLIENT_SECRET=<oauth-client-secret>` OpenSky OAuth2 client secret.
 - `RW_OPENSKY_POLL_INTERVAL_MS=15000` optional poll interval (minimum enforced: 5000 ms).
+- `RW_OPENSKY_GLOBE_MIN_Z=-1` optional OpenSky globe visibility threshold used for ingestion diagnostics.
 - `OPENSKY_TOKEN_URL` optional override for OAuth token endpoint.
 - `OPENSKY_STATES_URL` optional override for OpenSky states endpoint.
