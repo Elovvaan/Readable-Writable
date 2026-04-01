@@ -14,6 +14,7 @@ const OPENSKY_POLL_INTERVAL_MS = Math.max(5000, Number(process.env.RW_OPENSKY_PO
 const OPENSKY_GLOBE_MIN_Z = Number.isFinite(Number(process.env.RW_OPENSKY_GLOBE_MIN_Z))
   ? Number(process.env.RW_OPENSKY_GLOBE_MIN_Z)
   : -1;
+const OPENSKY_TRAIL_MAX_POINTS = 24;
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const worldview = {
@@ -204,6 +205,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
+  const FLIGHT_TRAIL_MAX_POINTS = 24;
+  const FLIGHT_TRACK_EXTRAPOLATION_MAX_MS = 20000;
+  const FORWARD_VECTOR_LOOKAHEAD_SEC = 90;
+  const FORWARD_VECTOR_MIN_SPEED_MPS = 15;
+  const FORWARD_VECTOR_MAX_DISTANCE_KM = 180;
   const GLOBE_FLIGHT_ARC_SEGMENTS = 18;
   const GLOBE_ORBIT_SEGMENTS = 48;
   const GLOBE_REGION_OUTLINE_MIN_Z = 0.02;
@@ -232,6 +238,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let eventLog = [];
   let previousAgentsById = {};
   let agentTrails = {};
+  let flightTrackingById = {};
   let selectedAgentId = null;
   let selectedRegionId = null;
   let latestSelectedEvent = null;
@@ -518,17 +525,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function renderTrailsAndArcs(visibleAgents, width, height, globeDebug) {
     if (!showTrails) return;
+    const now = Date.now();
     visibleAgents.forEach(function (a) {
-      const trail = agentTrails[a.id];
+      const entityType = getEntityType(a);
+      const trail = (entityType === 'flight' && isOpenSkyFlight(a))
+        ? getFlightTrailPoints(a)
+        : agentTrails[a.id];
       const isSelected = selectedAgentId === a.id;
       const typeStyle = getEntityTypeStyle(a);
-      const entityType = getEntityType(a);
       if (isGlobeRenderMode() && entityType === 'satellite') {
         if (drawSatelliteOrbitBand(a, width, height, isSelected, typeStyle, globeDebug) && globeDebug) globeDebug.trailsVisible++;
       }
-      if (!trail || trail.length < 2) return;
       if (isGlobeRenderMode() && entityType === 'flight') {
-        if (drawFlightArcPath(a, trail, width, height, isSelected, typeStyle, globeDebug) && globeDebug) globeDebug.trailsVisible++;
+        if (trail && trail.length >= 2 && drawFlightArcPath(a, trail, width, height, isSelected, typeStyle, globeDebug, now) && globeDebug) {
+          globeDebug.trailsVisible++;
+        }
+        if (drawFlightForwardVector(a, width, height, isSelected, typeStyle, globeDebug, now) && globeDebug) globeDebug.trailsVisible++;
+        return;
+      }
+      if (!trail || trail.length < 2) {
         return;
       }
       ctx.save();
@@ -571,7 +586,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws) {
     if (!showAgents) return;
     visibleAgents.forEach(function (a) {
-      const agentPoint = getEntityWorldPoint(a);
+      const agentPoint = getEntityWorldPoint(a, now);
       if (globeDebug) {
         if (Number.isFinite(agentPoint.lat) && Number.isFinite(agentPoint.lng)) globeDebug.entitiesUsingLatLng++;
         else globeDebug.entitiesUsingGrid++;
@@ -589,7 +604,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const typeStyle = getEntityTypeStyle(a);
       ctx.save();
       ctx.beginPath();
-      ctx.arc(ax, ay, AGENT_RENDER_RADIUS * viewport.zoom, 0, Math.PI * 2);
+      const renderRadius = (isSelected && getEntityType(a) === 'flight') ? AGENT_RENDER_RADIUS * 1.25 : AGENT_RENDER_RADIUS;
+      ctx.arc(ax, ay, renderRadius * viewport.zoom, 0, Math.PI * 2);
       ctx.fillStyle = a.active ? typeStyle.fill : '#2b3544';
       ctx.fill();
       ctx.strokeStyle = isSelected ? '#e8f7ff' : (a.active ? typeStyle.stroke : '#223041');
@@ -1012,8 +1028,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return { x: applyViewportX(baseX, width), y: applyViewportY(baseY, height) };
   }
 
-  function getEntityWorldPoint(entity) {
+  function getEntityWorldPoint(entity, nowMs) {
     if (!entity) return { x: 0, y: 0, lat: null, lng: null };
+    if (isOpenSkyFlight(entity)) return getRenderableOpenSkyPoint(entity, nowMs);
     const hasLatLng = Number.isFinite(entity.lat) && Number.isFinite(entity.lng);
     return {
       x: Number.isFinite(entity.x) ? entity.x : 50,
@@ -1021,6 +1038,81 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       lat: hasLatLng ? entity.lat : null,
       lng: hasLatLng ? entity.lng : null,
     };
+  }
+
+  function isOpenSkyFlight(entity) {
+    return !!(entity && entity.type === 'flight' && entity.source === 'opensky');
+  }
+
+  function normalizeLng(lng) {
+    if (!Number.isFinite(lng)) return lng;
+    let normalized = lng;
+    while (normalized > 180) normalized -= 360;
+    while (normalized < -180) normalized += 360;
+    return normalized;
+  }
+
+  function projectLatLngByHeading(lat, lng, headingDeg, distanceKm) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(headingDeg) || !Number.isFinite(distanceKm)) return null;
+    const angularDistance = distanceKm / 6371;
+    if (angularDistance <= 0) return { lat, lng };
+    const bearing = headingDeg * (Math.PI / 180);
+    const lat1 = lat * (Math.PI / 180);
+    const lng1 = lng * (Math.PI / 180);
+    const sinLat1 = Math.sin(lat1);
+    const cosLat1 = Math.cos(lat1);
+    const sinAd = Math.sin(angularDistance);
+    const cosAd = Math.cos(angularDistance);
+    const lat2 = Math.asin((sinLat1 * cosAd) + (cosLat1 * sinAd * Math.cos(bearing)));
+    const lng2 = lng1 + Math.atan2(
+      Math.sin(bearing) * sinAd * cosLat1,
+      cosAd - (sinLat1 * Math.sin(lat2))
+    );
+    return {
+      lat: Math.max(-89.9, Math.min(89.9, lat2 * (180 / Math.PI))),
+      lng: normalizeLng(lng2 * (180 / Math.PI)),
+    };
+  }
+
+  function getRenderableOpenSkyPoint(entity, nowMs) {
+    const tracking = flightTrackingById[entity.id];
+    const hasLatLng = Number.isFinite(entity.lat) && Number.isFinite(entity.lng);
+    const basePoint = {
+      x: Number.isFinite(entity.x) ? entity.x : 50,
+      y: Number.isFinite(entity.y) ? entity.y : 50,
+      lat: hasLatLng ? entity.lat : null,
+      lng: hasLatLng ? entity.lng : null,
+      heading: Number.isFinite(entity.heading) ? entity.heading : null,
+      speed: Number.isFinite(entity.speed) ? entity.speed : null,
+      verticalRate: Number.isFinite(entity.verticalRate) ? entity.verticalRate : null,
+      altitude: Number.isFinite(entity.altitude) ? entity.altitude : null,
+    };
+    if (!tracking || !Number.isFinite(basePoint.lat) || !Number.isFinite(basePoint.lng)) return basePoint;
+    const tNow = Number.isFinite(nowMs) ? nowMs : Date.now();
+    const dtMs = Math.max(0, Math.min(FLIGHT_TRACK_EXTRAPOLATION_MAX_MS, tNow - (tracking.lastUpdateMs || tNow)));
+    const speedMps = Number.isFinite(basePoint.speed) ? basePoint.speed : (Number.isFinite(tracking.speed) ? tracking.speed : null);
+    const heading = Number.isFinite(basePoint.heading) ? basePoint.heading : (Number.isFinite(tracking.heading) ? tracking.heading : null);
+    if (!Number.isFinite(speedMps) || !Number.isFinite(heading) || speedMps <= 0.5 || dtMs <= 0) return basePoint;
+    const extrapolated = projectLatLngByHeading(basePoint.lat, basePoint.lng, heading, (speedMps * (dtMs / 1000)) / 1000);
+    if (!extrapolated) return basePoint;
+    const mapped = latLngToGrid(extrapolated.lat, extrapolated.lng);
+    return {
+      x: mapped.x,
+      y: mapped.y,
+      lat: extrapolated.lat,
+      lng: extrapolated.lng,
+      heading,
+      speed: speedMps,
+      verticalRate: Number.isFinite(basePoint.verticalRate) ? basePoint.verticalRate : tracking.verticalRate,
+      altitude: Number.isFinite(basePoint.altitude) ? basePoint.altitude : tracking.altitude,
+    };
+  }
+
+  function getFlightTrailPoints(agent) {
+    const tracking = flightTrackingById[agent.id];
+    if (tracking && Array.isArray(tracking.trail)) return tracking.trail.slice(-FLIGHT_TRAIL_MAX_POINTS);
+    if (Array.isArray(agent.trail)) return agent.trail.slice(-FLIGHT_TRAIL_MAX_POINTS);
+    return [];
   }
 
   function applyViewportX(baseX, width) {
@@ -1101,6 +1193,45 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
 
     agentTrails = nextTrails;
+  }
+
+  function updateFlightTracking(prevAgents, nextAgents, snapshotTsMs) {
+    const prev = prevAgents || {};
+    const next = nextAgents || {};
+    const nextTracking = {};
+    for (const id of Object.keys(next)) {
+      const nextAgent = next[id];
+      if (!isOpenSkyFlight(nextAgent)) continue;
+      const prevAgent = prev[id];
+      const existing = flightTrackingById[id] || {};
+      const priorTrail = Array.isArray(nextAgent.trail) ? nextAgent.trail : (Array.isArray(existing.trail) ? existing.trail : []);
+      const trail = priorTrail.slice(-FLIGHT_TRAIL_MAX_POINTS);
+      const lat = Number.isFinite(nextAgent.lat) ? nextAgent.lat : null;
+      const lng = Number.isFinite(nextAgent.lng) ? nextAgent.lng : null;
+      const hasTrailPoint = Number.isFinite(lat) && Number.isFinite(lng);
+      const moved = !prevAgent
+        || !Number.isFinite(prevAgent.lat)
+        || !Number.isFinite(prevAgent.lng)
+        || Math.abs(prevAgent.lat - lat) > 0.0001
+        || Math.abs(prevAgent.lng - lng) > 0.0001;
+      if (hasTrailPoint && (trail.length === 0 || moved)) {
+        trail.push({ lat, lng, ts: snapshotTsMs });
+      }
+      nextTracking[id] = {
+        prevLat: Number.isFinite(existing.lastLat) ? existing.lastLat : (prevAgent ? prevAgent.lat : null),
+        prevLng: Number.isFinite(existing.lastLng) ? existing.lastLng : (prevAgent ? prevAgent.lng : null),
+        lastLat: lat,
+        lastLng: lng,
+        trail: trail.slice(-FLIGHT_TRAIL_MAX_POINTS),
+        lastUpdateMs: snapshotTsMs,
+        heading: Number.isFinite(nextAgent.heading) ? nextAgent.heading : (existing.heading ?? null),
+        speed: Number.isFinite(nextAgent.speed) ? nextAgent.speed : (existing.speed ?? null),
+        verticalRate: Number.isFinite(nextAgent.verticalRate) ? nextAgent.verticalRate : (existing.verticalRate ?? null),
+        altitude: Number.isFinite(nextAgent.altitude) ? nextAgent.altitude : (existing.altitude ?? null),
+        source: 'opensky',
+      };
+    }
+    flightTrackingById = nextTracking;
   }
 
   function findNearestAgentAtPoint(mx, my) {
@@ -1319,8 +1450,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return { shape: 'polygon', points, labelX: labelPoint.x, labelY: labelPoint.y };
   }
 
-  function drawFlightArcPath(agent, trail, width, height, isSelected, typeStyle, globeDebug) {
-    const currentPoint = getEntityWorldPoint(agent);
+  function drawFlightArcPath(agent, trail, width, height, isSelected, typeStyle, globeDebug, nowMs) {
+    const currentPoint = getEntityWorldPoint(agent, nowMs);
     const prior = trail[Math.max(0, trail.length - 2)] || trail[0];
     const start = worldPointToUnitVector(prior.x, prior.y, prior.lat, prior.lng);
     const end = worldPointToUnitVector(currentPoint.x, currentPoint.y, currentPoint.lat, currentPoint.lng);
@@ -1355,6 +1486,35 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.lineWidth = isSelected ? 2.6 : 1.4;
     if (isSelected) {
       ctx.shadowBlur = 8;
+      ctx.shadowColor = typeStyle.stroke;
+    }
+    ctx.stroke();
+    ctx.restore();
+    return true;
+  }
+
+  function drawFlightForwardVector(agent, width, height, isSelected, typeStyle, globeDebug, nowMs) {
+    const point = getEntityWorldPoint(agent, nowMs);
+    const headingRaw = Number(agent.heading);
+    const speedRaw = Number(agent.speed);
+    const heading = Number.isFinite(point.heading) ? point.heading : (Number.isFinite(headingRaw) ? headingRaw : null);
+    const speedMps = Number.isFinite(point.speed) ? point.speed : (Number.isFinite(speedRaw) ? speedRaw : null);
+    if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return false;
+    if (!Number.isFinite(heading) || !Number.isFinite(speedMps) || speedMps < FORWARD_VECTOR_MIN_SPEED_MPS) return false;
+    const lookAheadKm = Math.min(FORWARD_VECTOR_MAX_DISTANCE_KM, Math.max(8, (speedMps * FORWARD_VECTOR_LOOKAHEAD_SEC) / 1000));
+    const projected = projectLatLngByHeading(point.lat, point.lng, heading, lookAheadKm);
+    if (!projected) return false;
+    const nose = worldPointToCanvas(point, width, height, GLOBE_FLIGHT_MIN_Z, globeDebug);
+    const future = worldPointToCanvas(projected, width, height, GLOBE_FLIGHT_MIN_Z, globeDebug);
+    if (!nose || !future) return false;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(nose.x, nose.y);
+    ctx.lineTo(future.x, future.y);
+    ctx.strokeStyle = isSelected ? '#ffeec8' : '#ffd8b4aa';
+    ctx.lineWidth = isSelected ? 2.4 : 1.2;
+    if (isSelected) {
+      ctx.shadowBlur = 7;
       ctx.shadowColor = typeStyle.stroke;
     }
     ctx.stroke();
@@ -1731,7 +1891,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   });
 
   function applySnapshot(nextSnapshot) {
+    const snapshotTsMs = Date.now();
     updateAgentTrails(state.agents, nextSnapshot.agents);
+    updateFlightTracking(state.agents, nextSnapshot.agents, snapshotTsMs);
     previousAgentsById = state.agents || {};
     state = nextSnapshot;
     latestRegionIntelligence = computeRegionIntelligence();
@@ -1830,6 +1992,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           return;
         }
         updateAgentTrails(state.agents, msg.data.agents);
+        updateFlightTracking(state.agents, msg.data.agents, Date.now());
         previousAgentsById = state.agents || {};
         state = msg.data;
         latestRegionIntelligence = computeRegionIntelligence();
@@ -1979,7 +2142,7 @@ function resolveClosestRegion(entity) {
   return closest ? closest.id : null;
 }
 
-function buildOpenSkyFlightEntity(row) {
+function buildOpenSkyFlightEntity(row, previousEntity) {
   if (!Array.isArray(row)) return null;
   const icao24 = String(row[0] || '').trim().toLowerCase();
   const callsign = String(row[1] || '').trim();
@@ -2010,7 +2173,22 @@ function buildOpenSkyFlightEntity(row) {
     state: onGround ? 'grounded' : 'airborne',
     memory: [],
     lastSeen: new Date().toISOString(),
+    prevLat: previousEntity && Number.isFinite(previousEntity.lat) ? previousEntity.lat : null,
+    prevLng: previousEntity && Number.isFinite(previousEntity.lng) ? previousEntity.lng : null,
+    trail: Array.isArray(previousEntity && previousEntity.trail) ? previousEntity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS) : [],
+    lastUpdateMs: Date.now(),
   };
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    const moved = !previousEntity
+      || !Number.isFinite(previousEntity.lat)
+      || !Number.isFinite(previousEntity.lng)
+      || Math.abs(previousEntity.lat - lat) > 0.0001
+      || Math.abs(previousEntity.lng - lon) > 0.0001;
+    if (entity.trail.length === 0 || moved) {
+      entity.trail.push({ lat, lng: lon, ts: entity.lastUpdateMs });
+    }
+    entity.trail = entity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS);
+  }
   normalizeEntityGridPosition(entity);
   entity.region = resolveClosestRegion(entity);
   return entity;
@@ -2070,9 +2248,12 @@ async function pollOpenSkyFlights() {
     const payload = await res.json();
     const states = Array.isArray(payload && payload.states) ? payload.states : [];
     const nextFlights = {};
+    const previous = openSkyLiveState.flights;
     let normalizedCount = 0;
     for (const row of states) {
-      const normalized = buildOpenSkyFlightEntity(row);
+      const icao24 = Array.isArray(row) ? String(row[0] || '').trim().toLowerCase() : '';
+      const previousFlight = icao24 ? previous['flight-' + icao24] : null;
+      const normalized = buildOpenSkyFlightEntity(row, previousFlight);
       if (!normalized) continue;
       normalizedCount++;
       nextFlights[normalized.id] = normalized;
@@ -2086,7 +2267,6 @@ async function pollOpenSkyFlights() {
       + ' (threshold=' + OPENSKY_GLOBE_MIN_Z + ')'
     );
 
-    const previous = openSkyLiveState.flights;
     let updatedCount = 0;
     for (const flightId of Object.keys(nextFlights)) {
       if (!previous[flightId]) {
