@@ -61,6 +61,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #selected-panel { border-top: 1px solid #1c1c1c; padding: 10px 14px; font-size: .72rem; }
     #action-panel { border-top: 1px solid #1c1c1c; padding: 8px 14px 10px; font-size: .72rem; }
     .action-row { display: flex; gap: 6px; }
+    .action-row.secondary { margin-top: 8px; }
     .action-btn { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
     .action-btn:disabled { cursor: not-allowed; opacity: .45; }
     .selected-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
@@ -139,6 +140,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         <button id="action-ping" class="action-btn" type="button">Ping</button>
         <button id="action-flag" class="action-btn" type="button">Flag</button>
       </div>
+      <div class="action-row secondary">
+        <label class="ctrl-toggle"><input type="checkbox" id="toggle-follow-target">Follow Target</label>
+      </div>
     </div>
     <div class="panel-title">Stats</div>
     <div id="stats">
@@ -163,6 +167,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const focusActionBtn = document.getElementById('action-focus');
   const pingActionBtn = document.getElementById('action-ping');
   const flagActionBtn = document.getElementById('action-flag');
+  const followTargetToggleEl = document.getElementById('toggle-follow-target');
   const statusEl = document.getElementById('status');
   const toggleAgentsEl = document.getElementById('toggle-agents');
   const toggleRegionsEl = document.getElementById('toggle-regions');
@@ -188,6 +193,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const VIEWPORT_ZOOM_MAX = 3;
   const VIEWPORT_ZOOM_STEP = 0.2;
   const VIEWPORT_PAN_STEP = 36;
+  const CAMERA_LERP_FACTOR = 0.18;
+  const CAMERA_EPSILON_PX = 0.6;
   let state = { agents: {}, regions: {}, tick: 0, started: null };
   let eventLog = [];
   let agentTrails = {};
@@ -210,6 +217,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let eventSearchQuery = '';
   let activeEventFilter = 'all';
   let viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
+  let followTargetEnabled = false;
+  let cameraLerpTarget = null;
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -231,6 +240,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   // ── Draw ──
   function draw() {
     const W = canvas.width, H = canvas.height;
+    const cameraUpdated = updateCameraMotion(W, H);
     ctx.clearRect(0, 0, W, H);
     const now = Date.now();
 
@@ -362,6 +372,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.fillStyle = '#222';
     ctx.font = '11px monospace';
     ctx.fillText('tick ' + state.tick, 8, H - 8);
+
+    if (cameraUpdated && (followTargetEnabled || cameraLerpTarget)) {
+      requestAnimationFrame(draw);
+    }
   }
 
   // ── Event log ──
@@ -531,6 +545,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     focusActionBtn.disabled = !hasSelection;
     pingActionBtn.disabled = !hasSelection;
     flagActionBtn.disabled = !hasSelection;
+    followTargetToggleEl.disabled = !hasSelection;
+    if (!hasSelection && followTargetEnabled) {
+      followTargetEnabled = false;
+      cameraLerpTarget = null;
+      followTargetToggleEl.checked = false;
+      pushOperatorEvent('operator follow disabled (no selection)');
+    }
   }
 
   function pushOperatorEvent(msg) {
@@ -543,6 +564,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function runFocusAction() {
     const targetKey = getCurrentTargetKey();
     if (!targetKey) return;
+    const focusPoint = getSelectedFocusPoint();
+    if (!focusPoint) return;
+    cameraLerpTarget = focusPoint;
     focusTargetKey = targetKey;
     focusEffectUntil = Date.now() + 2200;
     const targetId = selectedAgentId || selectedRegionId;
@@ -584,6 +608,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     updateLatestSelectedEventFromLog();
     refreshRelatedEventHighlight();
     renderSelectedPanel();
+    syncFollowTargetState();
     draw();
   }
 
@@ -593,7 +618,74 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     updateLatestSelectedEventFromLog();
     refreshRelatedEventHighlight();
     renderSelectedPanel();
+    syncFollowTargetState();
     draw();
+  }
+
+  function getSelectedFocusPoint() {
+    if (selectedAgentId && state.agents[selectedAgentId]) {
+      const selected = state.agents[selectedAgentId];
+      return { x: selected.x, y: selected.y, kind: 'agent' };
+    }
+    if (selectedRegionId && state.regions[selectedRegionId]) {
+      const selected = state.regions[selectedRegionId];
+      return { x: selected.x, y: selected.y, kind: 'region' };
+    }
+    return null;
+  }
+
+  function getViewportOffsetToCenterWorld(worldX, worldY, width, height) {
+    const baseX = (worldX / 100) * width;
+    const baseY = (worldY / 100) * height;
+    return {
+      x: -((baseX - (width / 2)) * viewport.zoom),
+      y: -((baseY - (height / 2)) * viewport.zoom),
+    };
+  }
+
+  function updateCameraMotion(width, height) {
+    if (followTargetEnabled) {
+      const selectedFocusPoint = getSelectedFocusPoint();
+      if (!selectedFocusPoint) {
+        followTargetEnabled = false;
+        cameraLerpTarget = null;
+        followTargetToggleEl.checked = false;
+      } else {
+        cameraLerpTarget = selectedFocusPoint;
+      }
+    }
+    if (!cameraLerpTarget) return false;
+    const targetOffset = getViewportOffsetToCenterWorld(cameraLerpTarget.x, cameraLerpTarget.y, width, height);
+    const nextOffsetX = viewport.offsetX + ((targetOffset.x - viewport.offsetX) * CAMERA_LERP_FACTOR);
+    const nextOffsetY = viewport.offsetY + ((targetOffset.y - viewport.offsetY) * CAMERA_LERP_FACTOR);
+    const deltaX = Math.abs(nextOffsetX - viewport.offsetX);
+    const deltaY = Math.abs(nextOffsetY - viewport.offsetY);
+    viewport.offsetX = nextOffsetX;
+    viewport.offsetY = nextOffsetY;
+    updateViewportReadout();
+
+    const closeEnough = Math.abs(targetOffset.x - viewport.offsetX) <= CAMERA_EPSILON_PX
+      && Math.abs(targetOffset.y - viewport.offsetY) <= CAMERA_EPSILON_PX;
+    if (closeEnough && !followTargetEnabled) {
+      viewport.offsetX = targetOffset.x;
+      viewport.offsetY = targetOffset.y;
+      cameraLerpTarget = null;
+      updateViewportReadout();
+      return false;
+    }
+    return deltaX > 0.01 || deltaY > 0.01 || followTargetEnabled;
+  }
+
+  function syncFollowTargetState() {
+    if (!followTargetEnabled) return;
+    const selectedFocusPoint = getSelectedFocusPoint();
+    if (!selectedFocusPoint) {
+      followTargetEnabled = false;
+      cameraLerpTarget = null;
+      followTargetToggleEl.checked = false;
+      return;
+    }
+    cameraLerpTarget = selectedFocusPoint;
   }
 
   function worldToCanvas(x, y, width, height) {
@@ -629,6 +721,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function setViewportZoom(nextZoom) {
     viewport.zoom = Math.max(VIEWPORT_ZOOM_MIN, Math.min(VIEWPORT_ZOOM_MAX, nextZoom));
+    syncFollowTargetState();
     updateViewportReadout();
     draw();
   }
@@ -644,6 +737,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     viewport.zoom = 1;
     viewport.offsetX = 0;
     viewport.offsetY = 0;
+    cameraLerpTarget = null;
+    followTargetEnabled = false;
+    followTargetToggleEl.checked = false;
     updateViewportReadout();
     draw();
   }
@@ -744,6 +840,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   focusActionBtn.addEventListener('click', runFocusAction);
   pingActionBtn.addEventListener('click', runPingAction);
   flagActionBtn.addEventListener('click', runFlagAction);
+  followTargetToggleEl.addEventListener('change', function () {
+    const shouldFollow = !!followTargetToggleEl.checked;
+    if (!shouldFollow) {
+      followTargetEnabled = false;
+      cameraLerpTarget = null;
+      return;
+    }
+    const selectedFocusPoint = getSelectedFocusPoint();
+    if (!selectedFocusPoint) {
+      followTargetEnabled = false;
+      cameraLerpTarget = null;
+      followTargetToggleEl.checked = false;
+      return;
+    }
+    followTargetEnabled = true;
+    cameraLerpTarget = selectedFocusPoint;
+    pushOperatorEvent('operator follow enabled for ' + (selectedAgentId || ('region ' + selectedRegionId)));
+    draw();
+  });
 
   function clearSelectionIfHidden() {
     if (!showAgents && selectedAgentId) {
@@ -762,6 +877,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       latestSelectedEvent = null;
     }
     refreshRelatedEventHighlight();
+    syncFollowTargetState();
     renderSelectedPanel();
   }
 
