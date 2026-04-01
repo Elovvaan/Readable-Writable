@@ -685,10 +685,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     canvasEl.style.display = 'block';
     canvasEl.style.visibility = 'visible';
     canvasEl.style.opacity = '1';
-    canvasEl.style.position = 'absolute';
-    canvasEl.style.top = '0';
-    canvasEl.style.left = '0';
-    canvasEl.style.zIndex = '1';
+    canvasEl.style.zIndex = GLOBE_Z_INDEX;
 
     const w = window.innerWidth;
     const h = window.innerHeight;
