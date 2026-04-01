@@ -99,13 +99,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       </select>
     </label>
     <button id="pause-btn" type="button" aria-pressed="false">Pause Simulation</button>
-    <label class="ctrl-inline" for="render-mode-select">View
-      <select id="render-mode-select" aria-label="Rendering mode">
-        <option value="grid" selected>Grid</option>
-        <option value="globe">Globe</option>
-        <option value="blend">Globe + Grid</option>
-      </select>
-    </label>
   </div>
 </header>
 <main>
@@ -192,7 +185,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const panUpBtnEl = document.getElementById('pan-up-btn');
   const panDownBtnEl = document.getElementById('pan-down-btn');
   const viewportReadoutEl = document.getElementById('viewport-readout');
-  const renderModeSelectEl = document.getElementById('render-mode-select');
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
@@ -247,7 +239,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let eventSearchQuery = '';
   let activeEventFilter = 'all';
   let viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
-  let renderMode = 'grid';
   let followTargetEnabled = false;
   let cameraLerpTarget = null;
   let latestRegionIntelligence = {};
@@ -305,27 +296,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function renderBaseSurface(width, height) {
-    if (renderMode === 'grid') {
-      ctx.strokeStyle = '#151520';
-      ctx.lineWidth = 1;
-      const step = 48;
-      for (let x = 0; x <= width; x += step) {
-        const sx = applyViewportX(x, width);
-        if (sx < -1 || sx > width + 1) continue;
-        ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, height); ctx.stroke();
-      }
-      for (let y = 0; y <= height; y += step) {
-        const sy = applyViewportY(y, height);
-        if (sy < -1 || sy > height + 1) continue;
-        ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(width, sy); ctx.stroke();
-      }
-      return;
-    }
     drawGlobeBase(width, height);
   }
 
   function isGlobeRenderMode() {
-    return renderMode === 'globe' || renderMode === 'blend';
+    return true;
   }
 
   function renderWorldOverlays(width, height, now, globeDebug) {
@@ -1101,7 +1076,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.lineWidth = 2;
     ctx.stroke();
     drawGlobeContinents(width, height);
-    if (renderMode === 'blend') drawGlobeGridOverlay(width, height);
     ctx.restore();
   }
 
@@ -1644,11 +1618,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   panRightBtnEl.addEventListener('click', function () { panViewport(VIEWPORT_PAN_STEP, 0); });
   panUpBtnEl.addEventListener('click', function () { panViewport(0, -VIEWPORT_PAN_STEP); });
   panDownBtnEl.addEventListener('click', function () { panViewport(0, VIEWPORT_PAN_STEP); });
-  renderModeSelectEl.addEventListener('change', function () {
-    renderMode = renderModeSelectEl.value === 'globe' ? 'globe' : 'grid';
-    draw();
-  });
-
   speedSelectEl.addEventListener('change', function () {
     const nextSpeed = Number(speedSelectEl.value);
     simulationSpeed = Number.isFinite(nextSpeed) && nextSpeed > 0 ? nextSpeed : 1;
