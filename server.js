@@ -284,6 +284,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     flightsDrawn: 0,
     earthInitialized: false,
     tilesLoaded: false,
+    tilesState: 'pending',
+    tilesError: null,
   };
   let lastCesiumDiagAt = 0;
   const log     = document.getElementById('event-log');
@@ -698,32 +700,49 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.scene.backgroundColor = Cesium.Color.BLACK;
     cesiumViewer.scene.globe.show = true;
     cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0b1220');
-    cesiumViewer.scene.globe.depthTestAgainstTerrain = false;
+    cesiumViewer.scene.globe.depthTestAgainstTerrain = true;
     cesiumViewer.scene.skyAtmosphere.show = true;
     cesiumViewer.scene.sun.show = false;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
     try {
       if (BOOTSTRAP.googleMapsApiKey) {
-        const tileset = (typeof Cesium.createGooglePhotorealistic3DTileset === 'function')
-          ? await Cesium.createGooglePhotorealistic3DTileset({ key: BOOTSTRAP.googleMapsApiKey })
-          : await Cesium.Cesium3DTileset.fromUrl(
-              GOOGLE_TILESET_ROOT + '?key=' + encodeURIComponent(BOOTSTRAP.googleMapsApiKey)
-            );
+        console.info('[RW Cesium] Google Photorealistic 3D Tiles request started');
+        lastCesiumRenderCounts.tilesState = 'loading';
+        lastCesiumRenderCounts.tilesError = null;
+        const tileset = await Cesium.Cesium3DTileset.fromUrl(
+          GOOGLE_TILESET_ROOT + '?key=' + encodeURIComponent(BOOTSTRAP.googleMapsApiKey)
+        );
         cesiumViewer.scene.primitives.add(tileset);
         cesiumGoogleTileset = tileset;
         if (typeof tileset.readyPromise?.then === 'function') {
           tileset.readyPromise.then(function () {
             if (cesiumGoogleTileset === tileset) {
               console.info('[RW Cesium] Google Photorealistic 3D Tiles ready');
+              lastCesiumRenderCounts.tilesLoaded = true;
+              lastCesiumRenderCounts.tilesState = 'ok';
+              lastCesiumRenderCounts.tilesError = null;
             }
           }).catch(function (err) {
             console.error('[RW Cesium] Google Photorealistic 3D Tiles readyPromise failed', err);
+            lastCesiumRenderCounts.tilesLoaded = false;
+            lastCesiumRenderCounts.tilesState = 'failed';
+            lastCesiumRenderCounts.tilesError = (err && err.message) ? err.message : String(err || 'unknown');
           });
         }
         console.info('[RW Cesium] Google Photorealistic 3D Tiles loaded');
+        lastCesiumRenderCounts.tilesLoaded = true;
+        lastCesiumRenderCounts.tilesState = 'ok';
+        lastCesiumRenderCounts.tilesError = null;
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-95, 40, 20000000),
+        });
       } else {
+        console.error('Missing GOOGLE_MAPS_API_KEY');
         console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; using OpenStreetMap fallback imagery');
+        lastCesiumRenderCounts.tilesLoaded = false;
+        lastCesiumRenderCounts.tilesState = 'missing-key';
+        lastCesiumRenderCounts.tilesError = 'Missing GOOGLE_MAPS_API_KEY';
         cesiumViewer.imageryLayers.removeAll();
         cesiumViewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
           url: 'https://tile.openstreetmap.org/',
@@ -734,6 +753,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       console.info('[RW Cesium] initialized');
     } catch (err) {
       console.error('[RW Cesium] init failed', err);
+      lastCesiumRenderCounts.tilesLoaded = false;
+      lastCesiumRenderCounts.tilesState = 'failed';
+      lastCesiumRenderCounts.tilesError = (err && err.message) ? err.message : String(err || 'unknown');
     }
     bindCesiumSelection();
     draw();
@@ -1009,6 +1031,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       flightsDrawn,
       earthInitialized: !!cesiumViewer,
       tilesLoaded: !!cesiumGoogleTileset,
+      tilesState: lastCesiumRenderCounts.tilesState,
+      tilesError: lastCesiumRenderCounts.tilesError,
     };
     const now = Date.now();
     if (now - lastCesiumDiagAt > 15000) {
@@ -1960,7 +1984,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     let text = 'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
     if (USE_CESIUM) {
       text += ' · cesium e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions + ' s:' + lastCesiumRenderCounts.satellites;
-      text += (lastCesiumRenderCounts.tilesLoaded ? ' · google tiles:on' : ' · google tiles:off');
+      text += ' · google tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'on' : 'off'));
       if (layerState.traffic) text += ' · traffic:unavailable';
       if (layerState.weather) text += ' · weather:not configured';
     } else if (isGlobeRenderMode() && globeOverlayDiagnostics) {
@@ -2648,7 +2672,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     document.getElementById('s-layers-debug').textContent = layerDebugText;
     document.getElementById('s-render-debug').textContent =
       'earth:' + (lastCesiumRenderCounts.earthInitialized ? 'ok' : 'pending')
-      + ' tiles:' + (lastCesiumRenderCounts.tilesLoaded ? 'ok' : 'pending')
+      + ' tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'ok' : 'pending'))
+      + (lastCesiumRenderCounts.tilesError ? ' (' + lastCesiumRenderCounts.tilesError + ')' : '')
       + ' sat:' + (Number.isFinite(lastCesiumRenderCounts.satellites) ? lastCesiumRenderCounts.satellites : 0)
       + ' reg:' + (Number.isFinite(lastCesiumRenderCounts.regions) ? lastCesiumRenderCounts.regions : 0);
     document.getElementById('s-speed').textContent   = simulationSpeed + 'x';
