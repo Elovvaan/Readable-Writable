@@ -279,7 +279,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     // regions
     if (showRegions) regions.forEach(r => {
-      const regionPos = worldToCanvas(r.x, r.y, W, H);
+      const regionPoint = getEntityWorldPoint(r);
+      const regionPos = worldToCanvas(regionPoint.x, regionPoint.y, W, H, regionPoint.lat, regionPoint.lng);
       if (!regionPos) return;
       const rx = regionPos.x, ry = regionPos.y;
       const occupancy = regionOccupancy[r.id] || 0;
@@ -331,14 +332,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const typeStyle = getEntityTypeStyle(a);
       ctx.save();
       ctx.beginPath();
-      const first = worldToCanvas(trail[0].x, trail[0].y, W, H);
+      const first = worldToCanvas(trail[0].x, trail[0].y, W, H, trail[0].lat, trail[0].lng);
       if (!first) {
         ctx.restore();
         return;
       }
       ctx.moveTo(first.x, first.y);
       for (let i = 1; i < trail.length; i++) {
-        const pt = worldToCanvas(trail[i].x, trail[i].y, W, H);
+        const pt = worldToCanvas(trail[i].x, trail[i].y, W, H, trail[i].lat, trail[i].lng);
         if (!pt) continue;
         ctx.lineTo(pt.x, pt.y);
       }
@@ -350,7 +351,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     // agents
     if (showAgents) visibleAgents.forEach(a => {
-      const agentPos = worldToCanvas(a.x, a.y, W, H);
+      const agentPoint = getEntityWorldPoint(a);
+      const agentPos = worldToCanvas(agentPoint.x, agentPoint.y, W, H, agentPoint.lat, agentPoint.lng);
       if (!agentPos) return;
       const ax = agentPos.x;
       const ay = agentPos.y;
@@ -548,6 +550,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       '<span class="selected-label">TYPE</span><span class="selected-value">' + escHtml(getEntityType(selected)) + '</span>' +
       '<span class="selected-label">X</span><span class="selected-value">' + selected.x.toFixed(2) + '</span>' +
       '<span class="selected-label">Y</span><span class="selected-value">' + selected.y.toFixed(2) + '</span>' +
+      '<span class="selected-label">LAT</span><span class="selected-value">' + (Number.isFinite(selected.lat) ? selected.lat.toFixed(2) : '—') + '</span>' +
+      '<span class="selected-label">LNG</span><span class="selected-value">' + (Number.isFinite(selected.lng) ? selected.lng.toFixed(2) : '—') + '</span>' +
       '<span class="selected-label">STATUS</span><span class="selected-value">' + escHtml(selected.state || (selected.active ? 'active' : 'inactive')) + '</span>' +
       '<span class="selected-label">FLAGGED</span><span class="selected-value">' + (isFlagged ? 'yes' : 'no') + '</span>' +
       '<span class="selected-label">LAST ACTION</span><span class="selected-value">' + escHtml(lastAction) + '</span>' +
@@ -647,18 +651,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function getSelectedFocusPoint() {
     if (selectedAgentId && state.agents[selectedAgentId]) {
       const selected = state.agents[selectedAgentId];
-      return { x: selected.x, y: selected.y, kind: 'agent' };
+      const point = getEntityWorldPoint(selected);
+      return { x: point.x, y: point.y, lat: point.lat, lng: point.lng, kind: 'agent' };
     }
     if (selectedRegionId && state.regions[selectedRegionId]) {
       const selected = state.regions[selectedRegionId];
-      return { x: selected.x, y: selected.y, kind: 'region' };
+      const point = getEntityWorldPoint(selected);
+      return { x: point.x, y: point.y, lat: point.lat, lng: point.lng, kind: 'region' };
     }
     return null;
   }
 
-  function getViewportOffsetToCenterWorld(worldX, worldY, width, height) {
+  function getViewportOffsetToCenterWorld(worldX, worldY, width, height, lat, lng) {
     if (renderMode === 'globe') {
-      const globePoint = projectGlobePosition(worldX, worldY, width, height);
+      const globePoint = projectGlobePosition(worldX, worldY, width, height, lat, lng);
       if (!globePoint) return { x: viewport.offsetX, y: viewport.offsetY };
       return {
         x: -((globePoint.baseX - (width / 2)) * viewport.zoom),
@@ -685,7 +691,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
     }
     if (!cameraLerpTarget) return false;
-    const targetOffset = getViewportOffsetToCenterWorld(cameraLerpTarget.x, cameraLerpTarget.y, width, height);
+    const targetOffset = getViewportOffsetToCenterWorld(
+      cameraLerpTarget.x,
+      cameraLerpTarget.y,
+      width,
+      height,
+      cameraLerpTarget.lat,
+      cameraLerpTarget.lng
+    );
     const nextOffsetX = viewport.offsetX + ((targetOffset.x - viewport.offsetX) * CAMERA_LERP_FACTOR);
     const nextOffsetY = viewport.offsetY + ((targetOffset.y - viewport.offsetY) * CAMERA_LERP_FACTOR);
     const deltaX = Math.abs(nextOffsetX - viewport.offsetX);
@@ -718,9 +731,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cameraLerpTarget = selectedFocusPoint;
   }
 
-  function worldToCanvas(x, y, width, height) {
+  function worldToCanvas(x, y, width, height, lat, lng) {
     if (renderMode === 'globe') {
-      const globePoint = projectGlobePosition(x, y, width, height);
+      const globePoint = projectGlobePosition(x, y, width, height, lat, lng);
       if (!globePoint) return null;
       return {
         x: applyViewportX(globePoint.baseX, width),
@@ -732,6 +745,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return {
       x: applyViewportX(baseX, width),
       y: applyViewportY(baseY, height),
+    };
+  }
+
+  function getEntityWorldPoint(entity) {
+    if (!entity) return { x: 0, y: 0, lat: null, lng: null };
+    const hasLatLng = Number.isFinite(entity.lat) && Number.isFinite(entity.lng);
+    return {
+      x: Number.isFinite(entity.x) ? entity.x : 50,
+      y: Number.isFinite(entity.y) ? entity.y : 50,
+      lat: hasLatLng ? entity.lat : null,
+      lng: hasLatLng ? entity.lng : null,
     };
   }
 
@@ -795,9 +819,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const trail = existing.slice(-TRAIL_MAX_POINTS);
 
       if (trail.length === 0 || !prevAgent) {
-        trail.push({ x: nextAgent.x, y: nextAgent.y });
+        trail.push({ x: nextAgent.x, y: nextAgent.y, lat: nextAgent.lat, lng: nextAgent.lng });
       } else if (prevAgent.x !== nextAgent.x || prevAgent.y !== nextAgent.y) {
-        trail.push({ x: nextAgent.x, y: nextAgent.y });
+        trail.push({ x: nextAgent.x, y: nextAgent.y, lat: nextAgent.lat, lng: nextAgent.lng });
       }
 
       nextTrails[id] = trail.slice(-TRAIL_MAX_POINTS);
@@ -812,7 +836,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     let nearestDistSq = Infinity;
     for (const a of Object.values(state.agents)) {
       if (!isEntityTypeVisible(getEntityType(a))) continue;
-      const pt = worldToCanvas(a.x, a.y, canvas.width, canvas.height);
+      const point = getEntityWorldPoint(a);
+      const pt = worldToCanvas(point.x, point.y, canvas.width, canvas.height, point.lat, point.lng);
       if (!pt) continue;
       const dx = mx - pt.x;
       const dy = my - pt.y;
@@ -831,7 +856,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function findRegionAtPoint(mx, my) {
     if (!showRegions) return null;
     for (const r of Object.values(state.regions)) {
-      const pt = worldToCanvas(r.x, r.y, canvas.width, canvas.height);
+      const point = getEntityWorldPoint(r);
+      const pt = worldToCanvas(point.x, point.y, canvas.width, canvas.height, point.lat, point.lng);
       if (!pt) continue;
       const regionHalfSize = (30 * viewport.zoom);
       if (mx >= pt.x - regionHalfSize && mx <= pt.x + regionHalfSize && my >= pt.y - regionHalfSize && my <= pt.y + regionHalfSize) {
@@ -856,17 +882,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.restore();
   }
 
-  function projectGlobePosition(worldX, worldY, width, height) {
+  function projectGlobePosition(worldX, worldY, width, height, lat, lng) {
     const radius = Math.min(width, height) * 0.35;
     const cx = width / 2;
     const cy = height / 2;
-    const nx = (Math.max(0, Math.min(100, worldX)) / 100);
-    const ny = (Math.max(0, Math.min(100, worldY)) / 100);
-    const lon = (nx * Math.PI * 2) - Math.PI;
-    const lat = ((0.5 - ny) * Math.PI);
-    const cosLat = Math.cos(lat);
+    const hasLatLng = Number.isFinite(lat) && Number.isFinite(lng);
+    const lon = hasLatLng
+      ? (Math.max(-180, Math.min(180, lng)) * (Math.PI / 180))
+      : ((Math.max(0, Math.min(100, worldX)) / 100) * Math.PI * 2) - Math.PI;
+    const latRad = hasLatLng
+      ? (Math.max(-90, Math.min(90, lat)) * (Math.PI / 180))
+      : ((0.5 - (Math.max(0, Math.min(100, worldY)) / 100)) * Math.PI);
+    const cosLat = Math.cos(latRad);
     const baseX = cx + (radius * cosLat * Math.sin(lon));
-    const baseY = cy - (radius * Math.sin(lat));
+    const baseY = cy - (radius * Math.sin(latRad));
     return { baseX, baseY };
   }
 
@@ -1192,18 +1221,41 @@ function snapshot() {
   };
 }
 
+function hasLatLng(entity) {
+  return entity && Number.isFinite(entity.lat) && Number.isFinite(entity.lng);
+}
+
+function latLngToGrid(lat, lng) {
+  return {
+    x: ((Math.max(-180, Math.min(180, lng)) + 180) / 360) * 100,
+    y: ((90 - Math.max(-90, Math.min(90, lat))) / 180) * 100,
+  };
+}
+
+function normalizeEntityGridPosition(entity) {
+  if (!entity) return;
+  if (hasLatLng(entity)) {
+    const mapped = latLngToGrid(entity.lat, entity.lng);
+    entity.x = mapped.x;
+    entity.y = mapped.y;
+  }
+}
+
 // ─── Simulation / Agent loop ──────────────────────────────────────────────────
 function initWorld() {
   // seed regions
   const regionDefs = [
-    { id: 'alpha',  x: 25, y: 25 },
-    { id: 'beta',   x: 75, y: 25 },
-    { id: 'gamma',  x: 25, y: 75 },
-    { id: 'delta',  x: 75, y: 75 },
-    { id: 'center', x: 50, y: 50 },
+    { id: 'alpha',  x: 25, y: 25, lat: 42, lng: -120 },
+    { id: 'beta',   x: 75, y: 25, lat: 40, lng: 75 },
+    { id: 'gamma',  x: 25, y: 75, lat: -24, lng: -75 },
+    { id: 'delta',  x: 75, y: 75, lat: -22, lng: 110 },
+    { id: 'center', x: 50, y: 50, lat: 0, lng: 0 },
   ];
   for (const r of regionDefs) {
     worldview.regions[r.id] = { id: r.id, x: r.x, y: r.y, agents: [] };
+    worldview.regions[r.id].lat = r.lat;
+    worldview.regions[r.id].lng = r.lng;
+    normalizeEntityGridPosition(worldview.regions[r.id]);
     spatialIndex[r.id] = worldview.regions[r.id];
   }
 
@@ -1212,16 +1264,35 @@ function initWorld() {
     const id = uid('agent');
     const keys = Object.keys(worldview.regions);
     const region = keys[Math.floor(Math.random() * keys.length)];
+    const entityType = i < 4 ? 'agent' : (i < 6 ? 'flight' : 'satellite');
+    const lat = (Math.random() * 180) - 90;
+    const lng = (Math.random() * 360) - 180;
+    const gridPos = latLngToGrid(lat, lng);
     const agent = {
       id,
-      type: i < 4 ? 'agent' : (i < 6 ? 'flight' : 'satellite'),
-      x: Math.random() * 100,
-      y: Math.random() * 100,
+      type: entityType,
+      x: gridPos.x,
+      y: gridPos.y,
+      lat,
+      lng,
       region,
       active: true,
       state: 'idle',
       memory: [],
     };
+    if (entityType === 'flight') {
+      agent.motion = {
+        heading: (Math.random() * 360) - 180,
+        speed: 1.8 + (Math.random() * 1.2),
+        climb: (Math.random() * 0.5) - 0.25,
+      };
+    } else if (entityType === 'satellite') {
+      agent.motion = {
+        orbitAngle: Math.random() * Math.PI * 2,
+        inclination: 8 + (Math.random() * 30),
+        drift: 0.015 + (Math.random() * 0.02),
+      };
+    }
     worldview.agents[id] = agent;
     worldview.regions[region].agents.push(id);
   }
@@ -1230,10 +1301,38 @@ function initWorld() {
 function tickAgent(agent) {
   // simple autonomous behaviour: random walk + state transitions
   const states = ['idle', 'exploring', 'reading', 'writing'];
-  const dx = (Math.random() - 0.5) * 4;
-  const dy = (Math.random() - 0.5) * 4;
-  agent.x = Math.max(0, Math.min(100, agent.x + dx));
-  agent.y = Math.max(0, Math.min(100, agent.y + dy));
+  if (agent.type === 'flight' && hasLatLng(agent)) {
+    const motion = agent.motion || { heading: 0, speed: 2, climb: 0 };
+    motion.heading += ((Math.random() - 0.5) * 8);
+    const headingRad = motion.heading * (Math.PI / 180);
+    agent.lat = Math.max(-80, Math.min(80, agent.lat + (Math.sin(headingRad) * motion.speed * 0.2) + motion.climb));
+    agent.lng += Math.cos(headingRad) * motion.speed;
+    if (agent.lng > 180) agent.lng -= 360;
+    if (agent.lng < -180) agent.lng += 360;
+    agent.motion = motion;
+    normalizeEntityGridPosition(agent);
+  } else if (agent.type === 'satellite' && hasLatLng(agent)) {
+    const motion = agent.motion || { orbitAngle: 0, inclination: 20, drift: 0.02 };
+    motion.orbitAngle += motion.drift;
+    agent.lat = Math.max(-85, Math.min(85, Math.sin(motion.orbitAngle) * motion.inclination));
+    agent.lng += 0.9;
+    if (agent.lng > 180) agent.lng -= 360;
+    agent.motion = motion;
+    normalizeEntityGridPosition(agent);
+  } else {
+    if (!hasLatLng(agent)) {
+      const dx = (Math.random() - 0.5) * 4;
+      const dy = (Math.random() - 0.5) * 4;
+      agent.x = Math.max(0, Math.min(100, agent.x + dx));
+      agent.y = Math.max(0, Math.min(100, agent.y + dy));
+    } else {
+      agent.lat = Math.max(-90, Math.min(90, agent.lat + ((Math.random() - 0.5) * 2.2)));
+      agent.lng += (Math.random() - 0.5) * 3.6;
+      if (agent.lng > 180) agent.lng -= 360;
+      if (agent.lng < -180) agent.lng += 360;
+      normalizeEntityGridPosition(agent);
+    }
+  }
 
   if (Math.random() < 0.08) {
     agent.state = states[Math.floor(Math.random() * states.length)];
@@ -1243,7 +1342,9 @@ function tickAgent(agent) {
   // re-assign region based on proximity
   let closest = null, bestDist = Infinity;
   for (const r of Object.values(worldview.regions)) {
-    const d = Math.hypot(agent.x - r.x, agent.y - r.y);
+    const d = hasLatLng(agent) && hasLatLng(r)
+      ? Math.hypot(agent.lat - r.lat, agent.lng - r.lng)
+      : Math.hypot(agent.x - r.x, agent.y - r.y);
     if (d < bestDist) { bestDist = d; closest = r; }
   }
   if (closest && closest.id !== agent.region) {
