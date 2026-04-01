@@ -5,10 +5,10 @@ const crypto = require('crypto');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4001;
-const OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED === 'true';
+const RW_OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED || 'true';
+const OPENSKY_ENABLED = RW_OPENSKY_ENABLED === 'true';
 const OPENSKY_CLIENT_ID = process.env.OPENSKY_CLIENT_ID || '';
 const OPENSKY_CLIENT_SECRET = process.env.OPENSKY_CLIENT_SECRET || '';
-const OPENSKY_TOKEN_URL = process.env.OPENSKY_TOKEN_URL || 'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token';
 const OPENSKY_STATES_URL = process.env.OPENSKY_STATES_URL || 'https://opensky-network.org/api/states/all';
 const OPENSKY_POLL_INTERVAL_MS = Math.max(5000, Number(process.env.RW_OPENSKY_POLL_INTERVAL_MS || 15000));
 const OPENSKY_GLOBE_MIN_Z = Number.isFinite(Number(process.env.RW_OPENSKY_GLOBE_MIN_Z))
@@ -2354,6 +2354,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const snapshotTsMs = Date.now();
     updateAgentTrails(state.agents, nextSnapshot.agents);
     updateFlightTracking(state.agents, nextSnapshot.agents, snapshotTsMs);
+    const receivedFlightCount = Object.values(nextSnapshot && nextSnapshot.agents ? nextSnapshot.agents : {}).filter(function (a) {
+      return a && a.type === 'flight';
+    }).length;
+    console.log('Flights received:', receivedFlightCount);
     previousAgentsById = state.agents || {};
     state = nextSnapshot;
     openskyStatus = nextSnapshot && nextSnapshot.opensky
@@ -2698,33 +2702,16 @@ async function getOpenSkyAccessToken() {
 
 async function pollOpenSkyFlights() {
   if (!OPENSKY_ENABLED) return;
-  if (!OPENSKY_CLIENT_ID || !OPENSKY_CLIENT_SECRET) {
-    const warn = 'OpenSky polling disabled: missing OPENSKY_CLIENT_ID or OPENSKY_CLIENT_SECRET';
-    if (!openSkyLiveState.lastErrorAt) {
-      console.warn('[RW Worldview] ' + warn);
-      emit('system', warn, { source: 'opensky' });
-    }
-    openSkyLiveState.lastErrorAt = new Date().toISOString();
-    openSkyLiveState.authConfigured = false;
-    openSkyLiveState.lastFetchedCount = 0;
-    openSkyLiveState.lastNormalizedCount = 0;
-    return;
-  }
+  console.log('Polling OpenSky...');
   try {
-    openSkyLiveState.authConfigured = true;
-    const token = await getOpenSkyAccessToken();
-    const res = await fetch(OPENSKY_STATES_URL, {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token },
-    });
-    if (res.status === 401 || res.status === 429) {
-      throw new Error('OpenSky live states unavailable (HTTP ' + res.status + ')');
-    }
+    openSkyLiveState.authConfigured = !!(OPENSKY_CLIENT_ID && OPENSKY_CLIENT_SECRET);
+    const res = await fetch(OPENSKY_STATES_URL, { method: 'GET' });
     if (!res.ok) {
       throw new Error('OpenSky live states request failed with HTTP ' + res.status);
     }
     const payload = await res.json();
     const states = Array.isArray(payload && payload.states) ? payload.states : [];
+    console.log('OpenSky raw states length:', states.length);
     const nextFlights = {};
     const previous = openSkyLiveState.flights;
     let normalizedCount = 0;
@@ -2736,6 +2723,7 @@ async function pollOpenSkyFlights() {
       normalizedCount++;
       nextFlights[normalized.id] = normalized;
     }
+    console.log('Flights after normalization:', normalizedCount);
     const visibilityStats = countVisibleOpenSkyFlights(nextFlights, OPENSKY_GLOBE_MIN_Z);
     openSkyLiveState.lastFetchedCount = states.length;
     openSkyLiveState.lastNormalizedCount = normalizedCount;
@@ -2784,6 +2772,7 @@ function startOpenSkyPolling() {
     return;
   }
   console.log('[RW Worldview] OpenSky polling enabled; interval=' + OPENSKY_POLL_INTERVAL_MS + 'ms');
+  console.log('RW_OPENSKY_ENABLED', process.env.RW_OPENSKY_ENABLED);
   pollOpenSkyFlights().catch(() => {});
   setInterval(() => {
     pollOpenSkyFlights().catch(() => {});
