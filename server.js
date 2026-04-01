@@ -99,6 +99,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       </select>
     </label>
     <button id="pause-btn" type="button" aria-pressed="false">Pause Simulation</button>
+    <label class="ctrl-inline" for="render-mode-select">View
+      <select id="render-mode-select" aria-label="Rendering mode">
+        <option value="grid" selected>Grid</option>
+        <option value="globe">Globe (experimental)</option>
+      </select>
+    </label>
   </div>
 </header>
 <main>
@@ -185,6 +191,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const panUpBtnEl = document.getElementById('pan-up-btn');
   const panDownBtnEl = document.getElementById('pan-down-btn');
   const viewportReadoutEl = document.getElementById('viewport-readout');
+  const renderModeSelectEl = document.getElementById('render-mode-select');
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
@@ -217,6 +224,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let eventSearchQuery = '';
   let activeEventFilter = 'all';
   let viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
+  let renderMode = 'grid';
   let followTargetEnabled = false;
   let cameraLerpTarget = null;
 
@@ -248,26 +256,32 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const agents  = Object.values(state.agents);
     const visibleAgents = agents.filter(a => isEntityTypeVisible(getEntityType(a)));
 
-    // grid
-    ctx.strokeStyle = '#151520';
-    ctx.lineWidth = 1;
-    const step = 48;
-    for (let x = 0; x <= W; x += step) {
-      const sx = applyViewportX(x, W);
-      if (sx < -1 || sx > W + 1) continue;
-      ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); ctx.stroke();
-    }
-    for (let y = 0; y <= H; y += step) {
-      const sy = applyViewportY(y, H);
-      if (sy < -1 || sy > H + 1) continue;
-      ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+    if (renderMode === 'grid') {
+      // grid
+      ctx.strokeStyle = '#151520';
+      ctx.lineWidth = 1;
+      const step = 48;
+      for (let x = 0; x <= W; x += step) {
+        const sx = applyViewportX(x, W);
+        if (sx < -1 || sx > W + 1) continue;
+        ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); ctx.stroke();
+      }
+      for (let y = 0; y <= H; y += step) {
+        const sy = applyViewportY(y, H);
+        if (sy < -1 || sy > H + 1) continue;
+        ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+      }
+    } else {
+      drawGlobeBase(W, H);
     }
 
     const regionOccupancy = getRegionOccupancy();
 
     // regions
     if (showRegions) regions.forEach(r => {
-      const rx = (r.x / 100) * W, ry = (r.y / 100) * H;
+      const regionPos = worldToCanvas(r.x, r.y, W, H);
+      if (!regionPos) return;
+      const rx = regionPos.x, ry = regionPos.y;
       const occupancy = regionOccupancy[r.id] || 0;
       const status = regionStatusFromOccupancy(occupancy);
       const isSelected = selectedRegionId === r.id;
@@ -318,9 +332,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       ctx.save();
       ctx.beginPath();
       const first = worldToCanvas(trail[0].x, trail[0].y, W, H);
+      if (!first) {
+        ctx.restore();
+        return;
+      }
       ctx.moveTo(first.x, first.y);
       for (let i = 1; i < trail.length; i++) {
         const pt = worldToCanvas(trail[i].x, trail[i].y, W, H);
+        if (!pt) continue;
         ctx.lineTo(pt.x, pt.y);
       }
       ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
@@ -331,7 +350,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     // agents
     if (showAgents) visibleAgents.forEach(a => {
-      const { x: ax, y: ay } = worldToCanvas(a.x, a.y, W, H);
+      const agentPos = worldToCanvas(a.x, a.y, W, H);
+      if (!agentPos) return;
+      const ax = agentPos.x;
+      const ay = agentPos.y;
       const isSelected = selectedAgentId === a.id;
       const agentKey = getCurrentTargetKey('agent', a.id);
       const isFlagged = !!flaggedTargets[agentKey];
@@ -635,6 +657,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function getViewportOffsetToCenterWorld(worldX, worldY, width, height) {
+    if (renderMode === 'globe') {
+      const globePoint = projectGlobePosition(worldX, worldY, width, height);
+      if (!globePoint) return { x: viewport.offsetX, y: viewport.offsetY };
+      return {
+        x: -((globePoint.baseX - (width / 2)) * viewport.zoom),
+        y: -((globePoint.baseY - (height / 2)) * viewport.zoom),
+      };
+    }
     const baseX = (worldX / 100) * width;
     const baseY = (worldY / 100) * height;
     return {
@@ -689,6 +719,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function worldToCanvas(x, y, width, height) {
+    if (renderMode === 'globe') {
+      const globePoint = projectGlobePosition(x, y, width, height);
+      if (!globePoint) return null;
+      return {
+        x: applyViewportX(globePoint.baseX, width),
+        y: applyViewportY(globePoint.baseY, height),
+      };
+    }
     const baseX = (x / 100) * width;
     const baseY = (y / 100) * height;
     return {
@@ -727,6 +765,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function panViewport(dx, dy) {
+    if (renderMode === 'globe') return;
     viewport.offsetX += dx;
     viewport.offsetY += dy;
     updateViewportReadout();
@@ -769,14 +808,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function findNearestAgentAtPoint(mx, my) {
     if (!showAgents) return { agent: null, distance: null };
-    const clickBase = canvasToBase(mx, my);
     let nearest = null;
     let nearestDistSq = Infinity;
     for (const a of Object.values(state.agents)) {
       if (!isEntityTypeVisible(getEntityType(a))) continue;
-      const pt = { x: (a.x / 100) * canvas.width, y: (a.y / 100) * canvas.height };
-      const dx = clickBase.x - pt.x;
-      const dy = clickBase.y - pt.y;
+      const pt = worldToCanvas(a.x, a.y, canvas.width, canvas.height);
+      if (!pt) continue;
+      const dx = mx - pt.x;
+      const dy = my - pt.y;
       const distSq = (dx * dx) + (dy * dy);
       if (distSq < nearestDistSq) {
         nearestDistSq = distSq;
@@ -791,14 +830,44 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function findRegionAtPoint(mx, my) {
     if (!showRegions) return null;
-    const clickBase = canvasToBase(mx, my);
     for (const r of Object.values(state.regions)) {
-      const pt = { x: (r.x / 100) * canvas.width, y: (r.y / 100) * canvas.height };
-      if (clickBase.x >= pt.x - 30 && clickBase.x <= pt.x + 30 && clickBase.y >= pt.y - 30 && clickBase.y <= pt.y + 30) {
+      const pt = worldToCanvas(r.x, r.y, canvas.width, canvas.height);
+      if (!pt) continue;
+      const regionHalfSize = (30 * viewport.zoom);
+      if (mx >= pt.x - regionHalfSize && mx <= pt.x + regionHalfSize && my >= pt.y - regionHalfSize && my <= pt.y + regionHalfSize) {
         return r;
       }
     }
     return null;
+  }
+
+  function drawGlobeBase(width, height) {
+    const radius = Math.min(width, height) * 0.35 * viewport.zoom;
+    const cx = applyViewportX(width / 2, width);
+    const cy = applyViewportY(height / 2, height);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#10233c';
+    ctx.fill();
+    ctx.strokeStyle = '#355a86';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function projectGlobePosition(worldX, worldY, width, height) {
+    const radius = Math.min(width, height) * 0.35;
+    const cx = width / 2;
+    const cy = height / 2;
+    const nx = (Math.max(0, Math.min(100, worldX)) / 100);
+    const ny = (Math.max(0, Math.min(100, worldY)) / 100);
+    const lon = (nx * Math.PI * 2) - Math.PI;
+    const lat = ((0.5 - ny) * Math.PI);
+    const cosLat = Math.cos(lat);
+    const baseX = cx + (radius * cosLat * Math.sin(lon));
+    const baseY = cy - (radius * Math.sin(lat));
+    return { baseX, baseY };
   }
 
   function getRegionOccupancy() {
@@ -936,6 +1005,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   panRightBtnEl.addEventListener('click', function () { panViewport(VIEWPORT_PAN_STEP, 0); });
   panUpBtnEl.addEventListener('click', function () { panViewport(0, -VIEWPORT_PAN_STEP); });
   panDownBtnEl.addEventListener('click', function () { panViewport(0, VIEWPORT_PAN_STEP); });
+  renderModeSelectEl.addEventListener('change', function () {
+    renderMode = renderModeSelectEl.value === 'globe' ? 'globe' : 'grid';
+    draw();
+  });
 
   speedSelectEl.addEventListener('change', function () {
     const nextSpeed = Number(speedSelectEl.value);
