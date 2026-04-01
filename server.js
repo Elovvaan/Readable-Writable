@@ -44,6 +44,9 @@ const openSkyLiveState = {
   pollingRunning: false,
   lastRequestUrl: null,
   lastRequestStatus: null,
+  lastModeUsed: 'public',
+  lastVisibleCount: 0,
+  lastDrawnCount: 0,
 };
 
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
@@ -2571,6 +2574,9 @@ function snapshot() {
       fetched: openSkyLiveState.lastFetchedCount,
       normalized: openSkyLiveState.lastNormalizedCount,
       merged: Object.keys(openSkyLiveState.flights).length,
+      modeUsed: openSkyLiveState.lastModeUsed,
+      visible: openSkyLiveState.lastVisibleCount,
+      drawn: openSkyLiveState.lastDrawnCount,
       lastRequestUrl: openSkyLiveState.lastRequestUrl,
       lastRequestStatus: openSkyLiveState.lastRequestStatus,
       lastPollAt: openSkyLiveState.lastPollAt,
@@ -2646,11 +2652,11 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
   if (!Array.isArray(row)) return null;
   const icao24 = String(row[0] || '').trim().toLowerCase();
   const callsign = String(row[1] || '').trim();
-  const lon = safeNumber(row[5]);
+  const lng = safeNumber(row[5]);
   const lat = safeNumber(row[6]);
-  if (!icao24 || lat === null || lon === null) return null;
-  const altitude = safeNumber(row[13] !== null && row[13] !== undefined ? row[13] : row[7]);
-  const speed = safeNumber(row[9]);
+  if (!icao24 || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const altitude = safeNumber(row[7] !== null && row[7] !== undefined ? row[7] : row[13]);
+  const velocity = safeNumber(row[9]);
   const heading = safeNumber(row[10]);
   const verticalRate = safeNumber(row[11]);
   const onGround = Boolean(row[8]);
@@ -2661,10 +2667,11 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
     name: callsign || icao24,
     icao24,
     lat,
-    lng: lon,
+    lng,
     altitude,
     heading,
-    speed,
+    velocity,
+    speed: velocity,
     verticalRate,
     onGround,
     source: 'opensky',
@@ -2678,14 +2685,14 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
     trail: Array.isArray(previousEntity && previousEntity.trail) ? previousEntity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS) : [],
     lastUpdateMs: Date.now(),
   };
-  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
     const moved = !previousEntity
       || !Number.isFinite(previousEntity.lat)
       || !Number.isFinite(previousEntity.lng)
       || Math.abs(previousEntity.lat - lat) > 0.0001
-      || Math.abs(previousEntity.lng - lon) > 0.0001;
+      || Math.abs(previousEntity.lng - lng) > 0.0001;
     if (entity.trail.length === 0 || moved) {
-      entity.trail.push({ lat, lng: lon, ts: entity.lastUpdateMs });
+      entity.trail.push({ lat, lng, ts: entity.lastUpdateMs });
     }
     entity.trail = entity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS);
   }
@@ -2703,30 +2710,59 @@ async function pollOpenSkyFlights() {
     const authHeader = authConfigured
       ? 'Basic ' + Buffer.from(OPENSKY_USERNAME + ':' + OPENSKY_PASSWORD).toString('base64')
       : null;
-    let requestUrl = OPENSKY_STATES_URL;
-    let res = await fetch(requestUrl, {
-      method: 'GET',
-      headers: authHeader ? { Authorization: authHeader } : undefined,
-    });
-    openSkyLiveState.lastRequestUrl = requestUrl;
-    openSkyLiveState.lastRequestStatus = res.status;
-    console.log('[RW Worldview] OpenSky request url=' + requestUrl + ' status=' + res.status + ' auth=' + (authConfigured ? 'basic' : 'none'));
-    if (!res.ok && authConfigured) {
-      console.warn('[RW Worldview] OpenSky auth request failed with HTTP ' + res.status + '; falling back to public endpoint');
+
+    let modeUsed = authConfigured ? 'auth' : 'public';
+    let requestUrl = authConfigured ? OPENSKY_STATES_URL : OPENSKY_PUBLIC_STATES_URL;
+    let useAuth = !!authConfigured;
+
+    if (!authConfigured) {
+      console.warn('[RW Worldview] Falling back to public OpenSky endpoint');
+    }
+
+    const runRequest = async (url, auth) => {
+      console.log('[RW Worldview] OpenSky request lifecycle: url=' + url + ' auth=' + (auth ? 'basic' : 'none'));
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: auth && authHeader ? { Authorization: authHeader } : undefined,
+      });
+      openSkyLiveState.lastRequestUrl = url;
+      openSkyLiveState.lastRequestStatus = response.status;
+      const rawBody = await response.text();
+      console.log('[RW Worldview] OpenSky response status=' + response.status + ' bodyLength=' + rawBody.length);
+      return { response, rawBody };
+    };
+
+    let result = await runRequest(requestUrl, useAuth);
+
+    if (!result.response.ok && useAuth) {
+      console.warn('[RW Worldview] Falling back to public OpenSky endpoint');
+      modeUsed = 'public';
       requestUrl = OPENSKY_PUBLIC_STATES_URL;
-      res = await fetch(requestUrl, { method: 'GET' });
-      openSkyLiveState.lastRequestUrl = requestUrl;
-      openSkyLiveState.lastRequestStatus = res.status;
-      console.log('[RW Worldview] OpenSky fallback request url=' + requestUrl + ' status=' + res.status + ' auth=none');
+      useAuth = false;
+      result = await runRequest(requestUrl, useAuth);
     }
-    if (!res.ok) {
-      throw new Error('OpenSky live states request failed with HTTP ' + res.status);
+
+    openSkyLiveState.lastModeUsed = modeUsed;
+
+    if (!result.response.ok) {
+      throw new Error('OpenSky live states request failed with HTTP ' + result.response.status);
     }
-    const payload = await res.json();
+
+    let payload;
+    try {
+      payload = result.rawBody ? JSON.parse(result.rawBody) : null;
+    } catch (parseErr) {
+      console.warn('[RW Worldview] OpenSky returned empty or invalid response');
+      throw new Error('OpenSky live states parse failed: ' + parseErr.message);
+    }
+
     const hasStates = Array.isArray(payload && payload.states);
-    console.log('[RW Worldview] OpenSky payload states exists=' + hasStates);
-    const states = Array.isArray(payload && payload.states) ? payload.states : [];
-    console.log('[RW Worldview] OpenSky raw states count=' + states.length);
+    const states = hasStates ? payload.states : [];
+    console.log('[RW Worldview] OpenSky payload states exists=' + hasStates + ' count=' + states.length);
+    if (!hasStates || states.length === 0) {
+      console.warn('[RW Worldview] OpenSky returned empty or invalid response');
+    }
+
     const nextFlights = {};
     const previous = openSkyLiveState.flights;
     let normalizedCount = 0;
@@ -2738,17 +2774,17 @@ async function pollOpenSkyFlights() {
       normalizedCount++;
       nextFlights[normalized.id] = normalized;
     }
-    console.log('[RW Worldview] OpenSky normalized flights count=' + normalizedCount);
+
     const visibilityStats = countVisibleOpenSkyFlights(nextFlights, OPENSKY_GLOBE_MIN_Z);
+    const visibleCount = visibilityStats.passProjection;
+    const drawnCount = visibilityStats.passMinZ;
+
     openSkyLiveState.lastFetchedCount = states.length;
     openSkyLiveState.lastNormalizedCount = normalizedCount;
-    console.log(
-      '[RW Worldview] OpenSky visibility: fetched=' + states.length
-      + ' normalized=' + normalizedCount
-      + ' projection=' + visibilityStats.passProjection
-      + ' minZ=' + visibilityStats.passMinZ
-      + ' (threshold=' + OPENSKY_GLOBE_MIN_Z + ')'
-    );
+    openSkyLiveState.lastVisibleCount = visibleCount;
+    openSkyLiveState.lastDrawnCount = drawnCount;
+
+    console.log('OpenSky: fetched ' + states.length + ' flights, normalized ' + normalizedCount + ', visible ' + visibleCount + ', drawn ' + drawnCount);
 
     let updatedCount = 0;
     for (const flightId of Object.keys(nextFlights)) {
@@ -2777,6 +2813,8 @@ async function pollOpenSkyFlights() {
     openSkyLiveState.lastErrorAt = new Date().toISOString();
     openSkyLiveState.lastFetchedCount = 0;
     openSkyLiveState.lastNormalizedCount = 0;
+    openSkyLiveState.lastVisibleCount = 0;
+    openSkyLiveState.lastDrawnCount = 0;
     emit('system', msg, { source: 'opensky' });
   }
 }
