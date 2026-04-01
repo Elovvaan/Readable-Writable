@@ -292,14 +292,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const isFlagged = !!flaggedTargets[regionKey];
       const isFocused = focusTargetKey === regionKey && now < focusEffectUntil;
       const regionSize = 60 * viewport.zoom;
+      const overlay = renderMode === 'globe' ? getRegionGlobeOverlay(r, W, H) : null;
       ctx.save();
-      const rectX = rx - (regionSize / 2);
-      const rectY = ry - (regionSize / 2);
-      const rectSize = regionSize;
-      if (isSelected) {
-        ctx.fillStyle = '#8ec5ff22';
-        ctx.fillRect(rectX, rectY, rectSize, rectSize);
-      }
       ctx.strokeStyle =
         status === 'HOT' ? '#ff8e8ecc' :
         status === 'ACTIVE' ? '#fccb88cc' :
@@ -309,20 +303,48 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.shadowBlur = 6;
         ctx.shadowColor = '#ffd37a';
       }
-      ctx.setLineDash([4, 4]);
-      ctx.strokeRect(rectX, rectY, rectSize, rectSize);
-      ctx.setLineDash([]);
-      if (isFocused) {
-        ctx.strokeStyle = '#9cf';
-        ctx.lineWidth = 3;
-        ctx.strokeRect(rectX - 3, rectY - 3, rectSize + 6, rectSize + 6);
+      if (overlay) {
+        ctx.fillStyle = isSelected ? '#8ec5ff24' : '#8ec5ff14';
+        drawRegionOverlayShape(overlay);
+        ctx.fill();
+        ctx.setLineDash([6, 5]);
+        drawRegionOverlayShape(overlay);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (isFocused) {
+          ctx.strokeStyle = '#9cf';
+          ctx.lineWidth = 3;
+          drawRegionOverlayShape(overlay, 4);
+          ctx.stroke();
+        }
+      } else {
+        const rectX = rx - (regionSize / 2);
+        const rectY = ry - (regionSize / 2);
+        const rectSize = regionSize;
+        if (isSelected) {
+          ctx.fillStyle = '#8ec5ff22';
+          ctx.fillRect(rectX, rectY, rectSize, rectSize);
+        }
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(rectX, rectY, rectSize, rectSize);
+        ctx.setLineDash([]);
+        if (isFocused) {
+          ctx.strokeStyle = '#9cf';
+          ctx.lineWidth = 3;
+          ctx.strokeRect(rectX - 3, rectY - 3, rectSize + 6, rectSize + 6);
+        }
       }
-      ctx.fillStyle = '#fc7';
-      ctx.font = Math.max(8, 10 * viewport.zoom).toFixed(1) + 'px monospace';
-      ctx.fillText(r.id, rx - (28 * viewport.zoom), ry - (33 * viewport.zoom));
+      const regionLabel = r.name || r.id;
+      const labelX = overlay ? overlay.labelX : (rx - (28 * viewport.zoom));
+      const labelY = overlay ? (overlay.labelY - (6 * viewport.zoom)) : (ry - (33 * viewport.zoom));
+      if (labelX >= -60 && labelX <= W + 60 && labelY >= -30 && labelY <= H + 30) {
+        ctx.fillStyle = '#fc7';
+        ctx.font = Math.max(8, 10 * viewport.zoom).toFixed(1) + 'px monospace';
+        ctx.fillText(regionLabel, labelX, labelY);
+      }
       ctx.fillStyle = '#bfc7d2';
       ctx.font = Math.max(9, 11 * viewport.zoom).toFixed(1) + 'px monospace';
-      ctx.fillText(String(occupancy), rx - (3 * viewport.zoom), ry + (4 * viewport.zoom));
+      ctx.fillText(String(occupancy), (overlay ? overlay.labelX : rx) - (3 * viewport.zoom), (overlay ? overlay.labelY : ry) + (4 * viewport.zoom));
       ctx.restore();
     });
 
@@ -538,6 +560,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       selectedPanel.innerHTML =
         '<div class="selected-grid">' +
         '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selectedRegion.id) + '</span>' +
+        '<span class="selected-label">NAME</span><span class="selected-value">' + escHtml(selectedRegion.name || selectedRegion.id) + '</span>' +
         '<span class="selected-label">TYPE</span><span class="selected-value">region</span>' +
         '<span class="selected-label">OCCUPANCY</span><span class="selected-value">' + occupancy + '</span>' +
         '<span class="selected-label">STATUS</span><span class="selected-value">' + status + '</span>' +
@@ -866,6 +889,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function findRegionAtPoint(mx, my) {
     if (!showRegions) return null;
     for (const r of Object.values(state.regions)) {
+      if (renderMode === 'globe') {
+        const overlay = getRegionGlobeOverlay(r, canvas.width, canvas.height);
+        if (overlay) {
+          if (overlay.shape === 'circle') {
+            const d = Math.hypot(mx - overlay.cx, my - overlay.cy);
+            if (d <= overlay.radius) return r;
+          } else if (pointInPolygon(mx, my, overlay.points)) {
+            return r;
+          }
+          continue;
+        }
+      }
       const point = getEntityWorldPoint(r);
       const pt = worldToCanvas(point.x, point.y, canvas.width, canvas.height, point.lat, point.lng);
       if (!pt) continue;
@@ -890,6 +925,61 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.restore();
+  }
+
+  function pointInPolygon(mx, my, points) {
+    if (!points || points.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const xi = points[i].x;
+      const yi = points[i].y;
+      const xj = points[j].x;
+      const yj = points[j].y;
+      const intersect = ((yi > my) !== (yj > my))
+        && (mx < (((xj - xi) * (my - yi)) / ((yj - yi) || 1e-6)) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  function drawRegionOverlayShape(overlay, expandPx) {
+    const grow = Number.isFinite(expandPx) ? expandPx : 0;
+    ctx.beginPath();
+    if (overlay.shape === 'circle') {
+      ctx.arc(overlay.cx, overlay.cy, Math.max(2, overlay.radius + grow), 0, Math.PI * 2);
+      return;
+    }
+    const points = overlay.points || [];
+    if (points.length < 2) return;
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+    ctx.closePath();
+  }
+
+  function getRegionGlobeOverlay(region, width, height) {
+    if (!hasLatLng(region)) return null;
+    if (region.bounds && Number.isFinite(region.bounds.north) && Number.isFinite(region.bounds.south)
+      && Number.isFinite(region.bounds.west) && Number.isFinite(region.bounds.east)) {
+      const b = region.bounds;
+      const rawPoints = [
+        { lat: b.north, lng: b.west },
+        { lat: b.north, lng: b.east },
+        { lat: b.south, lng: b.east },
+        { lat: b.south, lng: b.west },
+      ];
+      const points = rawPoints.map(function (p) {
+        return worldToCanvas(50, 50, width, height, p.lat, p.lng);
+      }).filter(Boolean);
+      if (points.length < 3) return null;
+      return { shape: 'polygon', points, labelX: points[0].x, labelY: points[0].y };
+    }
+    const radiusDeg = Number.isFinite(region.radiusDeg) ? region.radiusDeg : null;
+    if (!radiusDeg) return null;
+    const center = worldToCanvas(region.x, region.y, width, height, region.lat, region.lng);
+    if (!center) return null;
+    const edge = worldToCanvas(region.x, region.y, width, height, region.lat + radiusDeg, region.lng);
+    const radiusPx = edge ? Math.hypot(edge.x - center.x, edge.y - center.y) : Math.max(10, radiusDeg * 1.2);
+    return { shape: 'circle', cx: center.x, cy: center.y, radius: radiusPx, labelX: center.x, labelY: center.y };
   }
 
   function drawFlightArcPath(agent, trail, width, height, isSelected, typeStyle) {
@@ -1391,16 +1481,62 @@ function normalizeEntityGridPosition(entity) {
 function initWorld() {
   // seed regions
   const regionDefs = [
-    { id: 'alpha',  x: 25, y: 25, lat: 42, lng: -120 },
-    { id: 'beta',   x: 75, y: 25, lat: 40, lng: 75 },
-    { id: 'gamma',  x: 25, y: 75, lat: -24, lng: -75 },
-    { id: 'delta',  x: 75, y: 75, lat: -22, lng: 110 },
-    { id: 'center', x: 50, y: 50, lat: 0, lng: 0 },
+    {
+      id: 'north-america',
+      name: 'North America',
+      lat: 45,
+      lng: -102,
+      radiusDeg: 26,
+    },
+    {
+      id: 'south-america',
+      name: 'South America',
+      lat: -16,
+      lng: -60,
+      radiusDeg: 22,
+    },
+    {
+      id: 'europe',
+      name: 'Europe',
+      lat: 52,
+      lng: 15,
+      bounds: { north: 70, south: 35, west: -10, east: 40 },
+    },
+    {
+      id: 'africa',
+      name: 'Africa',
+      lat: 4,
+      lng: 20,
+      bounds: { north: 36, south: -35, west: -18, east: 52 },
+    },
+    {
+      id: 'asia',
+      name: 'Asia',
+      lat: 34,
+      lng: 92,
+      radiusDeg: 34,
+    },
+    {
+      id: 'pacific',
+      name: 'Pacific',
+      lat: 2,
+      lng: -160,
+      radiusDeg: 38,
+    },
   ];
   for (const r of regionDefs) {
-    worldview.regions[r.id] = { id: r.id, x: r.x, y: r.y, agents: [] };
-    worldview.regions[r.id].lat = r.lat;
-    worldview.regions[r.id].lng = r.lng;
+    const mapped = latLngToGrid(r.lat, r.lng);
+    worldview.regions[r.id] = {
+      id: r.id,
+      name: r.name || r.id,
+      x: mapped.x,
+      y: mapped.y,
+      lat: r.lat,
+      lng: r.lng,
+      radiusDeg: Number.isFinite(r.radiusDeg) ? r.radiusDeg : undefined,
+      bounds: r.bounds || undefined,
+      agents: [],
+    };
     normalizeEntityGridPosition(worldview.regions[r.id]);
     spatialIndex[r.id] = worldview.regions[r.id];
   }
