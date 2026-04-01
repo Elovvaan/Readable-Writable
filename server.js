@@ -193,6 +193,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const GLOBE_REGION_OUTLINE_MIN_Z = 0.02;
   const GLOBE_ENTITY_MIN_Z = 0.03;
   const GLOBE_PATH_MIN_Z = 0.01;
+  const GLOBE_CONTINENT_MIN_Z = -1;
   const GLOBE_DISABLE_VISIBILITY_CULLING = true; // temporary: verify render path while debugging
   const HIDE_GRID_REGIONS_ON_GLOBE = true;
 
@@ -247,6 +248,58 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     other: { fill: '#8ea0b4', stroke: '#bac7d6', trail: '#8ea0b455', trailSelected: '#d6deebcc' },
   };
 
+  const GLOBE_CONTINENT_OUTLINES = [
+    // North America
+    [
+      { lat: 72, lng: -168 }, { lat: 70, lng: -150 }, { lat: 66, lng: -135 }, { lat: 60, lng: -125 },
+      { lat: 52, lng: -128 }, { lat: 48, lng: -124 }, { lat: 43, lng: -124 }, { lat: 36, lng: -120 },
+      { lat: 30, lng: -112 }, { lat: 24, lng: -106 }, { lat: 18, lng: -95 }, { lat: 16, lng: -84 },
+      { lat: 21, lng: -80 }, { lat: 26, lng: -82 }, { lat: 31, lng: -79 }, { lat: 37, lng: -75 },
+      { lat: 45, lng: -66 }, { lat: 52, lng: -60 }, { lat: 59, lng: -64 }, { lat: 66, lng: -78 },
+      { lat: 72, lng: -95 }, { lat: 74, lng: -120 }, { lat: 72, lng: -168 },
+    ],
+    // South America
+    [
+      { lat: 12, lng: -81 }, { lat: 8, lng: -76 }, { lat: 2, lng: -79 }, { lat: -8, lng: -78 },
+      { lat: -18, lng: -75 }, { lat: -27, lng: -71 }, { lat: -35, lng: -71 }, { lat: -44, lng: -72 },
+      { lat: -54, lng: -68 }, { lat: -55, lng: -63 }, { lat: -50, lng: -58 }, { lat: -42, lng: -53 },
+      { lat: -30, lng: -49 }, { lat: -18, lng: -44 }, { lat: -8, lng: -38 }, { lat: 2, lng: -45 },
+      { lat: 8, lng: -54 }, { lat: 12, lng: -64 }, { lat: 12, lng: -81 },
+    ],
+    // Eurasia
+    [
+      { lat: 71, lng: -10 }, { lat: 70, lng: 12 }, { lat: 67, lng: 30 }, { lat: 64, lng: 50 },
+      { lat: 68, lng: 80 }, { lat: 72, lng: 110 }, { lat: 72, lng: 145 }, { lat: 66, lng: 165 },
+      { lat: 58, lng: 168 }, { lat: 51, lng: 155 }, { lat: 45, lng: 144 }, { lat: 38, lng: 132 },
+      { lat: 30, lng: 122 }, { lat: 22, lng: 114 }, { lat: 16, lng: 108 }, { lat: 10, lng: 104 },
+      { lat: 7, lng: 98 }, { lat: 9, lng: 86 }, { lat: 16, lng: 74 }, { lat: 24, lng: 66 },
+      { lat: 28, lng: 56 }, { lat: 27, lng: 46 }, { lat: 31, lng: 36 }, { lat: 36, lng: 28 },
+      { lat: 43, lng: 20 }, { lat: 49, lng: 10 }, { lat: 56, lng: 2 }, { lat: 62, lng: -2 },
+      { lat: 67, lng: -8 }, { lat: 71, lng: -10 },
+    ],
+    // Africa
+    [
+      { lat: 37, lng: -17 }, { lat: 32, lng: -8 }, { lat: 30, lng: 3 }, { lat: 31, lng: 16 },
+      { lat: 31, lng: 28 }, { lat: 24, lng: 35 }, { lat: 14, lng: 43 }, { lat: 4, lng: 44 },
+      { lat: -8, lng: 41 }, { lat: -18, lng: 36 }, { lat: -30, lng: 31 }, { lat: -34, lng: 20 },
+      { lat: -35, lng: 11 }, { lat: -30, lng: 5 }, { lat: -20, lng: 2 }, { lat: -5, lng: 9 },
+      { lat: 8, lng: 1 }, { lat: 15, lng: -5 }, { lat: 24, lng: -15 }, { lat: 32, lng: -17 },
+      { lat: 37, lng: -17 },
+    ],
+    // Australia
+    [
+      { lat: -10, lng: 113 }, { lat: -16, lng: 121 }, { lat: -20, lng: 132 }, { lat: -27, lng: 139 },
+      { lat: -35, lng: 146 }, { lat: -39, lng: 149 }, { lat: -42, lng: 145 }, { lat: -38, lng: 136 },
+      { lat: -34, lng: 126 }, { lat: -25, lng: 116 }, { lat: -15, lng: 113 }, { lat: -10, lng: 113 },
+    ],
+    // Greenland
+    [
+      { lat: 82, lng: -73 }, { lat: 78, lng: -44 }, { lat: 72, lng: -24 }, { lat: 66, lng: -20 },
+      { lat: 60, lng: -34 }, { lat: 61, lng: -48 }, { lat: 66, lng: -54 }, { lat: 73, lng: -60 },
+      { lat: 79, lng: -66 }, { lat: 82, lng: -73 },
+    ],
+  ];
+
   // ── Canvas resize ──
   function resize() {
     const wrap = canvas.parentElement;
@@ -295,6 +348,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function renderBaseSurface(width, height) {
     drawGlobeBase(width, height);
+    drawGlobeContinents(width, height);
   }
 
   function isGlobeRenderMode() {
@@ -1092,6 +1146,36 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ctx.strokeStyle = '#355a86';
     ctx.lineWidth = 2;
     ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawGlobeContinents(width, height) {
+    if (!isGlobeRenderMode()) return;
+    ctx.save();
+    ctx.lineWidth = 0.9;
+    ctx.strokeStyle = '#9fc8f033';
+    ctx.shadowBlur = 4;
+    ctx.shadowColor = '#8ec5ff22';
+    GLOBE_CONTINENT_OUTLINES.forEach(function (polygon) {
+      if (!polygon || polygon.length < 2) return;
+      ctx.beginPath();
+      let penDown = false;
+      for (let i = 0; i < polygon.length; i++) {
+        const p = polygon[i];
+        const projected = worldToCanvas(50, 50, width, height, p.lat, p.lng, GLOBE_CONTINENT_MIN_Z);
+        if (!projected) {
+          penDown = false;
+          continue;
+        }
+        if (!penDown) {
+          ctx.moveTo(projected.x, projected.y);
+          penDown = true;
+        } else {
+          ctx.lineTo(projected.x, projected.y);
+        }
+      }
+      if (penDown) ctx.stroke();
+    });
     ctx.restore();
   }
 
