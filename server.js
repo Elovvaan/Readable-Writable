@@ -15,6 +15,10 @@ const OPENSKY_GLOBE_MIN_Z = Number.isFinite(Number(process.env.RW_OPENSKY_GLOBE_
   ? Number(process.env.RW_OPENSKY_GLOBE_MIN_Z)
   : -1;
 const OPENSKY_TRAIL_MAX_POINTS = 24;
+const RW_USE_CESIUM = process.env.RW_USE_CESIUM !== 'false';
+const RW_DEFAULT_VIEW = process.env.RW_DEFAULT_VIEW || 'earth';
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
+const CESIUM_ACCESS_TOKEN = process.env.CESIUM_ACCESS_TOKEN || '';
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const worldview = {
@@ -58,7 +62,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #pause-btn.active { background: #2b1e1e; color: #ffc2c2; border-color: #5a3333; }
     main { display: grid; grid-template-columns: 1fr 320px; flex: 1; overflow: hidden; }
     #canvas-wrap { position: relative; overflow: hidden; background: #0a0a12; }
-    canvas { display: block; width: 100%; height: 100%; }
+    #cesium-world, canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+    #cesium-world { z-index: 1; }
+    canvas { z-index: 2; pointer-events: auto; }
     aside { background: #111; border-left: 1px solid #222; display: flex; flex-direction: column; overflow: hidden; }
     .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #555; padding: 10px 14px 6px; border-bottom: 1px solid #1c1c1c; }
     #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #1a1a1a; display: grid; gap: 6px; }
@@ -134,6 +140,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       </div>
       <div id="viewport-readout" class="viewport-readout">zoom 1.00x</div>
     </div>
+    <div id="cesium-world"></div>
     <canvas id="world"></canvas>
   </div>
   <aside>
@@ -171,12 +178,27 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
   </aside>
 </main>
+<link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
+<script id="rw-bootstrap" type="application/json">__RW_BOOTSTRAP__</script>
 <script>
 (function () {
   'use strict';
 
   const canvas  = document.getElementById('world');
   const ctx     = canvas.getContext('2d');
+  const cesiumContainer = document.getElementById('cesium-world');
+  const bootstrapRaw = document.getElementById('rw-bootstrap');
+  const BOOTSTRAP = bootstrapRaw ? JSON.parse(bootstrapRaw.textContent || '{}') : {};
+  const USE_CESIUM = BOOTSTRAP.useCesium !== false;
+  const DEFAULT_VIEW = BOOTSTRAP.defaultView || 'earth';
+  const GOOGLE_TILESET_ROOT = 'https://tile.googleapis.com/v1/3dtiles/root.json';
+  let cesiumViewer = null;
+  let cesiumGoogleTileset = null;
+  const cesiumEntityRefs = { agents: {}, regions: {} };
+  let cesiumSelectionHandler = null;
+  let lastCesiumRenderCounts = { entities: 0, regions: 0 };
+  let lastCesiumDiagAt = 0;
   const log     = document.getElementById('event-log');
   const eventSearchEl = document.getElementById('event-search');
   const eventChipRowEl = document.getElementById('event-chip-row');
@@ -219,6 +241,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const GLOBE_CONTINENT_MIN_Z = -1;
   const GLOBE_DISABLE_VISIBILITY_CULLING = true; // temporary: verify render path while debugging
   const HIDE_GRID_REGIONS_ON_GLOBE = true;
+
+  if (USE_CESIUM) {
+    canvas.style.display = 'none';
+    canvas.style.pointerEvents = 'none';
+  }
 
   const GLOBE_OVERLAY_DEBUG = false;
   const GLOBE_DEBUG_LOG_INTERVAL_MS = 1500;
@@ -329,6 +356,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const wrap = canvas.parentElement;
     canvas.width  = wrap.clientWidth;
     canvas.height = wrap.clientHeight;
+    if (cesiumViewer) {
+      cesiumViewer.resize();
+    }
     draw();
   }
   window.addEventListener('resize', resize);
@@ -338,8 +368,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function draw() {
     const W = canvas.width, H = canvas.height;
     const cameraUpdated = updateCameraMotion(W, H);
-    ctx.clearRect(0, 0, W, H);
     const now = Date.now();
+    if (USE_CESIUM) {
+      syncCesiumScene(now);
+      updateViewportReadout();
+      if (cameraUpdated && (followTargetEnabled || cameraLerpTarget)) requestAnimationFrame(draw);
+      return;
+    }
+    ctx.clearRect(0, 0, W, H);
     const globeDebug = isGlobeRenderMode()
       ? {
           projected: 0,
@@ -377,6 +413,129 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function isGlobeRenderMode() {
     return true;
+  }
+
+  async function initCesium() {
+    if (!USE_CESIUM || typeof Cesium === 'undefined') return;
+    if (BOOTSTRAP.cesiumAccessToken) Cesium.Ion.defaultAccessToken = BOOTSTRAP.cesiumAccessToken;
+    cesiumViewer = new Cesium.Viewer('cesium-world', {
+      animation: false, timeline: false, baseLayerPicker: false, geocoder: false, homeButton: false,
+      navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
+      shouldAnimate: true,
+    });
+    cesiumViewer.scene.globe.show = false;
+    cesiumViewer.scene.skyAtmosphere.show = true;
+    try {
+      if (BOOTSTRAP.googleMapsApiKey) {
+        const tileset = await Cesium.Cesium3DTileset.fromUrl(
+          GOOGLE_TILESET_ROOT + '?key=' + encodeURIComponent(BOOTSTRAP.googleMapsApiKey)
+        );
+        cesiumViewer.scene.primitives.add(tileset);
+        cesiumGoogleTileset = tileset;
+        console.info('[RW Cesium] Google Photorealistic 3D Tiles loaded');
+      } else {
+        console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; base tiles unavailable');
+      }
+      console.info('[RW Cesium] initialized');
+    } catch (err) {
+      console.error('[RW Cesium] init failed', err);
+    }
+    bindCesiumSelection();
+    draw();
+  }
+
+  function bindCesiumSelection() {
+    if (!cesiumViewer || cesiumSelectionHandler) return;
+    cesiumSelectionHandler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
+    cesiumSelectionHandler.setInputAction(function (click) {
+      const picked = cesiumViewer.scene.pick(click.position);
+      if (picked && picked.id && picked.id.rwMeta) {
+        const meta = picked.id.rwMeta;
+        if (meta.kind === 'agent') { selectAgent(meta.id); return; }
+        if (meta.kind === 'region') { selectRegion(meta.id); return; }
+      }
+      selectAgent(null);
+      selectRegion(null);
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+  }
+
+  function toLatLngWithFallback(entity) {
+    if (!entity) return null;
+    if (Number.isFinite(entity.lat) && Number.isFinite(entity.lng)) return { lat: entity.lat, lng: entity.lng };
+    if (!Number.isFinite(entity.x) || !Number.isFinite(entity.y)) return null;
+    return { lat: 90 - ((entity.y / 100) * 180), lng: ((entity.x / 100) * 360) - 180 };
+  }
+
+  function syncCesiumScene(nowMs) {
+    if (!cesiumViewer) return;
+    const seenAgents = {};
+    const seenRegions = {};
+    let entitiesVisible = 0;
+    let regionsVisible = 0;
+    for (const a of Object.values(state.agents || {})) {
+      const entityType = getEntityType(a);
+      if (!showAgents || !isEntityTypeVisible(entityType)) continue;
+      const p = getEntityWorldPoint(a, nowMs);
+      const ll = toLatLngWithFallback(p);
+      if (!ll) continue;
+      seenAgents[a.id] = true;
+      let marker = cesiumEntityRefs.agents[a.id];
+      if (!marker) {
+        marker = cesiumViewer.entities.add({
+          id: 'agent-' + a.id,
+          rwMeta: { kind: 'agent', id: a.id },
+          label: { text: a.id, font: '12px monospace', fillColor: Cesium.Color.WHITE, pixelOffset: new Cesium.Cartesian2(10, -8), show: true },
+        });
+        cesiumEntityRefs.agents[a.id] = marker;
+      }
+      const height = entityType === 'satellite' ? 400000 : (entityType === 'flight' ? Math.max(500, Number(a.altitude) || 2000) : 10);
+      marker.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, height);
+      marker.point = { pixelSize: selectedAgentId === a.id ? 12 : 8, color: Cesium.Color.fromCssColorString(getEntityTypeStyle(a).fill), outlineColor: Cesium.Color.WHITE, outlineWidth: selectedAgentId === a.id ? 2 : 1 };
+      marker.show = true;
+      entitiesVisible++;
+    }
+    for (const [id,entity] of Object.entries(cesiumEntityRefs.agents)) {
+      if (!seenAgents[id]) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.agents[id]; }
+    }
+    for (const r of Object.values(state.regions || {})) {
+      if (!showRegions) break;
+      const ll = toLatLngWithFallback(r);
+      if (!ll) continue;
+      seenRegions[r.id] = true;
+      let reg = cesiumEntityRefs.regions[r.id];
+      if (!reg) {
+        reg = cesiumViewer.entities.add({ id: 'region-' + r.id, rwMeta: { kind: 'region', id: r.id } });
+        cesiumEntityRefs.regions[r.id] = reg;
+      }
+      if (r.bounds && Number.isFinite(r.bounds.north)) {
+        reg.polygon = {
+          hierarchy: Cesium.Cartesian3.fromDegreesArray([
+            r.bounds.west, r.bounds.north, r.bounds.east, r.bounds.north, r.bounds.east, r.bounds.south, r.bounds.west, r.bounds.south
+          ]),
+          material: Cesium.Color.CYAN.withAlpha(selectedRegionId === r.id ? 0.28 : 0.16),
+          outline: true, outlineColor: Cesium.Color.CYAN
+        };
+      } else {
+        reg.ellipse = { semiMinorAxis: 60000, semiMajorAxis: 60000, material: Cesium.Color.CYAN.withAlpha(0.15), outline: true, outlineColor: Cesium.Color.CYAN };
+        reg.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 0);
+      }
+      reg.label = { text: r.name || r.id, font: '12px monospace', fillColor: Cesium.Color.ORANGE, pixelOffset: new Cesium.Cartesian2(0, -16) };
+      reg.show = true;
+      regionsVisible++;
+    }
+    for (const [id,entity] of Object.entries(cesiumEntityRefs.regions)) {
+      if (!seenRegions[id] || !showRegions) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.regions[id]; }
+    }
+    lastCesiumRenderCounts = { entities: entitiesVisible, regions: regionsVisible };
+    const now = Date.now();
+    if (now - lastCesiumDiagAt > 15000) {
+      lastCesiumDiagAt = now;
+      console.info('[RW Cesium] render counts', {
+        entities: entitiesVisible,
+        regions: regionsVisible,
+        googleTilesLoaded: !!cesiumGoogleTileset,
+      });
+    }
   }
 
   function renderWorldOverlays(width, height, now, globeDebug) {
@@ -857,6 +1016,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const focusPoint = getSelectedFocusPoint();
     if (!focusPoint) return;
     cameraLerpTarget = focusPoint;
+    if (USE_CESIUM && cesiumViewer) {
+      const ll = toLatLngWithFallback(focusPoint);
+      if (ll) {
+        cesiumViewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 1800000), duration: 1.1 });
+      }
+    }
     focusTargetKey = targetKey;
     focusEffectUntil = Date.now() + 2200;
     const targetId = selectedAgentId || selectedRegionId;
@@ -955,6 +1120,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
     }
     if (!cameraLerpTarget) return false;
+    if (USE_CESIUM && cesiumViewer) {
+      const ll = toLatLngWithFallback(cameraLerpTarget);
+      if (!ll) return false;
+      cesiumViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, followTargetEnabled ? 1400000 : 1800000),
+        duration: followTargetEnabled ? 0.35 : 0.9,
+      });
+      if (!followTargetEnabled) cameraLerpTarget = null;
+      return !!followTargetEnabled;
+    }
     const targetOffset = getViewportOffsetToCenterWorld(
       cameraLerpTarget.x,
       cameraLerpTarget.y,
@@ -1134,7 +1309,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function updateViewportReadout() {
     let text = 'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
-    if (isGlobeRenderMode() && globeOverlayDiagnostics) {
+    if (USE_CESIUM) {
+      text += ' · cesium e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions;
+      text += cesiumGoogleTileset ? ' · google tiles:on' : ' · google tiles:off';
+    } else if (isGlobeRenderMode() && globeOverlayDiagnostics) {
       text += ' · vis e:' + globeOverlayDiagnostics.entitiesVisible
         + ' r:' + globeOverlayDiagnostics.regionsVisible
         + ' t:' + globeOverlayDiagnostics.trailsVisible;
@@ -1147,13 +1325,23 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function setViewportZoom(nextZoom) {
+    const previousZoom = viewport.zoom;
     viewport.zoom = Math.max(VIEWPORT_ZOOM_MIN, Math.min(VIEWPORT_ZOOM_MAX, nextZoom));
+    if (USE_CESIUM && cesiumViewer) {
+      const ratio = viewport.zoom >= previousZoom ? 0.8 : 1.2;
+      cesiumViewer.camera.zoomBy(cesiumViewer.camera.positionCartographic.height * (ratio - 1));
+    }
     syncFollowTargetState();
     updateViewportReadout();
     draw();
   }
 
   function panViewport(dx, dy) {
+    if (USE_CESIUM && cesiumViewer) {
+      cesiumViewer.camera.moveRight(dx * 2000);
+      cesiumViewer.camera.moveUp(dy * -2000);
+      return;
+    }
     if (isGlobeRenderMode()) return;
     viewport.offsetX += dx;
     viewport.offsetY += dy;
@@ -1943,7 +2131,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   });
 
   let _selectionClickLogged = false;
-  canvas.addEventListener('click', function (e) {
+  if (!USE_CESIUM) canvas.addEventListener('click', function (e) {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -1968,6 +2156,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     selectAgent(null);
   });
+
+  initCesium();
 
   // ── WebSocket ──
   function connect() {
@@ -2646,7 +2836,13 @@ function router(req, res) {
     url === '/admin/worldview'
   )) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(FRONTEND_HTML);
+    const bootstrap = JSON.stringify({
+      useCesium: RW_USE_CESIUM,
+      defaultView: RW_DEFAULT_VIEW,
+      googleMapsApiKey: GOOGLE_MAPS_API_KEY,
+      cesiumAccessToken: CESIUM_ACCESS_TOKEN,
+    }).replace(/</g, '\u003c');
+    res.end(FRONTEND_HTML.replace('__RW_BOOTSTRAP__', bootstrap));
     return;
   }
 
@@ -2735,4 +2931,6 @@ startOpenSkyPolling();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('[RW Worldview] listening on 0.0.0.0:' + PORT);
+  console.log('[RW Worldview] renderer=' + (RW_USE_CESIUM ? 'cesium' : 'legacy-canvas') + ' defaultView=' + RW_DEFAULT_VIEW);
+  console.log('[RW Worldview] googleTiles=' + (GOOGLE_MAPS_API_KEY ? 'configured' : 'missing GOOGLE_MAPS_API_KEY'));
 });

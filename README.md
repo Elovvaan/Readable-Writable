@@ -1,6 +1,32 @@
 # Readable-Writable
 Readable Writable agent
 
+## RW/ARW Worldview Cesium Earth rendering
+
+The worldview frontend now supports a single CesiumJS Earth view with Google Maps Platform Photorealistic 3D Tiles as the base layer. Existing snapshot/event APIs and the single Node server architecture remain unchanged.
+
+### Required / recommended environment variables
+
+- `RW_USE_CESIUM=true` enables Cesium rendering (default enabled unless explicitly set to `false`).
+- `RW_DEFAULT_VIEW=earth` keeps the Earth view as the default mode.
+- `GOOGLE_MAPS_API_KEY=<google-maps-platform-key>` required for Google Photorealistic 3D Tiles (`tile.googleapis.com`).
+- `CESIUM_ACCESS_TOKEN=<token>` optional; only needed if you use Cesium Ion-hosted features.
+
+### Google Maps Platform setup
+
+1. Create/select a Google Cloud project.
+2. Enable billing on that project.
+3. Enable the Map Tiles API and ensure 3D tiles access is allowed for your key.
+4. Restrict the API key appropriately for deployment origins.
+5. Set `GOOGLE_MAPS_API_KEY` in your runtime environment.
+
+### Local run
+
+```bash
+npm install
+RW_USE_CESIUM=true RW_DEFAULT_VIEW=earth GOOGLE_MAPS_API_KEY=your_key npm start
+```
+
 ## OpenSky live flight ingestion
 
 The RW Worldview server can add OpenSky live flights as an additive layer (without replacing simulation agents).
