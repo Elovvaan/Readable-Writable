@@ -28,10 +28,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d0d0d; color: #e0e0e0; display: flex; flex-direction: column; height: 100vh; }
-    header { background: #111; border-bottom: 1px solid #222; padding: 12px 24px; display: flex; align-items: center; gap: 12px; }
+    header { background: #111; border-bottom: 1px solid #222; padding: 10px 18px; display: flex; align-items: center; gap: 12px; }
     header h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: .04em; color: #7cf; }
     #status { font-size: .75rem; padding: 3px 8px; border-radius: 999px; background: #1e3a1e; color: #5f5; border: 1px solid #3a6a3a; }
     #status.disconnected { background: #3a1e1e; color: #f55; border-color: #6a3a3a; }
+    #controls { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: .68rem; color: #aaa; }
+    .ctrl-toggle { display: inline-flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap; cursor: pointer; }
+    .ctrl-toggle input { width: 13px; height: 13px; accent-color: #7cf; cursor: pointer; }
+    #pause-btn { border: 1px solid #2e3a46; background: #151a22; color: #a9d6ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
+    #pause-btn.active { background: #2b1e1e; color: #ffc2c2; border-color: #5a3333; }
     main { display: grid; grid-template-columns: 1fr 320px; flex: 1; overflow: hidden; }
     #canvas-wrap { position: relative; overflow: hidden; background: #0a0a12; }
     canvas { display: block; width: 100%; height: 100%; }
@@ -58,6 +63,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 <header>
   <h1>RW Worldview</h1>
   <span id="status" class="disconnected">disconnected</span>
+  <div id="controls">
+    <label class="ctrl-toggle"><input type="checkbox" id="toggle-agents" checked>Show Agents</label>
+    <label class="ctrl-toggle"><input type="checkbox" id="toggle-regions" checked>Show Regions</label>
+    <label class="ctrl-toggle"><input type="checkbox" id="toggle-trails" checked>Show Trails</label>
+    <button id="pause-btn" type="button" aria-pressed="false">Pause Simulation</button>
+  </div>
 </header>
 <main>
   <div id="canvas-wrap"><canvas id="world"></canvas></div>
@@ -84,6 +95,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const log     = document.getElementById('event-log');
   const selectedPanel = document.getElementById('selected-panel');
   const statusEl = document.getElementById('status');
+  const toggleAgentsEl = document.getElementById('toggle-agents');
+  const toggleRegionsEl = document.getElementById('toggle-regions');
+  const toggleTrailsEl = document.getElementById('toggle-trails');
+  const pauseBtnEl = document.getElementById('pause-btn');
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
@@ -94,6 +109,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let selectedRegionId = null;
   let latestSelectedEvent = null;
   let ws, wsRetryDelay = 1000;
+  let showAgents = true;
+  let showRegions = true;
+  let showTrails = true;
+  let paused = false;
+  let pendingSnapshot = null;
 
   // ── Canvas resize ──
   function resize() {
@@ -124,7 +144,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const regionOccupancy = getRegionOccupancy();
 
     // regions
-    regions.forEach(r => {
+    if (showRegions) regions.forEach(r => {
       const rx = (r.x / 100) * W, ry = (r.y / 100) * H;
       const occupancy = regionOccupancy[r.id] || 0;
       const status = regionStatusFromOccupancy(occupancy);
@@ -155,7 +175,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
 
     // trails
-    agents.forEach(a => {
+    if (showTrails) agents.forEach(a => {
       const trail = agentTrails[a.id];
       if (!trail || trail.length < 2) return;
       const isSelected = selectedAgentId === a.id;
@@ -174,7 +194,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
 
     // agents
-    agents.forEach(a => {
+    if (showAgents) agents.forEach(a => {
       const { x: ax, y: ay } = worldToCanvas(a.x, a.y, W, H);
       const isSelected = selectedAgentId === a.id;
       ctx.save();
@@ -340,6 +360,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function findNearestAgentAtPoint(mx, my) {
+    if (!showAgents) return { agent: null, distance: null };
     let nearest = null;
     let nearestDistSq = Infinity;
     for (const a of Object.values(state.agents)) {
@@ -359,6 +380,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function findRegionAtPoint(mx, my) {
+    if (!showRegions) return null;
     for (const r of Object.values(state.regions)) {
       const pt = worldToCanvas(r.x, r.y, canvas.width, canvas.height);
       if (mx >= pt.x - 30 && mx <= pt.x + 30 && my >= pt.y - 30 && my <= pt.y + 30) {
@@ -398,6 +420,59 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
   setInterval(updateStats, 1000);
   renderSelectedPanel();
+
+  function clearSelectionIfHidden() {
+    if (!showAgents && selectedAgentId) {
+      selectedAgentId = null;
+      latestSelectedEvent = null;
+    }
+    if (!showRegions && selectedRegionId) {
+      selectedRegionId = null;
+      latestSelectedEvent = null;
+    }
+    refreshRelatedEventHighlight();
+    renderSelectedPanel();
+  }
+
+  function syncPauseButton() {
+    pauseBtnEl.textContent = paused ? 'Resume Simulation' : 'Pause Simulation';
+    pauseBtnEl.classList.toggle('active', paused);
+    pauseBtnEl.setAttribute('aria-pressed', paused ? 'true' : 'false');
+  }
+
+  toggleAgentsEl.addEventListener('change', function () {
+    showAgents = !!toggleAgentsEl.checked;
+    clearSelectionIfHidden();
+    draw();
+  });
+  toggleRegionsEl.addEventListener('change', function () {
+    showRegions = !!toggleRegionsEl.checked;
+    clearSelectionIfHidden();
+    draw();
+  });
+  toggleTrailsEl.addEventListener('change', function () {
+    showTrails = !!toggleTrailsEl.checked;
+    draw();
+  });
+  pauseBtnEl.addEventListener('click', function () {
+    paused = !paused;
+    syncPauseButton();
+    if (!paused && pendingSnapshot) {
+      updateAgentTrails(state.agents, pendingSnapshot.agents);
+      state = pendingSnapshot;
+      pendingSnapshot = null;
+      clearSelectionIfHidden();
+      if (selectedAgentId && !state.agents[selectedAgentId]) {
+        selectAgent(null);
+      } else if (selectedRegionId && !state.regions[selectedRegionId]) {
+        selectRegion(null);
+      } else {
+        renderSelectedPanel();
+        draw();
+      }
+    }
+  });
+  syncPauseButton();
 
   let _selectionClickLogged = false;
   canvas.addEventListener('click', function (e) {
@@ -442,6 +517,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'snapshot') {
+        if (paused) {
+          pendingSnapshot = msg.data;
+          return;
+        }
         updateAgentTrails(state.agents, msg.data.agents);
         state = msg.data;
         let selectionChanged = false;
@@ -460,6 +539,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         eventLog.push(msg.data);
         if (eventLog.length > 120) eventLog.shift();
         pushEvent(msg.data);
+        if (paused) return;
         if (msg.data.patch) Object.assign(state, msg.data.patch);
         renderSelectedPanel();
         draw();
