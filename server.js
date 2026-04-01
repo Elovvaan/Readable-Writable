@@ -426,7 +426,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
     cesiumViewer.scene.skyBox.show = false;
     cesiumViewer.scene.backgroundColor = Cesium.Color.BLACK;
-    cesiumViewer.scene.globe.show = false;
+    cesiumViewer.scene.globe.show = true;
+    cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0b1220');
+    cesiumViewer.scene.globe.depthTestAgainstTerrain = false;
     cesiumViewer.scene.skyAtmosphere.show = true;
     cesiumViewer.scene.sun.show = false;
     cesiumViewer.scene.moon.show = false;
@@ -451,7 +453,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         }
         console.info('[RW Cesium] Google Photorealistic 3D Tiles loaded');
       } else {
-        console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; base tiles unavailable');
+        console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; using OpenStreetMap fallback imagery');
+        cesiumViewer.imageryLayers.removeAll();
+        cesiumViewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
+          url: 'https://tile.openstreetmap.org/',
+        }));
       }
       console.info('[RW Cesium] initialized');
     } catch (err) {
@@ -550,19 +556,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         reg = cesiumViewer.entities.add({ id: 'region-' + r.id, rwMeta: { kind: 'region', id: r.id } });
         cesiumEntityRefs.regions[r.id] = reg;
       }
-      if (r.bounds && Number.isFinite(r.bounds.north)) {
-        reg.polygon = {
-          hierarchy: Cesium.Cartesian3.fromDegreesArray([
-            r.bounds.west, r.bounds.north, r.bounds.east, r.bounds.north, r.bounds.east, r.bounds.south, r.bounds.west, r.bounds.south
-          ]),
-          material: Cesium.Color.CYAN.withAlpha(selectedRegionId === r.id ? 0.28 : 0.16),
-          outline: true, outlineColor: Cesium.Color.CYAN
-        };
-      } else {
-        reg.ellipse = { semiMinorAxis: 60000, semiMajorAxis: 60000, material: Cesium.Color.CYAN.withAlpha(0.15), outline: true, outlineColor: Cesium.Color.CYAN };
-        reg.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 0);
-      }
-      reg.label = { text: r.name || r.id, font: '12px monospace', fillColor: Cesium.Color.ORANGE, pixelOffset: new Cesium.Cartesian2(0, -16) };
+      reg.polygon = undefined;
+      reg.ellipse = undefined;
+      reg.polyline = undefined;
+      reg.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 0);
+      reg.point = {
+        pixelSize: selectedRegionId === r.id ? 8 : 5,
+        color: Cesium.Color.CYAN.withAlpha(selectedRegionId === r.id ? 0.95 : 0.75),
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 1,
+      };
+      reg.label = {
+        text: r.name || r.id,
+        font: '12px monospace',
+        fillColor: Cesium.Color.ORANGE,
+        pixelOffset: new Cesium.Cartesian2(0, -16),
+      };
       reg.show = true;
       regionsVisible++;
     }
