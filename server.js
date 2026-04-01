@@ -130,18 +130,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const status = regionStatusFromOccupancy(occupancy);
       const isSelected = selectedRegionId === r.id;
       ctx.save();
+      const rectX = rx - 30;
+      const rectY = ry - 30;
+      const rectSize = 60;
+      if (isSelected) {
+        ctx.fillStyle = '#8ec5ff22';
+        ctx.fillRect(rectX, rectY, rectSize, rectSize);
+      }
       ctx.strokeStyle =
         status === 'HOT' ? '#ff8e8ecc' :
         status === 'ACTIVE' ? '#fccb88cc' :
         '#a8b0cc88';
       ctx.lineWidth = isSelected ? 2.25 : 1.5;
       ctx.setLineDash([4, 4]);
-      ctx.strokeRect(rx - 30, ry - 30, 60, 60);
+      ctx.strokeRect(rectX, rectY, rectSize, rectSize);
       ctx.setLineDash([]);
-      if (isSelected) {
-        ctx.fillStyle = '#8ec5ff22';
-        ctx.fillRect(rx - 30, ry - 30, 60, 60);
-      }
       ctx.fillStyle = '#fc7';
       ctx.font = '10px monospace';
       ctx.fillText(r.id, rx - 28, ry - 33);
