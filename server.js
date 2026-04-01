@@ -44,6 +44,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     canvas { display: block; width: 100%; height: 100%; }
     aside { background: #111; border-left: 1px solid #222; display: flex; flex-direction: column; overflow: hidden; }
     .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #555; padding: 10px 14px 6px; border-bottom: 1px solid #1c1c1c; }
+    #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #1a1a1a; display: grid; gap: 6px; }
+    #event-search { width: 100%; border: 1px solid #2e3a46; background: #151a22; color: #d2e7ff; border-radius: 4px; font-size: .68rem; padding: 4px 6px; }
+    #event-chip-row { display: flex; gap: 5px; flex-wrap: wrap; }
+    .event-chip { border: 1px solid #2a2f3a; border-radius: 999px; background: #12151d; color: #9cb4cb; padding: 2px 8px; font-size: .64rem; cursor: pointer; }
+    .event-chip.active { background: #213246; color: #d2e7ff; border-color: #3f658a; }
     #event-log { flex: 1; overflow-y: auto; padding: 8px 0; font-size: .72rem; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .event-entry { padding: 3px 14px; border-bottom: 1px solid #161616; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .event-entry .ts { color: #444; margin-right: 6px; }
@@ -52,6 +57,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .event-entry.system { color: #a7f; }
     .event-entry.related { background: #1a2330; box-shadow: inset 2px 0 0 #7cf; }
     .event-entry.dimmed { opacity: 0.42; }
+    .event-empty { padding: 8px 14px; color: #666; font-style: italic; }
     #selected-panel { border-top: 1px solid #1c1c1c; padding: 10px 14px; font-size: .72rem; }
     #action-panel { border-top: 1px solid #1c1c1c; padding: 8px 14px 10px; font-size: .72rem; }
     .action-row { display: flex; gap: 6px; }
@@ -94,6 +100,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <div id="canvas-wrap"><canvas id="world"></canvas></div>
   <aside>
     <div class="panel-title">Event Stream</div>
+    <div id="event-tools">
+      <input id="event-search" type="text" placeholder="Search events" aria-label="Search events">
+      <div id="event-chip-row">
+        <button class="event-chip active" type="button" data-event-filter="all">All</button>
+        <button class="event-chip" type="button" data-event-filter="tick">Tick</button>
+        <button class="event-chip" type="button" data-event-filter="movement">Movement / state events</button>
+        <button class="event-chip" type="button" data-event-filter="region">Region events</button>
+        <button class="event-chip" type="button" data-event-filter="operator">Operator events</button>
+      </div>
+    </div>
     <div id="event-log"></div>
     <div class="panel-title">Selected Target</div>
     <div id="selected-panel"></div>
@@ -121,6 +137,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const canvas  = document.getElementById('world');
   const ctx     = canvas.getContext('2d');
   const log     = document.getElementById('event-log');
+  const eventSearchEl = document.getElementById('event-search');
+  const eventChipRowEl = document.getElementById('event-chip-row');
   const selectedPanel = document.getElementById('selected-panel');
   const focusActionBtn = document.getElementById('action-focus');
   const pingActionBtn = document.getElementById('action-ping');
@@ -157,6 +175,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let lastOperatorActionByTarget = {};
   let focusTargetKey = null;
   let focusEffectUntil = 0;
+  let eventSearchQuery = '';
+  let activeEventFilter = 'all';
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -303,7 +323,33 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   // ── Event log ──
-  function pushEvent(ev) {
+  function renderEventLog() {
+    const prevScrollTop = log.scrollTop;
+    const prevScrollHeight = log.scrollHeight;
+    const stickToTop = prevScrollTop <= 2;
+    const entries = eventLog.slice().reverse().filter(function (ev) {
+      return eventMatchesFilters(ev);
+    });
+    log.innerHTML = '';
+    if (entries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'event-empty';
+      empty.textContent = 'No matching events';
+      log.appendChild(empty);
+      return;
+    }
+    for (const ev of entries) {
+      log.appendChild(createEventEntry(ev));
+    }
+    if (stickToTop) {
+      log.scrollTop = 0;
+    } else {
+      const delta = log.scrollHeight - prevScrollHeight;
+      log.scrollTop = prevScrollTop + delta;
+    }
+  }
+
+  function createEventEntry(ev) {
     const div = document.createElement('div');
     div.className = 'event-entry ' + (ev.kind || 'system');
     const evType = eventEntityType(ev);
@@ -311,8 +357,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if ((selectedAgentId || selectedRegionId) && eventMatchesSelected(ev)) div.classList.add('related');
     const ts = new Date(ev.ts || Date.now()).toISOString().substr(11, 8);
     div.innerHTML = '<span class="ts">' + ts + '</span>' + escHtml(ev.msg || JSON.stringify(ev));
-    log.prepend(div);
-    while (log.children.length > 120) log.removeChild(log.lastChild);
+    return div;
+  }
+
+  function pushEvent(ev) {
+    renderEventLog();
     if ((selectedAgentId || selectedRegionId) && eventMatchesSelected(ev)) {
       latestSelectedEvent = ev;
       renderSelectedPanel();
@@ -330,15 +379,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return false;
   }
 
+  function eventMatchesFilters(ev) {
+    const msg = String((ev && ev.msg) || '');
+    const filter = activeEventFilter;
+    if (filter === 'tick' && !msg.startsWith('tick ')) return false;
+    if (filter === 'movement' && ev.kind !== 'agent') return false;
+    if (filter === 'region' && ev.kind !== 'region') return false;
+    if (filter === 'operator' && !msg.startsWith('operator ')) return false;
+    if (!eventSearchQuery) return true;
+    const haystack = [msg, ev.kind || '', ev.entityType || ''].join(' ').toLowerCase();
+    return haystack.includes(eventSearchQuery);
+  }
+
   function refreshRelatedEventHighlight() {
-    for (const child of log.children) child.classList.remove('related');
-    if (!selectedAgentId && !selectedRegionId) return;
-    for (const child of log.children) {
-      if ((selectedAgentId && child.textContent.includes(selectedAgentId)) ||
-          (selectedRegionId && child.textContent.includes(selectedRegionId))) {
-        child.classList.add('related');
-      }
-    }
+    renderEventLog();
   }
 
   function updateLatestSelectedEventFromLog() {
@@ -592,6 +646,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
   }
   setInterval(updateStats, 1000);
+  renderEventLog();
   renderSelectedPanel();
   syncActionButtons();
   focusActionBtn.addEventListener('click', runFocusAction);
@@ -697,14 +752,23 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }, 100);
 
   function refreshEventVisibilityStyling() {
-    for (const child of log.children) {
-      child.classList.remove('dimmed');
-      const text = child.textContent || '';
-      if (text.includes('[agent]') && !visibleEntityTypes.agent) child.classList.add('dimmed');
-      if (text.includes('[flight]') && !visibleEntityTypes.flight) child.classList.add('dimmed');
-      if (text.includes('[satellite]') && !visibleEntityTypes.satellite) child.classList.add('dimmed');
-    }
+    renderEventLog();
   }
+
+  eventSearchEl.addEventListener('input', function () {
+    eventSearchQuery = eventSearchEl.value.trim().toLowerCase();
+    renderEventLog();
+  });
+
+  eventChipRowEl.addEventListener('click', function (e) {
+    const chip = e.target.closest('.event-chip');
+    if (!chip) return;
+    activeEventFilter = chip.getAttribute('data-event-filter') || 'all';
+    for (const el of eventChipRowEl.querySelectorAll('.event-chip')) {
+      el.classList.toggle('active', el === chip);
+    }
+    renderEventLog();
+  });
 
   let _selectionClickLogged = false;
   canvas.addEventListener('click', function (e) {
@@ -742,6 +806,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       statusEl.textContent = 'connected';
       statusEl.className = '';
       wsRetryDelay = 1000;
+      eventLog.push({ kind: 'system', msg: 'WebSocket connected' });
+      if (eventLog.length > 120) eventLog.shift();
       pushEvent({ kind: 'system', msg: 'WebSocket connected' });
     };
 
@@ -784,6 +850,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     ws.onclose = function () {
       statusEl.textContent = 'disconnected';
       statusEl.className = 'disconnected';
+      eventLog.push({ kind: 'system', msg: 'WebSocket disconnected — retrying in ' + (wsRetryDelay/1000) + 's' });
+      if (eventLog.length > 120) eventLog.shift();
       pushEvent({ kind: 'system', msg: 'WebSocket disconnected — retrying in ' + (wsRetryDelay/1000) + 's' });
       setTimeout(connect, wsRetryDelay);
       wsRetryDelay = Math.min(wsRetryDelay * 2, 16000);
