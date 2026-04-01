@@ -672,39 +672,48 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!canvas) {
       canvas = document.getElementById('globe');
     }
-    if (!canvas) return false;
-    if (!ctx) {
-      ctx = canvas.getContext('2d');
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.id = 'globe';
+      document.body.appendChild(canvas);
     }
-    return !!ctx;
+    return canvas;
   }
 
-  function ensureCanvasVisibility() {
-    if (!ensureCanvasReady()) return;
-    canvas.style.zIndex = GLOBE_Z_INDEX;
-    if (viewMode === 'global') {
-      canvas.style.display = 'block';
-      canvas.style.opacity = '1';
-      canvas.style.visibility = 'visible';
-      canvas.style.pointerEvents = 'auto';
-    }
+  function forceCanvasVisible(canvasEl) {
+    if (!canvasEl) return;
+    canvasEl.style.display = 'block';
+    canvasEl.style.visibility = 'visible';
+    canvasEl.style.opacity = '1';
+    canvasEl.style.position = 'absolute';
+    canvasEl.style.top = '0';
+    canvasEl.style.left = '0';
+    canvasEl.style.zIndex = '1';
+
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    canvasEl.width = w;
+    canvasEl.height = h;
+    canvasEl.style.width = w + 'px';
+    canvasEl.style.height = h + 'px';
   }
 
   function resize() {
-    if (!ensureCanvasReady()) return;
+    var canvasEl = ensureCanvasReady();
+    if (!canvasEl) return;
     var w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
     var h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
-    canvas.width = w;
-    canvas.height = h;
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-    ensureCanvasVisibility();
+    canvasEl.width = w;
+    canvasEl.height = h;
+    canvasEl.style.width = w + 'px';
+    canvasEl.style.height = h + 'px';
+    forceCanvasVisible(canvasEl);
     console.log('WORLDVIEW CANVAS SIZE', w, h);
     var recEl = document.getElementById('meta-rec');
     if (recEl) recEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
     var orbitEl = document.getElementById('meta-orbit');
     if (orbitEl) orbitEl.textContent = "PASS " + String((state.tick || 0) % 360).padStart(3, "0");
-    if (viewMode === 'global') drawFrame();
+    drawFrame();
   }
   window.addEventListener('resize', resize);
   resize();
@@ -1242,16 +1251,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function drawFrame() {
-    if (!ensureCanvasReady()) {
+    var canvasEl = ensureCanvasReady();
+    if (!canvasEl) {
       console.error('WORLDVIEW drawFrame: canvas unavailable');
       return;
     }
-    ensureCanvasVisibility();
-    var frameCtx = canvas.getContext('2d');
+    forceCanvasVisible(canvasEl);
+    var frameCtx = canvasEl.getContext('2d');
     if (!frameCtx) {
       console.error('WORLDVIEW drawFrame: 2D context unavailable');
       return;
     }
+    canvas = canvasEl;
     ctx = frameCtx;
     var W = canvas.width, H = canvas.height;
     if (!W || !H) {
@@ -1268,6 +1279,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.beginPath();
+    ctx.arc(canvas.width / 2, canvas.height / 2, 150, 0, Math.PI * 2);
+    ctx.fillStyle = '#0b3d91';
+    ctx.fill();
+
+    ctx.strokeStyle = 'red';
+    ctx.beginPath();
+    ctx.moveTo(canvas.width / 2 - 50, canvas.height / 2);
+    ctx.lineTo(canvas.width / 2 + 50, canvas.height / 2);
+    ctx.moveTo(canvas.width / 2, canvas.height / 2 - 50);
+    ctx.lineTo(canvas.width / 2, canvas.height / 2 + 50);
+    ctx.stroke();
 
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -1682,9 +1706,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (recEl) recEl.textContent = new Date().toLocaleTimeString([], { hour12: false });
       var orbitEl = document.getElementById('meta-orbit');
       if (orbitEl) orbitEl.textContent = "PASS " + String((state.tick || 0) % 360).padStart(3, "0");
-      if (viewMode !== 'local') {
-        try { drawFrame(); } catch (fe) { console.error('WORLDVIEW drawFrame error:', fe); }
-      }
+      try { drawFrame(); } catch (fe) { console.error('WORLDVIEW drawFrame error:', fe); }
       if ((frameCount % 8) === 0) updatePanels();
     } catch (e) {
       console.error('WORLDVIEW animTick error:', e);
@@ -1781,27 +1803,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function initWorldview() {
     console.log("WORLDVIEW INIT START");
+    const canvas = ensureCanvasReady();
     if (!canvas) {
-      canvas = document.getElementById('globe');
-    }
-    if (!canvas) {
-      canvas = document.createElement('canvas');
-      canvas.id = 'globe';
-      document.body.appendChild(canvas);
-    }
-    if (!ensureCanvasReady()) {
       console.error('WORLDVIEW INIT: canvas/context unavailable; globe cannot render');
       return;
     }
-    canvas.style.display = 'block';
-    canvas.style.opacity = '1';
-    canvas.style.visibility = 'visible';
-    canvas.style.zIndex = GLOBE_Z_INDEX;
-    if (canvas.parentElement) {
-      canvas.parentElement.style.display = 'block';
-      canvas.parentElement.style.opacity = '1';
-      canvas.parentElement.style.visibility = 'visible';
-    }
+    forceCanvasVisible(canvas);
     initMap();
     viewMode = 'global';
     console.log('WORLDVIEW INIT GLOBAL RESET');
@@ -1810,7 +1817,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     resize();
     applyModeVisibility();
     setModeLabel();
-    ensureCanvasVisibility();
     if (!canvasClickBound) {
       canvas.addEventListener('click', function(e) {
         var rect = canvas.getBoundingClientRect();
