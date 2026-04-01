@@ -5,6 +5,12 @@ const crypto = require('crypto');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4001;
+const OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED === 'true';
+const OPENSKY_CLIENT_ID = process.env.OPENSKY_CLIENT_ID || '';
+const OPENSKY_CLIENT_SECRET = process.env.OPENSKY_CLIENT_SECRET || '';
+const OPENSKY_TOKEN_URL = process.env.OPENSKY_TOKEN_URL || 'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token';
+const OPENSKY_STATES_URL = process.env.OPENSKY_STATES_URL || 'https://opensky-network.org/api/states/all';
+const OPENSKY_POLL_INTERVAL_MS = Math.max(5000, Number(process.env.RW_OPENSKY_POLL_INTERVAL_MS || 15000));
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const worldview = {
@@ -17,6 +23,13 @@ const worldview = {
 const spatialIndex = {};   // key: regionId, value: { id, x, y, agents: [] }
 const wsClients = new Set();
 const eventLog = [];       // rolling last-100 events
+const openSkyLiveState = {
+  flights: {},
+  token: null,
+  tokenExpiresAtMs: 0,
+  lastPollAt: null,
+  lastErrorAt: null,
+};
 
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
 const FRONTEND_HTML = `<!DOCTYPE html>
@@ -1884,8 +1897,12 @@ function emit(kind, msg, patch, entityType) {
 }
 
 function snapshot() {
+  const mergedAgents = {
+    ...worldview.agents,
+    ...openSkyLiveState.flights,
+  };
   return {
-    agents: worldview.agents,
+    agents: mergedAgents,
     regions: worldview.regions,
     tick: worldview.tick,
     started: worldview.started,
@@ -1910,6 +1927,164 @@ function normalizeEntityGridPosition(entity) {
     entity.x = mapped.x;
     entity.y = mapped.y;
   }
+}
+
+function safeNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function resolveClosestRegion(entity) {
+  let closest = null;
+  let bestDist = Infinity;
+  for (const r of Object.values(worldview.regions)) {
+    if (!hasLatLng(entity) || !hasLatLng(r)) continue;
+    const d = Math.hypot(entity.lat - r.lat, entity.lng - r.lng);
+    if (d < bestDist) {
+      bestDist = d;
+      closest = r;
+    }
+  }
+  return closest ? closest.id : null;
+}
+
+function buildOpenSkyFlightEntity(row) {
+  if (!Array.isArray(row)) return null;
+  const icao24 = String(row[0] || '').trim().toLowerCase();
+  const callsign = String(row[1] || '').trim();
+  const lon = safeNumber(row[5]);
+  const lat = safeNumber(row[6]);
+  if (!icao24 || lat === null || lon === null) return null;
+  const altitude = safeNumber(row[13] !== null && row[13] !== undefined ? row[13] : row[7]);
+  const speed = safeNumber(row[9]);
+  const heading = safeNumber(row[10]);
+  const verticalRate = safeNumber(row[11]);
+  const onGround = Boolean(row[8]);
+  const entity = {
+    id: 'flight-' + icao24,
+    type: 'flight',
+    label: callsign || icao24,
+    name: callsign || icao24,
+    icao24,
+    lat,
+    lng: lon,
+    altitude,
+    heading,
+    speed,
+    verticalRate,
+    onGround,
+    source: 'opensky',
+    region: null,
+    active: true,
+    state: onGround ? 'grounded' : 'airborne',
+    memory: [],
+    lastSeen: new Date().toISOString(),
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+async function getOpenSkyAccessToken() {
+  const now = Date.now();
+  if (openSkyLiveState.token && openSkyLiveState.tokenExpiresAtMs - now > 10000) {
+    return openSkyLiveState.token;
+  }
+  const body = new URLSearchParams({ grant_type: 'client_credentials' });
+  const authHeader = Buffer.from(OPENSKY_CLIENT_ID + ':' + OPENSKY_CLIENT_SECRET).toString('base64');
+  const res = await fetch(OPENSKY_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': 'Basic ' + authHeader,
+    },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    throw new Error('OpenSky token request failed with HTTP ' + res.status);
+  }
+  const payload = await res.json();
+  if (!payload || !payload.access_token) {
+    throw new Error('OpenSky token response missing access_token');
+  }
+  const expiresInSec = Number.isFinite(Number(payload.expires_in)) ? Number(payload.expires_in) : 300;
+  openSkyLiveState.token = payload.access_token;
+  openSkyLiveState.tokenExpiresAtMs = now + (expiresInSec * 1000);
+  return openSkyLiveState.token;
+}
+
+async function pollOpenSkyFlights() {
+  if (!OPENSKY_ENABLED) return;
+  if (!OPENSKY_CLIENT_ID || !OPENSKY_CLIENT_SECRET) {
+    const warn = 'OpenSky polling disabled: missing OPENSKY_CLIENT_ID or OPENSKY_CLIENT_SECRET';
+    if (!openSkyLiveState.lastErrorAt) {
+      console.warn('[RW Worldview] ' + warn);
+      emit('system', warn, { source: 'opensky' });
+    }
+    openSkyLiveState.lastErrorAt = new Date().toISOString();
+    return;
+  }
+  try {
+    const token = await getOpenSkyAccessToken();
+    const res = await fetch(OPENSKY_STATES_URL, {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token },
+    });
+    if (res.status === 401 || res.status === 429) {
+      throw new Error('OpenSky live states unavailable (HTTP ' + res.status + ')');
+    }
+    if (!res.ok) {
+      throw new Error('OpenSky live states request failed with HTTP ' + res.status);
+    }
+    const payload = await res.json();
+    const states = Array.isArray(payload && payload.states) ? payload.states : [];
+    const nextFlights = {};
+    for (const row of states) {
+      const normalized = buildOpenSkyFlightEntity(row);
+      if (!normalized) continue;
+      nextFlights[normalized.id] = normalized;
+    }
+
+    const previous = openSkyLiveState.flights;
+    let updatedCount = 0;
+    for (const flightId of Object.keys(nextFlights)) {
+      if (!previous[flightId]) {
+        emit('agent', '[flight] ' + flightId + ' appeared (OpenSky)', { id: flightId, source: 'opensky', event: 'appear' }, 'flight');
+      } else {
+        updatedCount++;
+      }
+    }
+    for (const flightId of Object.keys(previous)) {
+      if (!nextFlights[flightId]) {
+        emit('agent', '[flight] ' + flightId + ' disappeared (OpenSky)', { id: flightId, source: 'opensky', event: 'disappear' }, 'flight');
+      }
+    }
+    if (updatedCount > 0) {
+      emit('agent', '[flight] ' + updatedCount + ' flights updated (OpenSky)', { source: 'opensky', event: 'update', count: updatedCount }, 'flight');
+    }
+
+    openSkyLiveState.flights = nextFlights;
+    openSkyLiveState.lastPollAt = new Date().toISOString();
+    openSkyLiveState.lastErrorAt = null;
+    broadcast('snapshot', snapshot());
+  } catch (err) {
+    const msg = 'OpenSky poll warning: ' + (err && err.message ? err.message : String(err));
+    console.warn('[RW Worldview] ' + msg);
+    openSkyLiveState.lastErrorAt = new Date().toISOString();
+    emit('system', msg, { source: 'opensky' });
+  }
+}
+
+function startOpenSkyPolling() {
+  if (!OPENSKY_ENABLED) {
+    console.log('[RW Worldview] OpenSky polling disabled (RW_OPENSKY_ENABLED != true)');
+    return;
+  }
+  console.log('[RW Worldview] OpenSky polling enabled; interval=' + OPENSKY_POLL_INTERVAL_MS + 'ms');
+  pollOpenSkyFlights().catch(() => {});
+  setInterval(() => {
+    pollOpenSkyFlights().catch(() => {});
+  }, OPENSKY_POLL_INTERVAL_MS);
 }
 
 // ─── Simulation / Agent loop ──────────────────────────────────────────────────
@@ -2256,10 +2431,11 @@ function router(req, res) {
 
   // ── GET /health
   if (req.method === 'GET' && url === '/health') {
+    const mergedAgentCount = Object.keys(worldview.agents).length + Object.keys(openSkyLiveState.flights).length;
     const body = JSON.stringify({
       status: 'ok',
       tick: worldview.tick,
-      agents: Object.keys(worldview.agents).length,
+      agents: mergedAgentCount,
       regions: Object.keys(worldview.regions).length,
       uptime: process.uptime(),
       ts: new Date().toISOString(),
@@ -2271,12 +2447,19 @@ function router(req, res) {
 
   // ── GET /rw/spatial/health
   if (req.method === 'GET' && url === '/rw/spatial/health') {
+    const mergedAgentCount = Object.keys(worldview.agents).length + Object.keys(openSkyLiveState.flights).length;
     const body = JSON.stringify({
       status: 'ok',
       tick: worldview.tick,
-      agents: Object.keys(worldview.agents).length,
+      agents: mergedAgentCount,
       regions: Object.keys(worldview.regions).length,
       websocketClients: wsClients.size,
+      opensky: {
+        enabled: OPENSKY_ENABLED,
+        flights: Object.keys(openSkyLiveState.flights).length,
+        lastPollAt: openSkyLiveState.lastPollAt,
+        lastErrorAt: openSkyLiveState.lastErrorAt,
+      },
       uptime: process.uptime(),
       ts: new Date().toISOString(),
     });
@@ -2327,6 +2510,7 @@ server.on('upgrade', (req, socket, head) => {
 
 initWorld();
 setInterval(simulationLoop, 800);
+startOpenSkyPolling();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('[RW Worldview] listening on 0.0.0.0:' + PORT);
