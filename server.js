@@ -3895,11 +3895,35 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 initWorld();
-setInterval(simulationLoop, 800);
-startOpenSkyPolling();
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('[RW Worldview] listening on 0.0.0.0:' + PORT);
-  console.log('[RW Worldview] renderer=' + (RW_USE_CESIUM ? 'cesium' : 'legacy-canvas') + ' defaultView=' + RW_DEFAULT_VIEW);
-  console.log('[RW Worldview] googleTiles=' + (GOOGLE_MAPS_API_KEY ? 'configured' : 'missing GOOGLE_MAPS_API_KEY'));
-});
+if (require.main === module) {
+  setInterval(simulationLoop, 800);
+  startOpenSkyPolling();
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('[RW Worldview] listening on 0.0.0.0:' + PORT);
+    console.log('[RW Worldview] renderer=' + (RW_USE_CESIUM ? 'cesium' : 'legacy-canvas') + ' defaultView=' + RW_DEFAULT_VIEW);
+    console.log('[RW Worldview] googleTiles=' + (GOOGLE_MAPS_API_KEY ? 'configured' : 'missing GOOGLE_MAPS_API_KEY'));
+  });
+}
+
+// ─── Exports (for testing) ────────────────────────────────────────────────────
+module.exports = {
+  uid,
+  safeNumber,
+  hasLatLng,
+  latLngToGrid,
+  normalizeEntityGridPosition,
+  getGlobeUnitVectorFromLatLng,
+  countVisibleOpenSkyFlights,
+  resolveClosestRegion,
+  buildOpenSkyFlightEntity,
+  emit,
+  wsSend,
+  wsParse,
+  router,
+  snapshot,
+  worldview,
+  eventLog,
+  openSkyLiveState,
+};
