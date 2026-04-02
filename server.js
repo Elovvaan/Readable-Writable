@@ -2,6 +2,8 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4001;
@@ -20,6 +22,11 @@ const RW_USE_CESIUM = true;
 const RW_DEFAULT_VIEW = process.env.RW_DEFAULT_VIEW || 'earth';
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
 const CESIUM_ACCESS_TOKEN = process.env.CESIUM_ACCESS_TOKEN || '';
+const OPENSKY_FILE_PATH = path.resolve(process.env.OPENSKY_FILE_PATH || 'opensky.json');
+const OPENSKY_FILE_POLL_MS = 5000;
+// Anything above this speed (m/s) is flagged as physically impossible for civil aircraft.
+// Commercial jets cruise at ~240–280 m/s; 600 m/s ≈ Mach 1.8.
+const ANOMALY_MAX_SPEED_MS = 600;
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const worldview = {
@@ -47,6 +54,14 @@ const openSkyLiveState = {
   lastModeUsed: 'public',
   lastVisibleCount: 0,
   lastDrawnCount: 0,
+};
+
+const openSkyFileState = {
+  flights: {},
+  lastLoadAt: null,
+  lastErrorAt: null,
+  lastCount: 0,
+  anomalies: [],
 };
 
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
@@ -3187,6 +3202,7 @@ function emit(kind, msg, patch, entityType) {
 function snapshot() {
   const mergedAgents = {
     ...worldview.agents,
+    ...openSkyFileState.flights,   // file-sourced flights (live API wins on icao collision)
     ...openSkyLiveState.flights,
   };
   return {
@@ -3459,6 +3475,134 @@ function startOpenSkyPolling() {
   setInterval(() => {
     pollOpenSkyFlights().catch(() => {});
   }, OPENSKY_POLL_INTERVAL_MS);
+}
+
+// ─── OpenSky file source ──────────────────────────────────────────────────────
+
+function detectAnomalies(flights) {
+  const anomalies = [];
+  const seenIcao = {}; // icao24 → first entity id seen
+
+  for (const entity of Object.values(flights)) {
+    // Impossible speed
+    if (Number.isFinite(entity.velocity) && entity.velocity > ANOMALY_MAX_SPEED_MS) {
+      anomalies.push({
+        type: 'impossible_speed',
+        id: entity.id,
+        icao24: entity.icao24,
+        velocity: entity.velocity,
+        msg: entity.id + ' impossible speed ' + entity.velocity.toFixed(1) + ' m/s',
+      });
+    }
+
+    // Duplicate ICAO — same icao24 appearing more than once in the states array
+    if (entity.icao24) {
+      if (seenIcao[entity.icao24]) {
+        anomalies.push({
+          type: 'duplicate_icao',
+          icao24: entity.icao24,
+          ids: [seenIcao[entity.icao24], entity.id],
+          msg: 'duplicate ICAO ' + entity.icao24 + ' (' + seenIcao[entity.icao24] + ' and ' + entity.id + ')',
+        });
+      } else {
+        seenIcao[entity.icao24] = entity.id;
+      }
+    }
+  }
+
+  return anomalies;
+}
+
+function loadOpenSkyFile() {
+  let raw;
+  try {
+    raw = fs.readFileSync(OPENSKY_FILE_PATH, 'utf8');
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      // File exists but couldn't be read — log and mark error
+      console.warn('[RW File] Read error: ' + err.message);
+      openSkyFileState.lastErrorAt = new Date().toISOString();
+      emit('system', '[file] read error: ' + err.message, { source: 'file' });
+    }
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (err) {
+    console.warn('[RW File] Parse error in ' + OPENSKY_FILE_PATH + ': ' + err.message);
+    openSkyFileState.lastErrorAt = new Date().toISOString();
+    emit('system', '[file] parse error: ' + err.message, { source: 'file' });
+    return;
+  }
+
+  const states = Array.isArray(payload && payload.states) ? payload.states : [];
+  const previous = openSkyFileState.flights;
+  const nextFlights = {};
+
+  for (const row of states) {
+    const icao24 = Array.isArray(row) ? String(row[0] || '').trim().toLowerCase() : '';
+    const prevFlight = icao24 ? previous['flight-' + icao24] : null;
+    const entity = buildOpenSkyFlightEntity(row, prevFlight);
+    if (!entity) continue;
+    entity.source = 'file'; // distinguish from live-API flights
+    nextFlights[entity.id] = entity;
+  }
+
+  // Anomaly detection — emit events only for newly detected anomalies
+  const anomalies = detectAnomalies(nextFlights);
+  const prevMsgs = new Set(openSkyFileState.anomalies.map(a => a.msg));
+  for (const anomaly of anomalies) {
+    if (!prevMsgs.has(anomaly.msg)) {
+      console.warn('[RW File] Anomaly: ' + anomaly.msg);
+      emit('system', '[file] anomaly: ' + anomaly.msg, { source: 'file', anomaly }, 'flight');
+    }
+  }
+  openSkyFileState.anomalies = anomalies;
+
+  // Emit appear / disappear events
+  for (const id of Object.keys(nextFlights)) {
+    if (!previous[id]) {
+      emit('agent', '[file] ' + id + ' appeared', { id, source: 'file', event: 'appear' }, 'flight');
+    }
+  }
+  for (const id of Object.keys(previous)) {
+    if (!nextFlights[id]) {
+      emit('agent', '[file] ' + id + ' disappeared', { id, source: 'file', event: 'disappear' }, 'flight');
+    }
+  }
+
+  openSkyFileState.flights = nextFlights;
+  openSkyFileState.lastCount = Object.keys(nextFlights).length;
+  openSkyFileState.lastLoadAt = new Date().toISOString();
+  openSkyFileState.lastErrorAt = null;
+
+  console.log('[RW File] Loaded ' + states.length + ' states → ' + openSkyFileState.lastCount + ' flights' +
+    (anomalies.length ? ' (' + anomalies.length + ' anomalies)' : ''));
+
+  broadcast('snapshot', snapshot());
+}
+
+let _fileWatchDebounce = null;
+
+function startOpenSkyFileWatcher() {
+  loadOpenSkyFile();
+
+  // Real-time watch — debounced to handle editors that write twice in quick succession
+  try {
+    fs.watch(OPENSKY_FILE_PATH, { persistent: false }, () => {
+      clearTimeout(_fileWatchDebounce);
+      _fileWatchDebounce = setTimeout(loadOpenSkyFile, 150);
+    });
+    console.log('[RW File] Watching ' + OPENSKY_FILE_PATH);
+  } catch (err) {
+    // File may not exist yet; polling below will pick it up when it appears
+    console.log('[RW File] Watch unavailable (' + err.message + '); using ' + OPENSKY_FILE_POLL_MS + 'ms polling');
+  }
+
+  // Polling fallback — also re-loads when file is replaced or watch was unavailable
+  setInterval(loadOpenSkyFile, OPENSKY_FILE_POLL_MS);
 }
 
 // ─── Simulation / Agent loop ──────────────────────────────────────────────────
@@ -3899,6 +4043,7 @@ initWorld();
 if (require.main === module) {
   setInterval(simulationLoop, 800);
   startOpenSkyPolling();
+  startOpenSkyFileWatcher();
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log('[RW Worldview] listening on 0.0.0.0:' + PORT);
@@ -3926,4 +4071,7 @@ module.exports = {
   worldview,
   eventLog,
   openSkyLiveState,
+  openSkyFileState,
+  detectAnomalies,
+  loadOpenSkyFile,
 };
