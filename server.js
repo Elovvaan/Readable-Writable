@@ -45,9 +45,11 @@ const openSkyLiveState = {
   tokenExpiresAtMs: 0,
   lastPollAt: null,
   lastErrorAt: null,
+  lastErrorMessage: null,
   lastFetchedCount: 0,
   lastNormalizedCount: 0,
   authConfigured: true,
+  lastAuthMode: 'none',
   pollingRunning: false,
   lastRequestUrl: null,
   lastRequestStatus: null,
@@ -68,6 +70,7 @@ const openSkyFileState = {
 const fileCredentials = {
   username: '',
   password: '',
+  credentialType: '', // 'username_password' | 'client_credentials'
 };
 
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
@@ -578,7 +581,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let styleAnimationLoopActive = false;
   let globeOverlayDiagnostics = null;
   let globeRegionOverlaySuppressed = false;
-  let openskyStatus = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null };
+  let openskyStatus = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null, authMode: 'none', hasClientId: false, hasClientSecret: false, lastFetchStatus: 'none', lastFetchError: 'none', lastFetchAt: 'none' };
   let lastFlightDebugCounts = { merged: 0, visible: 0, drawn: 0, errors: 0 };
   let lastLayerDiagnostics = {};
 
@@ -2819,7 +2822,28 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const drawnFlights = Number.isFinite(Number(lastFlightDebugCounts.drawn)) ? Number(lastFlightDebugCounts.drawn) : 0;
     const erroredFlights = Number.isFinite(Number(lastFlightDebugCounts.errors)) ? Number(lastFlightDebugCounts.errors) : 0;
     const openskyError = openskyStatus && openskyStatus.lastErrorAt ? ' ERR' : '';
-    const flightDebugText = 'fetched:' + fetched + ' merged:' + merged + ' visible:' + visibleFlights + ' drawn:' + drawnFlights + ' errors:' + erroredFlights + openskyError;
+    // Compact timestamp: "HH:MM:SS" or "none"
+    const fetchAtStr = (function () {
+      const raw = openskyStatus && openskyStatus.lastFetchAt;
+      if (!raw || raw === 'none') return 'none';
+      try { return new Date(raw).toTimeString().slice(0, 8); } catch (e) { return raw; }
+    }());
+    // Truncate error string so it fits on one line
+    const fetchErrRaw = (openskyStatus && openskyStatus.lastFetchError) || 'none';
+    const fetchErrStr = fetchErrRaw.length > 60 ? fetchErrRaw.slice(0, 57) + '…' : fetchErrRaw;
+    const flightDebugText =
+      'fetched:' + fetched +
+      ' merged:' + merged +
+      ' visible:' + visibleFlights +
+      ' drawn:' + drawnFlights +
+      ' errors:' + erroredFlights +
+      ' | auth:' + ((openskyStatus && openskyStatus.authMode) || 'none') +
+      ' cid:' + ((openskyStatus && openskyStatus.hasClientId) ? 'yes' : 'no') +
+      ' csec:' + ((openskyStatus && openskyStatus.hasClientSecret) ? 'yes' : 'no') +
+      ' | status:' + ((openskyStatus && openskyStatus.lastFetchStatus !== undefined) ? openskyStatus.lastFetchStatus : 'none') +
+      ' err:' + fetchErrStr +
+      ' at:' + fetchAtStr +
+      openskyError;
     const layerDiagnostics = buildLayerDiagnostics();
     lastLayerDiagnostics = layerDiagnostics;
     const layerDebugText = 'L:' + layerDiagnostics.liveFlights
@@ -3032,7 +3056,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     state = nextSnapshot;
     openskyStatus = nextSnapshot && nextSnapshot.opensky
       ? nextSnapshot.opensky
-      : { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null };
+      : { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null, authMode: 'none', hasClientId: false, hasClientSecret: false, lastFetchStatus: 'none', lastFetchError: 'none', lastFetchAt: 'none' };
     latestRegionIntelligence = computeRegionIntelligence();
     clearSelectionIfHidden();
     if (selectedAgentId && !state.agents[selectedAgentId]) {
@@ -3230,6 +3254,13 @@ function snapshot() {
       lastRequestStatus: openSkyLiveState.lastRequestStatus,
       lastPollAt: openSkyLiveState.lastPollAt,
       lastErrorAt: openSkyLiveState.lastErrorAt,
+      // ── diagnostic fields ──────────────────────────────────────────────────
+      authMode: OPENSKY_ENABLED ? (openSkyLiveState.lastAuthMode || 'public') : 'none',
+      hasClientId: !!(fileCredentials.credentialType === 'client_credentials' && fileCredentials.username),
+      hasClientSecret: !!(fileCredentials.credentialType === 'client_credentials' && fileCredentials.password),
+      lastFetchStatus: openSkyLiveState.lastRequestStatus !== null ? openSkyLiveState.lastRequestStatus : 'none',
+      lastFetchError: openSkyLiveState.lastErrorMessage || 'none',
+      lastFetchAt: openSkyLiveState.lastPollAt || 'none',
     },
   };
 }
@@ -3356,7 +3387,13 @@ async function pollOpenSkyFlights() {
   const effectiveUser = OPENSKY_USERNAME || fileCredentials.username;
   const effectivePass = OPENSKY_PASSWORD || fileCredentials.password;
   const authConfigured = !!(effectiveUser && effectivePass);
+  const usingFileCreds = !OPENSKY_USERNAME && !!fileCredentials.username;
   openSkyLiveState.authConfigured = authConfigured;
+  openSkyLiveState.lastAuthMode = !authConfigured
+    ? 'public'
+    : (usingFileCreds && fileCredentials.credentialType === 'client_credentials')
+      ? 'client_credentials'
+      : 'username_password';
   console.log('[RW Worldview] Polling OpenSky... running=' + openSkyLiveState.pollingRunning + ' authConfigured=' + authConfigured);
   try {
     const authHeader = authConfigured
@@ -3458,11 +3495,13 @@ async function pollOpenSkyFlights() {
     openSkyLiveState.flights = nextFlights;
     openSkyLiveState.lastPollAt = new Date().toISOString();
     openSkyLiveState.lastErrorAt = null;
+    openSkyLiveState.lastErrorMessage = null;
     broadcast('snapshot', snapshot());
   } catch (err) {
     const msg = 'OpenSky poll warning: ' + (err && err.message ? err.message : String(err));
     console.warn('[RW Worldview] ' + msg);
     openSkyLiveState.lastErrorAt = new Date().toISOString();
+    openSkyLiveState.lastErrorMessage = err && err.message ? err.message : String(err || 'unknown');
     openSkyLiveState.lastFetchedCount = 0;
     openSkyLiveState.lastNormalizedCount = 0;
     openSkyLiveState.lastVisibleCount = 0;
@@ -3554,7 +3593,8 @@ function loadOpenSkyFile() {
   if (fileUser && filePass) {
     fileCredentials.username = fileUser;
     fileCredentials.password = filePass;
-    console.log('[RW File] Credentials loaded for user: ' + fileUser);
+    fileCredentials.credentialType = payload.client_id ? 'client_credentials' : 'username_password';
+    console.log('[RW File] Credentials loaded (' + fileCredentials.credentialType + ') for user: ' + fileUser);
   }
 
   const states = Array.isArray(payload && payload.states) ? payload.states : [];
