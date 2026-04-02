@@ -1212,7 +1212,7 @@ controller.enableRotate = true;
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
     ssc.enableTilt   = true;
-    ssc.enableZoom   = true;
+    ssc.enableZoom   = false;
     ssc.enableTranslate = true;
     ssc.enableLook   = false;
     // Retained for reference / future programmatic zoom; has no effect while enableZoom is false.
