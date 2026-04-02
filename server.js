@@ -204,13 +204,77 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .viewport-btn.reset { border-color: #1f4e5a; color: #3ec9b8; }
     .viewport-readout { font-size: .6rem; color: #3a5868; background: #05090ecc; border: 1px solid #141e28; border-radius: 4px; padding: 2px 6px; width: fit-content; backdrop-filter: blur(4px); }
     #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
+  /* === RW NEW LAYOUT === */
+
+#sidebar {
+  position: absolute;
+  left: 0;
+  top: 60px;
+  width: 200px;
+  bottom: 0;
+  background: rgba(0,0,0,0.85);
+  padding: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#sidebar button {
+  background: #111;
+  color: #0ff;
+  border: 1px solid #0ff;
+  padding: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+#sidebar button:hover {
+  background: #0ff;
+  color: #000;
+}
+
+#worldview {
+  position: absolute;
+  left: 200px;
+  top: 60px;
+  right: 0;
+  bottom: 0;
+}
+
+.panel {
+  position: absolute;
+  left: 200px;
+  right: 0;
+  bottom: 0;
+  height: 240px;
+  background: rgba(0,0,0,0.92);
+  color: white;
+  display: none;
+  z-index: 30;
+  overflow: auto;
+  padding: 12px;
+  border-top: 1px solid #0ff;
+}
   </style>
 </head>
 <body>
 <header>
   <h1>RW Worldview</h1>
   <span id="status" class="disconnected">disconnected</span>
-  <div id="controls">
+ </header>
+ 
+  <div id="sidebar">
+<button onclick="togglePanel('events')">Event Stream</button>
+<button onclick="togglePanel('layers')">Data Layers</button>
+<button onclick="togglePanel('agents')">Agents</button>
+</div>
+
+<main id="worldview"></main>
+
+<div id="panel-events" class="panel"></div>
+<div id="panel-layers" class="panel"></div>
+<div id="panel-agents" class="panel"></div>
     <label class="ctrl-inline" for="speed-select">Speed
       <select id="speed-select" aria-label="Simulation speed">
         <option value="0.5">0.5x</option>
@@ -454,10 +518,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 <script>
 (function () {
   'use strict';
+function togglePanel(name) {
+document.querySelectorAll('.panel').forEach((p) => {
+p.style.display = 'none';
+});
 
+const panel = document.getElementById(`panel-${name}`);
+if (panel) {
+panel.style.display = 'block';
+}
+}
   const canvas  = document.getElementById('world');
   const ctx     = canvas.getContext('2d');
-  const cesiumContainer = document.getElementById('cesium-world');
+  const cesiumContainer = document.getElementById('worldview');
   const bootstrapRaw = document.getElementById('rw-bootstrap');
   const BOOTSTRAP = bootstrapRaw ? JSON.parse(bootstrapRaw.textContent || '{}') : {};
   const USE_CESIUM = true;
