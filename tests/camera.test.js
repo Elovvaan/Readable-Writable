@@ -101,6 +101,19 @@ describe('style preset ordering invariants', function () {
     assert.ok(src.includes('ssc.enableTilt   = true'), 'tilt must be enabled for orbital control');
   });
 
+  test('screenSpaceCameraController enableZoom is false', function () {
+    assert.ok(src.includes('ssc.enableZoom   = false'), 'zoom must be disabled on the Cesium globe');
+  });
+
+  test('setViewportZoom does not call cesiumViewer.camera.zoomBy', function () {
+    const fnIdx = src.indexOf('function setViewportZoom');
+    assert.ok(fnIdx !== -1, 'setViewportZoom must exist');
+    // Find the closing brace of setViewportZoom by locating the next top-level function
+    const nextFnIdx = src.indexOf('\n  function ', fnIdx + 1);
+    const body = src.slice(fnIdx, nextFnIdx === -1 ? fnIdx + 600 : nextFnIdx);
+    assert.ok(!body.includes('zoomBy'), 'setViewportZoom must not call camera.zoomBy when zoom is disabled');
+  });
+
   test('flyTo used for runFocusAction in Cesium path', function () {
     assert.ok(src.includes('cesiumViewer.camera.flyTo'), 'flyTo must be used for smooth focus animation');
   });
