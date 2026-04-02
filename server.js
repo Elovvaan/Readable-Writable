@@ -5,11 +5,12 @@ const crypto = require('crypto');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4001;
-const OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED === 'true';
-const OPENSKY_CLIENT_ID = process.env.OPENSKY_CLIENT_ID || '';
-const OPENSKY_CLIENT_SECRET = process.env.OPENSKY_CLIENT_SECRET || '';
-const OPENSKY_TOKEN_URL = process.env.OPENSKY_TOKEN_URL || 'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token';
-const OPENSKY_STATES_URL = process.env.OPENSKY_STATES_URL || 'https://opensky-network.org/api/states/all';
+const RW_OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED || 'true';
+const OPENSKY_ENABLED = RW_OPENSKY_ENABLED === 'true';
+const OPENSKY_PUBLIC_STATES_URL = 'https://opensky-network.org/api/states/all';
+const OPENSKY_STATES_URL = process.env.OPENSKY_STATES_URL || OPENSKY_PUBLIC_STATES_URL;
+const OPENSKY_USERNAME = process.env.RW_OPENSKY_USERNAME || process.env.OPENSKY_USERNAME || '';
+const OPENSKY_PASSWORD = process.env.RW_OPENSKY_PASSWORD || process.env.OPENSKY_PASSWORD || '';
 const OPENSKY_POLL_INTERVAL_MS = Math.max(5000, Number(process.env.RW_OPENSKY_POLL_INTERVAL_MS || 15000));
 const OPENSKY_GLOBE_MIN_Z = Number.isFinite(Number(process.env.RW_OPENSKY_GLOBE_MIN_Z))
   ? Number(process.env.RW_OPENSKY_GLOBE_MIN_Z)
@@ -39,7 +40,13 @@ const openSkyLiveState = {
   lastErrorAt: null,
   lastFetchedCount: 0,
   lastNormalizedCount: 0,
-  authConfigured: !!(OPENSKY_CLIENT_ID && OPENSKY_CLIENT_SECRET),
+  authConfigured: true,
+  pollingRunning: false,
+  lastRequestUrl: null,
+  lastRequestStatus: null,
+  lastModeUsed: 'public',
+  lastVisibleCount: 0,
+  lastDrawnCount: 0,
 };
 
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
@@ -60,6 +67,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .ctrl-toggle { display: inline-flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap; cursor: pointer; }
     .ctrl-toggle input { width: 13px; height: 13px; accent-color: #7cf; cursor: pointer; }
     .ctrl-inline { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .ctrl-compact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .62rem; color: #8ea4ba; }
+    .ctrl-compact input[type=range] { width: 58px; accent-color: #7cf; transition: filter 220ms ease, transform 220ms ease; }
+    .ctrl-compact input[type=range]:hover { filter: brightness(1.12); transform: translateY(-1px); }
+    .ctrl-compact select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .64rem; padding: 2px 4px; }
+    #style-indicator { border: 1px solid #324154; border-radius: 999px; font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; color: #9ec9f5; background: #101820; }
+    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .62rem; color: #8fb6d8; border: 1px solid #283849; border-radius: 6px; padding: 3px 7px; background: #0f161fcc; }
+    .telemetry-item { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+    .telemetry-label { color: #65839f; letter-spacing: .07em; }
+    .telemetry-value { color: #b9ddff; }
+    #telemetry-rec.live { color: #ff7878; text-shadow: 0 0 8px rgba(255,80,80,.4); animation: rec-pulse 1.4s ease-in-out infinite; }
+    @keyframes rec-pulse { 0%, 100% { opacity: .62; } 50% { opacity: 1; } }
+    .preset-row { display: inline-flex; align-items: center; gap: 5px; }
+    .preset-btn { border: 1px solid #2b3c4d; background: #141c25; color: #9ec8e8; border-radius: 999px; font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; padding: 3px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; }
+    .preset-btn:hover { background: #1a2938; border-color: #3f658a; color: #d8efff; transform: translateY(-1px); }
+    .preset-btn.active { background: #213246; color: #d2e7ff; border-color: #4f80b0; }
     #speed-select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 3px 6px; }
     #pause-btn { border: 1px solid #2e3a46; background: #151a22; color: #a9d6ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
     #pause-btn.active { background: #2b1e1e; color: #ffc2c2; border-color: #5a3333; }
@@ -68,6 +90,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #cesium-world, canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
     #cesium-world { z-index: 1; }
     canvas { z-index: 2; pointer-events: auto; }
+    #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .45; transition: opacity 320ms ease, background 320ms ease, filter 320ms ease; }
+    #fx-overlay .scanlines, #fx-overlay .noise, #fx-overlay .vignette, #fx-overlay .pixel-grid { position: absolute; inset: 0; }
+    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(220,255,255,.07) 0, rgba(220,255,255,.07) 1px, transparent 1px, transparent 3px); opacity: .2; }
+    #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.09) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .12; }
+    #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px); background-size: 10px 10px; opacity: .06; }
+    #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 48%, rgba(0,0,0,.58) 100%); opacity: .55; }
+    body[data-style-mode="crt"] { --style-accent: #8fd7ff; --style-shell: #90caf2; }
+    body[data-style-mode="nvg"] { --style-accent: #9dff95; --style-shell: #a3ffae; }
+    body[data-style-mode="flir"] { --style-accent: #ffd47f; --style-shell: #ffc983; }
+    header h1, .event-entry.agent, .viewport-readout, #style-indicator { color: var(--style-accent, #7cf); border-color: color-mix(in srgb, var(--style-accent, #7cf) 30%, #2e3a46); }
+    .panel-title, .selected-label, .stat-label { color: color-mix(in srgb, var(--style-shell, #9cb4cb) 48%, #3b4652); }
     aside { background: #111; border-left: 1px solid #222; display: flex; flex-direction: column; overflow: hidden; }
     .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #555; padding: 10px 14px 6px; border-bottom: 1px solid #1c1c1c; }
     #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #1a1a1a; display: grid; gap: 6px; }
@@ -97,12 +130,33 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #1c1c1c; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
     .stat-label { color: #555; }
     .stat-value { color: #ccc; font-family: monospace; text-align: right; }
+    .pod-lab { border-top: 1px solid #1c1c1c; padding: 10px 14px 14px; display: grid; gap: 10px; background: #0f1118; }
+    .pod-stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .pod-step-chip { border: 1px solid #2e3a46; border-radius: 999px; font-size: .62rem; text-align: center; padding: 3px 0; color: #9ab5cf; background: #121926; }
+    .pod-step-chip.active { border-color: #4f80b0; color: #d2e7ff; background: #1e2f45; }
+    .pod-step-chip.done { border-color: #2d6f52; color: #b6ffd2; background: #183127; }
+    .pod-lock { border: 1px dashed #52424a; border-radius: 6px; padding: 7px 8px; font-size: .68rem; color: #d8a9b8; background: #21151b; }
+    .pod-lock.unlocked { border-style: solid; border-color: #2d6f52; color: #b8ffd6; background: #14261d; }
+    .pod-lock.flash { animation: pod-unlock-flash 900ms ease; }
+    @keyframes pod-unlock-flash { 0% { box-shadow: 0 0 0 0 rgba(120,255,180,.65); } 100% { box-shadow: 0 0 0 14px rgba(120,255,180,0); } }
+    .pod-field { display: grid; gap: 4px; font-size: .66rem; color: #8ea4ba; }
+    .pod-field textarea { width: 100%; min-height: 52px; border: 1px solid #2e3a46; background: #151a22; color: #d7ebff; border-radius: 4px; padding: 6px; font-size: .68rem; resize: vertical; }
+    .pod-field textarea:disabled { opacity: .45; cursor: not-allowed; }
+    .pod-live-score { display: grid; gap: 4px; border: 1px solid #2e3a46; background: #121926; border-radius: 6px; padding: 7px 8px; }
+    .pod-live-score-row { display: flex; justify-content: space-between; font-size: .66rem; color: #a8c6e2; }
+    .pod-live-score strong { color: #ddf0ff; }
+    .pod-compare { border: 1px solid #3c4d63; border-radius: 6px; background: #131c28; padding: 7px 8px; font-size: .66rem; color: #b7d4ef; }
+    .pod-actions { display: flex; gap: 6px; }
+    .pod-actions button { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 8px; cursor: pointer; }
+    .pod-actions button:disabled { opacity: .45; cursor: not-allowed; }
     .type-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #2a2f3a; border-radius: 999px; padding: 2px 7px; }
     .type-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     #viewport-controls { position: absolute; top: 10px; left: 10px; display: grid; gap: 6px; z-index: 2; }
     .viewport-row { display: flex; gap: 4px; }
-    .viewport-btn { border: 1px solid #2e3a46; background: #151a22e0; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 7px; cursor: pointer; }
+    .viewport-btn { border: 1px solid #2e3a46; background: #151a22e0; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, transform 180ms ease; }
+    .viewport-btn:hover { background: #1b2633f0; border-color: #44627f; transform: translateY(-1px); }
     .viewport-readout { font-size: .62rem; color: #8ea4ba; background: #0d1219cc; border: 1px solid #253244; border-radius: 4px; padding: 2px 6px; width: fit-content; }
+    #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
   </style>
 </head>
 <body>
@@ -129,6 +183,32 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         <option value="4">4x</option>
       </select>
     </label>
+    <label class="ctrl-compact" for="style-mode-select">Style
+      <select id="style-mode-select" aria-label="Visual style mode">
+        <option value="crt" selected>CRT</option>
+        <option value="nvg">NVG</option>
+        <option value="flir">FLIR</option>
+      </select>
+    </label>
+    <span id="style-indicator">mode: crt</span>
+    <div id="telemetry-bar" aria-live="polite">
+      <span class="telemetry-item"><span class="telemetry-label">MODE</span><span class="telemetry-value" id="telemetry-mode">CRT</span></span>
+      <span class="telemetry-item"><span class="telemetry-label">REC</span><span class="telemetry-value" id="telemetry-rec">●</span></span>
+      <span class="telemetry-item"><span class="telemetry-label">LAT/LNG</span><span class="telemetry-value" id="telemetry-coords">--.--, --.--</span></span>
+      <span class="telemetry-item"><span class="telemetry-label">UTC</span><span class="telemetry-value" id="telemetry-utc">--:--:--</span></span>
+    </div>
+    <div class="preset-row">
+      <button class="preset-btn active" type="button" data-style-preset="tactical">Tactical</button>
+      <button class="preset-btn" type="button" data-style-preset="surveillance">Surveillance</button>
+      <button class="preset-btn" type="button" data-style-preset="cinematic">Cinematic</button>
+      <button class="preset-btn" type="button" data-style-preset="minimal">Minimal</button>
+    </div>
+    <label class="ctrl-compact" for="fx-bloom">Bloom<input id="fx-bloom" type="range" min="0" max="100" value="40"></label>
+    <label class="ctrl-compact" for="fx-sharpen">Sharp<input id="fx-sharpen" type="range" min="0" max="100" value="35"></label>
+    <label class="ctrl-compact" for="fx-noise">Noise<input id="fx-noise" type="range" min="0" max="100" value="28"></label>
+    <label class="ctrl-compact" for="fx-vignette">Vignette<input id="fx-vignette" type="range" min="0" max="100" value="40"></label>
+    <label class="ctrl-compact" for="fx-pixelation">Density<input id="fx-pixelation" type="range" min="0" max="100" value="22"></label>
+    <label class="ctrl-compact" for="fx-glow">Glow<input id="fx-glow" type="range" min="0" max="100" value="45"></label>
     <button id="pause-btn" type="button" aria-pressed="false">Pause Simulation</button>
   </div>
 </header>
@@ -150,6 +230,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
     <div id="cesium-world"></div>
     <canvas id="world"></canvas>
+    <div id="fx-overlay" aria-hidden="true">
+      <div class="scanlines"></div>
+      <div class="noise"></div>
+      <div class="pixel-grid"></div>
+      <div class="vignette"></div>
+    </div>
   </div>
   <aside>
     <div class="panel-title">Event Stream</div>
@@ -183,9 +269,48 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <span class="stat-label">Regions</span><span class="stat-value" id="s-regions">—</span>
       <span class="stat-label">FlightsDbg</span><span class="stat-value" id="s-flights-debug">—</span>
       <span class="stat-label">Layers</span><span class="stat-value" id="s-layers-debug">—</span>
+      <span class="stat-label">RenderDbg</span><span class="stat-value" id="s-render-debug">—</span>
       <span class="stat-label">Speed</span><span class="stat-value" id="s-speed">1x</span>
       <span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span>
     </div>
+    <div class="panel-title">Pod 1 Run Coach</div>
+    <section id="pod-lab" class="pod-lab">
+      <div class="pod-stepper" aria-label="Pod run steps">
+        <span class="pod-step-chip active" data-pod-step="1">1 Prompt</span>
+        <span class="pod-step-chip" data-pod-step="2">2 AI Gate</span>
+        <span class="pod-step-chip" data-pod-step="3">3 Verify</span>
+        <span class="pod-step-chip" data-pod-step="4">4 Compare</span>
+      </div>
+      <div id="pod-ai-lock" class="pod-lock">AI locked — submit your first answer to unlock.</div>
+      <label class="pod-field">Prompt
+        <textarea id="pod-user-answer" placeholder="Write your Pod 1 answer first..."></textarea>
+      </label>
+      <label class="pod-field">AI output (gated)
+        <textarea id="pod-ai-output" disabled placeholder="Locked until your first answer is submitted."></textarea>
+      </label>
+      <label class="pod-field">Verification: what's wrong
+        <textarea id="pod-verify-wrong" disabled placeholder="Required critique section #1"></textarea>
+      </label>
+      <label class="pod-field">Verification: what's missing
+        <textarea id="pod-verify-missing" disabled placeholder="Required critique section #2"></textarea>
+      </label>
+      <label class="pod-field">Verification: what would you change
+        <textarea id="pod-verify-change" disabled placeholder="Required critique section #3"></textarea>
+      </label>
+      <div id="pod-compare-box" class="pod-compare" hidden>
+        Compare moment (required): explicitly contrast your answer and AI output to continue.
+      </div>
+      <div class="pod-live-score" aria-live="polite">
+        <div class="pod-live-score-row"><span>Current step</span><strong id="pod-score-step">1 / 4</strong></div>
+        <div class="pod-live-score-row"><span>Structured critique</span><strong id="pod-score-critique">0 / 3</strong></div>
+        <div class="pod-live-score-row"><span>Comparison complete</span><strong id="pod-score-compare">No</strong></div>
+        <div class="pod-live-score-row"><span>Live score</span><strong id="pod-score-total">0</strong></div>
+      </div>
+      <div class="pod-actions">
+        <button id="pod-unlock-ai-btn" type="button">Unlock AI</button>
+        <button id="pod-compare-btn" type="button" disabled>Complete Compare</button>
+      </div>
+    </section>
   </aside>
 </main>
 <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
@@ -208,7 +333,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let cesiumGoogleTileset = null;
   const cesiumEntityRefs = { agents: {}, regions: {}, trails: {} };
   let cesiumSelectionHandler = null;
-  let lastCesiumRenderCounts = { entities: 0, regions: 0 };
+  let cesiumSafetyViewApplied = false;
+  let lastCesiumRenderCounts = {
+    entities: 0,
+    regions: 0,
+    satellites: 0,
+    flightsDrawn: 0,
+    earthInitialized: false,
+    tilesLoaded: false,
+    tilesState: 'pending',
+    tilesError: null,
+  };
   let lastCesiumDiagAt = 0;
   const log     = document.getElementById('event-log');
   const eventSearchEl = document.getElementById('event-search');
@@ -240,6 +375,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const panUpBtnEl = document.getElementById('pan-up-btn');
   const panDownBtnEl = document.getElementById('pan-down-btn');
   const viewportReadoutEl = document.getElementById('viewport-readout');
+  const styleModeSelectEl = document.getElementById('style-mode-select');
+  const styleIndicatorEl = document.getElementById('style-indicator');
+  const telemetryModeEl = document.getElementById('telemetry-mode');
+  const telemetryRecEl = document.getElementById('telemetry-rec');
+  const telemetryCoordsEl = document.getElementById('telemetry-coords');
+  const telemetryUtcEl = document.getElementById('telemetry-utc');
+  const presetButtons = Array.from(document.querySelectorAll('[data-style-preset]'));
+  const fxOverlayEl = document.getElementById('fx-overlay');
+  const fxBloomEl = document.getElementById('fx-bloom');
+  const fxSharpenEl = document.getElementById('fx-sharpen');
+  const fxNoiseEl = document.getElementById('fx-noise');
+  const fxVignetteEl = document.getElementById('fx-vignette');
+  const fxPixelationEl = document.getElementById('fx-pixelation');
+  const fxGlowEl = document.getElementById('fx-glow');
+  const podUserAnswerEl = document.getElementById('pod-user-answer');
+  const podAiOutputEl = document.getElementById('pod-ai-output');
+  const podVerifyWrongEl = document.getElementById('pod-verify-wrong');
+  const podVerifyMissingEl = document.getElementById('pod-verify-missing');
+  const podVerifyChangeEl = document.getElementById('pod-verify-change');
+  const podAiLockEl = document.getElementById('pod-ai-lock');
+  const podCompareBoxEl = document.getElementById('pod-compare-box');
+  const podUnlockAiBtnEl = document.getElementById('pod-unlock-ai-btn');
+  const podCompareBtnEl = document.getElementById('pod-compare-btn');
+  const podScoreStepEl = document.getElementById('pod-score-step');
+  const podScoreCritiqueEl = document.getElementById('pod-score-critique');
+  const podScoreCompareEl = document.getElementById('pod-score-compare');
+  const podScoreTotalEl = document.getElementById('pod-score-total');
+  const podStepChipEls = Array.from(document.querySelectorAll('[data-pod-step]'));
   const AGENT_RENDER_RADIUS = 5;
   const AGENT_HIT_RADIUS = 11;
   const TRAIL_MAX_POINTS = 10;
@@ -267,12 +430,85 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const GLOBE_OVERLAY_DEBUG = false;
   const GLOBE_DEBUG_LOG_INTERVAL_MS = 1500;
   const SNAPSHOT_BASE_INTERVAL_MS = 4000;
+  const podState = {
+    aiUnlocked: false,
+    compared: false,
+  };
+
+  function getStructuredCritiqueCount() {
+    return [podVerifyWrongEl, podVerifyMissingEl, podVerifyChangeEl]
+      .filter((el) => el && el.value.trim().length > 0).length;
+  }
+
+  function getPodCurrentStep() {
+    if (!podState.aiUnlocked) return 1;
+    if (getStructuredCritiqueCount() < 3) return 3;
+    if (!podState.compared) return 4;
+    return 4;
+  }
+
+  function syncPodRunCoachUI() {
+    const hasUserAnswer = podUserAnswerEl.value.trim().length > 0;
+    const critiqueCount = getStructuredCritiqueCount();
+    const hasAiText = podAiOutputEl.value.trim().length > 0;
+    podUnlockAiBtnEl.disabled = !hasUserAnswer || podState.aiUnlocked;
+    podAiOutputEl.disabled = !podState.aiUnlocked;
+    podVerifyWrongEl.disabled = !podState.aiUnlocked;
+    podVerifyMissingEl.disabled = !podState.aiUnlocked;
+    podVerifyChangeEl.disabled = !podState.aiUnlocked;
+    podCompareBoxEl.hidden = !(podState.aiUnlocked && critiqueCount === 3 && hasAiText);
+    podCompareBtnEl.disabled = !(podState.aiUnlocked && critiqueCount === 3 && hasAiText) || podState.compared;
+
+    podAiLockEl.textContent = podState.aiUnlocked
+      ? 'AI unlocked — now verify and compare before completion.'
+      : 'AI locked — submit your first answer to unlock.';
+    podAiLockEl.classList.toggle('unlocked', podState.aiUnlocked);
+
+    const currentStep = getPodCurrentStep();
+    podScoreStepEl.textContent = String(currentStep) + ' / 4';
+    podScoreCritiqueEl.textContent = String(critiqueCount) + ' / 3';
+    podScoreCompareEl.textContent = podState.compared ? 'Yes' : 'No';
+    const totalScore = (podState.aiUnlocked ? 30 : 0) + (critiqueCount * 20) + (podState.compared ? 10 : 0);
+    podScoreTotalEl.textContent = String(totalScore);
+
+    podStepChipEls.forEach((chip) => {
+      const stepNum = Number(chip.getAttribute('data-pod-step'));
+      chip.classList.toggle('active', stepNum === currentStep);
+      chip.classList.toggle('done', stepNum < currentStep || (stepNum === 4 && podState.compared));
+    });
+  }
+
+  podUnlockAiBtnEl.addEventListener('click', () => {
+    if (podState.aiUnlocked || podUserAnswerEl.value.trim().length === 0) return;
+    podState.aiUnlocked = true;
+    podAiOutputEl.value = 'AI suggestion: tighten your thesis, include one counterpoint, and make your next step explicit.';
+    podAiLockEl.classList.add('flash');
+    window.setTimeout(() => podAiLockEl.classList.remove('flash'), 900);
+    syncPodRunCoachUI();
+  });
+
+  podCompareBtnEl.addEventListener('click', () => {
+    if (!podState.aiUnlocked || getStructuredCritiqueCount() < 3) return;
+    podState.compared = true;
+    syncPodRunCoachUI();
+  });
+
+  [podUserAnswerEl, podAiOutputEl, podVerifyWrongEl, podVerifyMissingEl, podVerifyChangeEl].forEach((el) => {
+    el.addEventListener('input', () => {
+      if (el === podUserAnswerEl && podState.compared) podState.compared = false;
+      syncPodRunCoachUI();
+    });
+  });
+  syncPodRunCoachUI();
   const VIEWPORT_ZOOM_MIN = 0.5;
   const VIEWPORT_ZOOM_MAX = 3;
   const VIEWPORT_ZOOM_STEP = 0.2;
   const VIEWPORT_PAN_STEP = 36;
   const CAMERA_LERP_FACTOR = 0.18;
   const CAMERA_EPSILON_PX = 0.6;
+  const CESIUM_PICK_RADIUS_PX = 18;
+  const CESIUM_FOLLOW_LERP = 0.16;
+  const CESIUM_FOCUS_LERP = 0.24;
   const REGION_ACTIVITY_WINDOW_TICKS = 24;
   const REGION_ACTIVE_EVENT_THRESHOLD = 2;
   const REGION_HOT_EVENT_THRESHOLD = 5;
@@ -302,15 +538,28 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let focusEffectUntil = 0;
   let eventSearchQuery = '';
   let activeEventFilter = 'all';
+  let styleMode = 'crt';
+  const STYLE_PRESETS = {
+    tactical: { bloom: 48, sharpen: 44, noise: 32, vignette: 50, pixelation: 28, glow: 54 },
+    surveillance: { bloom: 30, sharpen: 64, noise: 24, vignette: 62, pixelation: 34, glow: 36 },
+    cinematic: { bloom: 72, sharpen: 28, noise: 40, vignette: 70, pixelation: 18, glow: 66 },
+    minimal: { bloom: 18, sharpen: 40, noise: 8, vignette: 26, pixelation: 8, glow: 20 },
+  };
+  let activeStylePreset = 'tactical';
+  let styleFx = { ...STYLE_PRESETS.tactical };
   let viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
   let followTargetEnabled = false;
   let cameraLerpTarget = null;
+  let cesiumCameraLerpState = null;
+  let cesiumCameraMoveInternal = false;
+  let cesiumFollowDisengageMutedUntil = 0;
   let latestRegionIntelligence = {};
   let lastGlobeDebugLogAt = 0;
+  let styleAnimationLoopActive = false;
   let globeOverlayDiagnostics = null;
   let globeRegionOverlaySuppressed = false;
-  let openskyStatus = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null };
-  let lastFlightDebugCounts = { merged: 0, visible: 0, drawn: 0 };
+  let openskyStatus = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null };
+  let lastFlightDebugCounts = { merged: 0, visible: 0, drawn: 0, errors: 0 };
   let lastLayerDiagnostics = {};
 
   const TYPE_STYLE = {
@@ -318,6 +567,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     flight: { fill: '#ffb77d', stroke: '#ffd2ad', trail: '#ffb77d55', trailSelected: '#ffe0c4cc' },
     satellite: { fill: '#d0a3ff', stroke: '#e2c7ff', trail: '#d0a3ff55', trailSelected: '#ecdfffcc' },
     other: { fill: '#8ea0b4', stroke: '#bac7d6', trail: '#8ea0b455', trailSelected: '#d6deebcc' },
+  };
+  const TYPE_STYLE_BY_MODE = {
+    crt: {
+      agent: { fill: '#8fd6ff', stroke: '#c5e9ff', trail: '#8fd6ff57', trailSelected: '#d4efffcc' },
+      flight: { fill: '#ffc38f', stroke: '#ffe2bd', trail: '#ffc38f57', trailSelected: '#ffedd6cc' },
+      satellite: { fill: '#d6b2ff', stroke: '#ead7ff', trail: '#d6b2ff57', trailSelected: '#f0e6ffcc' },
+      other: { fill: '#93a6b8', stroke: '#c2cfdb', trail: '#93a6b857', trailSelected: '#dde4ebcc' },
+    },
+    nvg: {
+      agent: { fill: '#93ff79', stroke: '#d5ffc5', trail: '#93ff7958', trailSelected: '#e7ffd9d9' },
+      flight: { fill: '#bcff70', stroke: '#e2ffc7', trail: '#bcff7052', trailSelected: '#f0ffd9d2' },
+      satellite: { fill: '#75ff95', stroke: '#c7ffd7', trail: '#75ff954c', trailSelected: '#e1ffe8d0' },
+      other: { fill: '#6cb484', stroke: '#bde6c8', trail: '#6cb4844f', trailSelected: '#d9efe0c6' },
+    },
+    flir: {
+      agent: { fill: '#ffe88f', stroke: '#fff5c5', trail: '#ffe88f66', trailSelected: '#fff9dddb' },
+      flight: { fill: '#ff9348', stroke: '#ffbb8d', trail: '#ff934866', trailSelected: '#ffd4b8db' },
+      satellite: { fill: '#ff5f62', stroke: '#ff9b9d', trail: '#ff5f6266', trailSelected: '#ffc5c7db' },
+      other: { fill: '#5c5474', stroke: '#9f94c8', trail: '#5c54745a', trailSelected: '#c8c0e2c9' },
+    },
   };
 
   const GLOBE_CONTINENT_OUTLINES = [
@@ -427,6 +696,131 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
   }
 
+  function styleTuningByMode(mode) {
+    if (mode === 'nvg') return { tint: 'rgba(32, 255, 96, 0.34)', sat: 0.38, hue: 76, baseBright: 0.95, baseContrast: 1.44, scanline: 0.06, vignetteBoost: 0.22, overlayBlend: 'screen' };
+    if (mode === 'flir') return { tint: 'linear-gradient(155deg, rgba(14,18,34,.78) 0%, rgba(61,31,83,.42) 42%, rgba(255,106,42,.36) 84%, rgba(255,226,149,.24) 100%)', sat: 1.78, hue: -18, baseBright: 0.88, baseContrast: 1.52, scanline: 0.02, vignetteBoost: 0.18, overlayBlend: 'hard-light' };
+    return { tint: 'rgba(126, 211, 255, 0.18)', sat: 0.78, hue: -6, baseBright: 0.97, baseContrast: 1.18, scanline: 0.26, vignetteBoost: 0.15, overlayBlend: 'screen' };
+  }
+
+  function updateTelemetryBar() {
+    const now = new Date();
+    telemetryUtcEl.textContent = now.toISOString().slice(11, 19);
+    telemetryModeEl.textContent = styleMode.toUpperCase();
+    telemetryRecEl.classList.toggle('live', !paused);
+    const anchor = (selectedAgentId && state.agents[selectedAgentId]) || Object.values(state.agents || {})[0] || null;
+    const point = anchor ? getAgentBasePoint(anchor) : null;
+    telemetryCoordsEl.textContent = point && Number.isFinite(point.lat) && Number.isFinite(point.lng)
+      ? (point.lat.toFixed(3) + ', ' + point.lng.toFixed(3))
+      : '--.--, --.--';
+  }
+
+  function syncPresetUi() {
+    for (const btn of presetButtons) {
+      btn.classList.toggle('active', btn.dataset.stylePreset === activeStylePreset);
+    }
+  }
+
+  function applyTypeStyleByMode(mode) {
+    const modeStyles = TYPE_STYLE_BY_MODE[mode] || TYPE_STYLE_BY_MODE.crt;
+    for (const key of Object.keys(TYPE_STYLE)) {
+      if (!modeStyles[key]) continue;
+      TYPE_STYLE[key] = { ...modeStyles[key] };
+    }
+  }
+
+  function setStylePreset(name, silent) {
+    if (!Object.prototype.hasOwnProperty.call(STYLE_PRESETS, name)) return;
+    activeStylePreset = name;
+    styleFx = { ...STYLE_PRESETS[name] };
+    fxBloomEl.value = String(styleFx.bloom);
+    fxSharpenEl.value = String(styleFx.sharpen);
+    fxNoiseEl.value = String(styleFx.noise);
+    fxVignetteEl.value = String(styleFx.vignette);
+    fxPixelationEl.value = String(styleFx.pixelation);
+    fxGlowEl.value = String(styleFx.glow);
+    syncPresetUi();
+    applyVisualStyle();
+    if (!silent) pushOperatorEvent('operator style preset set to ' + name);
+  }
+
+  function applyVisualStyle() {
+    const tuning = styleTuningByMode(styleMode);
+    const bloomPx = (styleFx.bloom / 100) * 4.2;
+    const sharpenEmphasis = 1 + ((styleFx.sharpen / 100) * 0.45);
+    const glowStrength = styleFx.glow / 100;
+    const brightness = tuning.baseBright + glowStrength * 0.16 + (styleFx.bloom / 100) * 0.08;
+    const contrast = tuning.baseContrast + (styleFx.sharpen / 100) * 0.22;
+    const saturate = Math.max(0.2, tuning.sat + (glowStrength * 0.22));
+    const hueRotate = tuning.hue;
+    const flicker = (styleMode === 'crt')
+      ? ((Math.sin(Date.now() / 780) + 1) / 2) * 0.06
+      : (styleMode === 'nvg' ? 0.02 : 0.01);
+
+    document.body.setAttribute('data-style-mode', styleMode);
+    applyTypeStyleByMode(styleMode);
+    styleIndicatorEl.textContent = 'mode: ' + styleMode;
+    styleIndicatorEl.style.boxShadow = '0 0 ' + (6 + glowStrength * 12).toFixed(1) + 'px rgba(120,255,220,' + (0.12 + glowStrength * 0.22).toFixed(2) + ')';
+    const sceneFilter = 'brightness(' + (brightness + flicker).toFixed(3) + ') contrast(' + contrast.toFixed(3) + ') saturate(' + saturate.toFixed(3) + ') hue-rotate(' + hueRotate.toFixed(1) + 'deg)';
+    const bloomColor = styleMode === 'nvg'
+      ? 'rgba(114,255,141,' + (0.1 + glowStrength * 0.28).toFixed(2) + ')'
+      : (styleMode === 'flir'
+        ? 'rgba(255,164,89,' + (0.1 + glowStrength * 0.24).toFixed(2) + ')'
+        : 'rgba(160,255,220,' + (0.08 + glowStrength * 0.2).toFixed(2) + ')');
+    cesiumContainer.style.filter = sceneFilter + ' drop-shadow(0 0 ' + bloomPx.toFixed(2) + 'px ' + bloomColor + ')';
+    canvas.style.filter = sceneFilter;
+
+    const scan = fxOverlayEl.querySelector('.scanlines');
+    const noise = fxOverlayEl.querySelector('.noise');
+    const vignette = fxOverlayEl.querySelector('.vignette');
+    const pixel = fxOverlayEl.querySelector('.pixel-grid');
+    fxOverlayEl.style.background = tuning.tint.startsWith('linear-gradient')
+      ? tuning.tint
+      : ('linear-gradient(120deg, transparent 0%, ' + tuning.tint + ' 100%)');
+    fxOverlayEl.style.mixBlendMode = tuning.overlayBlend;
+    fxOverlayEl.style.opacity = (0.24 + glowStrength * 0.42 + flicker).toFixed(3);
+    scan.style.opacity = (tuning.scanline + (styleFx.bloom / 100) * 0.08 + flicker * 0.5).toFixed(3);
+    scan.style.backgroundSize = '100% ' + (styleMode === 'crt' ? '2px' : '3px');
+    noise.style.opacity = (styleFx.noise / 100 * (styleMode === 'flir' ? 0.28 : 0.34)).toFixed(3);
+    noise.style.filter = 'blur(' + ((100 - styleFx.sharpen) / 100 * 0.8).toFixed(2) + 'px)';
+    vignette.style.opacity = Math.min(0.95, (styleFx.vignette / 100 * 0.82) + tuning.vignetteBoost).toFixed(3);
+    vignette.style.background = styleMode === 'flir'
+      ? 'radial-gradient(circle at center, rgba(0,0,0,.05) 38%, rgba(0,0,0,.78) 100%)'
+      : 'radial-gradient(circle at center, transparent 45%, rgba(0,0,0,.62) 100%)';
+    const pixelSize = (4 + (styleFx.pixelation / 100) * 18).toFixed(1) + 'px';
+    pixel.style.backgroundSize = pixelSize + ' ' + pixelSize;
+    pixel.style.opacity = (styleFx.pixelation / 100 * (activeStylePreset === 'minimal' ? 0.08 : 0.2)).toFixed(3);
+
+    // lightweight faux sharpen by balancing global contrast without replacing renderer.
+    document.documentElement.style.setProperty('--rw-sharpen-emphasis', sharpenEmphasis.toFixed(3));
+    updateTelemetryBar();
+  }
+
+  function ensureStyleAnimationLoop() {
+    if (styleAnimationLoopActive) return;
+    styleAnimationLoopActive = true;
+    function tickStyleAnimation() {
+      applyVisualStyle();
+      requestAnimationFrame(tickStyleAnimation);
+    }
+    requestAnimationFrame(tickStyleAnimation);
+  }
+
+  function getRegionPaletteByMode(status, isSelected) {
+    if (styleMode === 'flir') {
+      if (status === 'HOT') return { stroke: '#ffb36bcc', strokeBold: '#ffd49fcc', fill: isSelected ? '#ff9b4a3a' : '#ff9b4a1f', label: '#ffd18e' };
+      if (status === 'ACTIVE') return { stroke: '#c482ffbb', strokeBold: '#d7a7ffcc', fill: isSelected ? '#8a5dca36' : '#8a5dca1e', label: '#e4c4ff' };
+      return { stroke: '#625b84aa', strokeBold: '#857ca7bb', fill: isSelected ? '#47405f38' : '#47405f20', label: '#a9a0cc' };
+    }
+    if (styleMode === 'nvg') {
+      if (status === 'HOT') return { stroke: '#c8ff8ecc', strokeBold: '#deffacdd', fill: isSelected ? '#8cd8632f' : '#8cd8631b', label: '#dbffb6' };
+      if (status === 'ACTIVE') return { stroke: '#97ff84cc', strokeBold: '#b8ff9edd', fill: isSelected ? '#74cb6430' : '#74cb641a', label: '#c9ffb2' };
+      return { stroke: '#85b89499', strokeBold: '#9ccfabaa', fill: isSelected ? '#5b7f6730' : '#5b7f6718', label: '#b1dcbe' };
+    }
+    if (status === 'HOT') return { stroke: '#ff8e8ecc', strokeBold: '#ff9b9bcc', fill: isSelected ? '#ff8e8e26' : '#ff8e8e1d', label: '#ffc57f' };
+    if (status === 'ACTIVE') return { stroke: '#fccb88cc', strokeBold: '#ffd293dd', fill: isSelected ? '#fccb8824' : '#fccb881b', label: '#ffc57f' };
+    return { stroke: '#a8b0cc88', strokeBold: '#b8d2ffaa', fill: isSelected ? '#8ec5ff22' : '#8ec5ff14', label: '#ffc57f' };
+  }
+
   function renderBaseSurface(width, height) {
     drawGlobeBase(width, height);
     drawGlobeContinents(width, height);
@@ -448,40 +842,62 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.scene.backgroundColor = Cesium.Color.BLACK;
     cesiumViewer.scene.globe.show = true;
     cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0b1220');
-    cesiumViewer.scene.globe.depthTestAgainstTerrain = false;
+    cesiumViewer.scene.globe.depthTestAgainstTerrain = true;
     cesiumViewer.scene.skyAtmosphere.show = true;
     cesiumViewer.scene.sun.show = false;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
     try {
       if (BOOTSTRAP.googleMapsApiKey) {
-        const tileset = (typeof Cesium.createGooglePhotorealistic3DTileset === 'function')
-          ? await Cesium.createGooglePhotorealistic3DTileset({ key: BOOTSTRAP.googleMapsApiKey })
-          : await Cesium.Cesium3DTileset.fromUrl(
-              GOOGLE_TILESET_ROOT + '?key=' + encodeURIComponent(BOOTSTRAP.googleMapsApiKey)
-            );
+        console.info('[RW Cesium] Google Photorealistic 3D Tiles request started');
+        lastCesiumRenderCounts.tilesState = 'loading';
+        lastCesiumRenderCounts.tilesError = null;
+        const tileset = await Cesium.Cesium3DTileset.fromUrl(
+          GOOGLE_TILESET_ROOT + '?key=' + encodeURIComponent(BOOTSTRAP.googleMapsApiKey)
+        );
         cesiumViewer.scene.primitives.add(tileset);
         cesiumGoogleTileset = tileset;
         if (typeof tileset.readyPromise?.then === 'function') {
           tileset.readyPromise.then(function () {
             if (cesiumGoogleTileset === tileset) {
               console.info('[RW Cesium] Google Photorealistic 3D Tiles ready');
+              lastCesiumRenderCounts.tilesLoaded = true;
+              lastCesiumRenderCounts.tilesState = 'ok';
+              lastCesiumRenderCounts.tilesError = null;
             }
           }).catch(function (err) {
             console.error('[RW Cesium] Google Photorealistic 3D Tiles readyPromise failed', err);
+            lastCesiumRenderCounts.tilesLoaded = false;
+            lastCesiumRenderCounts.tilesState = 'failed';
+            lastCesiumRenderCounts.tilesError = (err && err.message) ? err.message : String(err || 'unknown');
           });
         }
         console.info('[RW Cesium] Google Photorealistic 3D Tiles loaded');
+        lastCesiumRenderCounts.tilesLoaded = true;
+        lastCesiumRenderCounts.tilesState = 'ok';
+        lastCesiumRenderCounts.tilesError = null;
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-95, 40, 20000000),
+        });
       } else {
+        console.error('Missing GOOGLE_MAPS_API_KEY');
         console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; using OpenStreetMap fallback imagery');
+        lastCesiumRenderCounts.tilesLoaded = false;
+        lastCesiumRenderCounts.tilesState = 'missing-key';
+        lastCesiumRenderCounts.tilesError = 'Missing GOOGLE_MAPS_API_KEY';
         cesiumViewer.imageryLayers.removeAll();
         cesiumViewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
           url: 'https://tile.openstreetmap.org/',
         }));
       }
+      lastCesiumRenderCounts.earthInitialized = true;
+      lastCesiumRenderCounts.tilesLoaded = !!cesiumGoogleTileset;
       console.info('[RW Cesium] initialized');
     } catch (err) {
       console.error('[RW Cesium] init failed', err);
+      lastCesiumRenderCounts.tilesLoaded = false;
+      lastCesiumRenderCounts.tilesState = 'failed';
+      lastCesiumRenderCounts.tilesError = (err && err.message) ? err.message : String(err || 'unknown');
     }
     bindCesiumSelection();
     draw();
@@ -491,15 +907,51 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!cesiumViewer || cesiumSelectionHandler) return;
     cesiumSelectionHandler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
     cesiumSelectionHandler.setInputAction(function (click) {
-      const picked = cesiumViewer.scene.pick(click.position);
-      if (picked && picked.id && picked.id.rwMeta) {
-        const meta = picked.id.rwMeta;
+      const meta = pickCesiumTarget(click.position);
+      if (meta) {
         if (meta.kind === 'agent') { selectAgent(meta.id); return; }
         if (meta.kind === 'region') { selectRegion(meta.id); return; }
       }
       selectAgent(null);
       selectRegion(null);
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    if (cesiumViewer && cesiumViewer.camera) {
+      cesiumViewer.camera.moveStart.addEventListener(function () {
+        if (!followTargetEnabled) return;
+        if (Date.now() < cesiumFollowDisengageMutedUntil) return;
+        if (cesiumCameraMoveInternal) return;
+        disableFollowTarget('manual camera control');
+      });
+    }
+  }
+
+  function pickCesiumTarget(clickPosition) {
+    if (!cesiumViewer || !clickPosition) return null;
+    const picks = cesiumViewer.scene.drillPick(clickPosition, 10) || [];
+    for (const picked of picks) {
+      if (picked && picked.id && picked.id.rwMeta) return picked.id.rwMeta;
+    }
+    let nearest = null;
+    let nearestDistSq = Infinity;
+    const refs = [
+      ...Object.values(cesiumEntityRefs.agents || {}),
+      ...Object.values(cesiumEntityRefs.regions || {}),
+    ];
+    for (const ref of refs) {
+      if (!ref || !ref.position || !ref.rwMeta) continue;
+      const pos = Cesium.Property.getValueOrUndefined(ref.position, cesiumViewer.clock.currentTime);
+      if (!pos) continue;
+      const canvasPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(cesiumViewer.scene, pos);
+      if (!canvasPos) continue;
+      const dx = clickPosition.x - canvasPos.x;
+      const dy = clickPosition.y - canvasPos.y;
+      const distSq = (dx * dx) + (dy * dy);
+      if (distSq < nearestDistSq) {
+        nearestDistSq = distSq;
+        nearest = ref.rwMeta;
+      }
+    }
+    return nearestDistSq <= (CESIUM_PICK_RADIUS_PX * CESIUM_PICK_RADIUS_PX) ? nearest : null;
   }
 
   function toLatLngWithFallback(entity) {
@@ -511,94 +963,184 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function syncCesiumScene(nowMs) {
     if (!cesiumViewer) return;
-    const seenAgents = {};
-    const seenRegions = {};
-    const seenTrails = {};
     let entitiesVisible = 0;
     let regionsVisible = 0;
+    let flightsMerged = 0;
     let flightsVisibleAfterFilters = 0;
     let flightsDrawn = 0;
-    let flightsMerged = 0;
-    for (const a of Object.values(state.agents || {})) {
+    let flightsErrored = 0;
+    let satellitesRendered = 0;
+    const allAgents = Object.values(state.agents || {});
+    const flights = allAgents.filter(function (a) { return getEntityType(a) === 'flight'; });
+    flightsMerged = flights.length;
+    if (flights.length) {
+      console.log('FLIGHT SAMPLE', flights[0]);
+    }
+
+    cesiumViewer.entities.removeAll();
+    cesiumEntityRefs.agents = {};
+    cesiumEntityRefs.regions = {};
+    cesiumEntityRefs.trails = {};
+
+    viewerCameraSafetyCheck();
+
+    const flightsLayerBlocked = !layerState.liveFlights;
+    if (flightsLayerBlocked) {
+      console.log('Flights skipped due to layer toggle');
+    }
+    for (const a of allAgents) {
       const entityType = getEntityType(a);
       const forceRender = shouldForceRenderOpenSkyFlight(a);
       if (entityType === 'flight') flightsMerged++;
       if (!(forceRender || (showAgents && isEntityTypeVisible(entityType)))) continue;
+      if (!showAgents || !isEntityTypeVisible(entityType)) continue;
       if (entityType === 'flight') flightsVisibleAfterFilters++;
       const p = getEntityWorldPoint(a, nowMs);
       const ll = toLatLngWithFallback(p);
       if (!ll) continue;
-      seenAgents[a.id] = true;
-      let marker = cesiumEntityRefs.agents[a.id];
-      if (!marker) {
-        marker = cesiumViewer.entities.add({
-          id: 'agent-' + a.id,
-          rwMeta: { kind: 'agent', id: a.id },
-          label: { text: a.id, font: '12px monospace', fillColor: Cesium.Color.WHITE, pixelOffset: new Cesium.Cartesian2(10, -8), show: true },
-        });
-        cesiumEntityRefs.agents[a.id] = marker;
-      }
-      const height = entityType === 'satellite' ? 400000 : (entityType === 'flight' ? Math.max(500, Number(a.altitude) || 2000) : 10);
-      marker.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, height);
       const isFlight = entityType === 'flight';
-      marker.point = {
-        pixelSize: isFlight ? (selectedAgentId === a.id ? 16 : 12) : (selectedAgentId === a.id ? 12 : 8),
-        color: Cesium.Color.fromCssColorString(isFlight ? '#ffd24d' : getEntityTypeStyle(a).fill),
-        outlineColor: Cesium.Color.WHITE,
-        outlineWidth: selectedAgentId === a.id ? 2 : 1,
-      };
-      marker.show = true;
-      entitiesVisible++;
-      if (isFlight) flightsDrawn++;
+      const isSatellite = entityType === 'satellite';
+      const isSelected = selectedAgentId === a.id;
+      const typeStyle = getEntityTypeStyle(a);
+      if (isFlight && flightsLayerBlocked) continue;
+      if (isFlight && (!Number.isFinite(ll.lat) || !Number.isFinite(ll.lng))) continue;
+      const entityId = isFlight ? 'flight-' + a.id : 'agent-' + a.id;
+      try {
+        let marker;
+        if (isFlight) {
+          const rawAltitude = Number(a.altitude);
+          const safeAltitude = Number.isFinite(rawAltitude) ? Math.max(0, rawAltitude) : 10000;
+          const pointColor = isSelected ? '#ffe8a8' : '#67f5ff';
+          marker = cesiumViewer.entities.add({
+            id: entityId,
+            rwMeta: { kind: 'agent', id: a.id },
+            position: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, safeAltitude),
+            point: {
+              pixelSize: isSelected ? 15 : 10,
+              color: Cesium.Color.fromCssColorString(pointColor),
+              outlineColor: Cesium.Color.WHITE,
+              outlineWidth: isSelected ? 2 : 1,
+            },
+          });
+          flightsDrawn++;
+        } else {
+          const height = isSatellite ? 400000 : 10;
+          marker = cesiumViewer.entities.add({
+            id: entityId,
+            rwMeta: { kind: 'agent', id: a.id },
+          });
+          marker.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, height);
+          marker.point = {
+            pixelSize: isSatellite ? (isSelected ? 14 : 10) : (isSelected ? 12 : 8),
+            color: Cesium.Color.fromCssColorString(isSelected ? '#e8f5ff' : (isSatellite ? '#f0b7ff' : typeStyle.fill)),
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: isSelected ? 2 : 1,
+          };
+          marker.label = {
+            text: a.id,
+            font: '12px monospace',
+            fillColor: Cesium.Color.WHITE,
+            pixelOffset: new Cesium.Cartesian2(10, -8),
+          };
+        }
+        cesiumEntityRefs.agents[a.id] = marker;
+        marker.show = true;
+        entitiesVisible++;
+        if (isSatellite) satellitesRendered++;
+        if (isSelected) {
+          const selectedPulseColor = Cesium.Color.fromCssColorString(isFlight ? '#ffe8a8' : '#9fd9ff');
+          cesiumViewer.entities.add({
+            id: 'selection-ring-' + a.id,
+            rwMeta: { kind: 'agent', id: a.id },
+            position: marker.position,
+            ellipse: {
+              semiMajorAxis: new Cesium.CallbackProperty(function () {
+                return isSatellite ? 220000 : (isFlight ? 45000 + (Math.sin(Date.now() / 250) * 5000) : 28000 + (Math.sin(Date.now() / 250) * 3000));
+              }, false),
+              semiMinorAxis: new Cesium.CallbackProperty(function () {
+                return isSatellite ? 220000 : (isFlight ? 45000 + (Math.sin(Date.now() / 250) * 5000) : 28000 + (Math.sin(Date.now() / 250) * 3000));
+              }, false),
+              material: selectedPulseColor.withAlpha(0.12),
+              outline: true,
+              outlineColor: selectedPulseColor.withAlpha(0.9),
+              outlineWidth: 2,
+              height: isSatellite ? 380000 : (isFlight ? Math.max(1500, Number(a.altitude) || 10000) : 0),
+            },
+          });
+        }
+      } catch (err) {
+        if (isFlight) {
+          flightsErrored++;
+          const rawAltitude = Number(a.altitude);
+          const safeAltitude = Number.isFinite(rawAltitude) ? Math.max(0, rawAltitude) : 10000;
+          console.error('[RW Cesium] flight draw error', {
+            id: a.id,
+            lat: ll.lat,
+            lng: ll.lng,
+            altitude: a.altitude,
+            safeAltitude,
+            heading: a.heading,
+            error: err && err.message ? err.message : String(err),
+            flight: a,
+          });
+        } else {
+          console.error('[RW Cesium] entity draw error', err);
+        }
+        continue;
+      }
 
-      if (showTrails) {
+      if (showTrails && !isFlight) {
         const trailPoints = getCesiumTrailPointsForEntity(a);
         if (trailPoints.length >= 2) {
-          seenTrails[a.id] = true;
-          let trailEntity = cesiumEntityRefs.trails[a.id];
-          if (!trailEntity) {
-            trailEntity = cesiumViewer.entities.add({
-              id: 'trail-' + a.id,
-              rwMeta: { kind: 'agent', id: a.id },
-            });
-            cesiumEntityRefs.trails[a.id] = trailEntity;
-          }
+          const trailEntity = cesiumViewer.entities.add({
+            id: 'trail-' + a.id,
+            rwMeta: { kind: 'agent', id: a.id },
+          });
+          cesiumEntityRefs.trails[a.id] = trailEntity;
           trailEntity.polyline = {
             positions: Cesium.Cartesian3.fromDegreesArrayHeights(trailPoints),
             width: selectedAgentId === a.id ? 3 : 2,
-            material: Cesium.Color.fromCssColorString(getEntityTypeStyle(a).trailSelected),
+            material: new Cesium.PolylineGlowMaterialProperty({
+              glowPower: selectedAgentId === a.id ? 0.25 : 0.12,
+              color: Cesium.Color.fromCssColorString(selectedAgentId === a.id ? typeStyle.trailSelected : typeStyle.trail),
+            }),
             clampToGround: false,
           };
           trailEntity.show = true;
         }
       }
+      const lookahead = getCesiumLookaheadPoint(a, ll);
+      if (lookahead) {
+        cesiumViewer.entities.add({
+          id: 'forward-' + a.id,
+          rwMeta: { kind: 'agent', id: a.id },
+          polyline: {
+            positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+              ll.lng, ll.lat, (isSatellite ? 400000 : Math.max(10, Number(a.altitude) || 1000)),
+              lookahead.lng, lookahead.lat, (isSatellite ? 400000 : Math.max(10, Number(a.altitude) || 1000)),
+            ]),
+            width: isSelected ? 2.8 : 1.5,
+            material: Cesium.Color.fromCssColorString(isSelected ? '#e7f5ff' : '#9cc6e6').withAlpha(isSelected ? 0.95 : 0.6),
+          },
+        });
+      }
     }
-    lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: flightsDrawn };
-    for (const [id,entity] of Object.entries(cesiumEntityRefs.agents)) {
-      if (!seenAgents[id]) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.agents[id]; }
-    }
-    for (const [id,entity] of Object.entries(cesiumEntityRefs.trails)) {
-      if (!seenTrails[id] || !showTrails) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.trails[id]; }
-    }
+    lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: flightsDrawn, errors: flightsErrored };
     for (const r of Object.values(state.regions || {})) {
       if (!showRegions || !layerState.regions) break;
       const ll = toLatLngWithFallback(r);
       if (!ll) continue;
-      seenRegions[r.id] = true;
-      let reg = cesiumEntityRefs.regions[r.id];
-      if (!reg) {
-        reg = cesiumViewer.entities.add({ id: 'region-' + r.id, rwMeta: { kind: 'region', id: r.id } });
-        cesiumEntityRefs.regions[r.id] = reg;
-      }
+      const reg = cesiumViewer.entities.add({ id: 'region-' + r.id, rwMeta: { kind: 'region', id: r.id } });
+      cesiumEntityRefs.regions[r.id] = reg;
       reg.polygon = undefined;
       reg.ellipse = undefined;
       reg.polyline = undefined;
       reg.position = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 0);
       reg.point = {
-        pixelSize: selectedRegionId === r.id ? 8 : 5,
-        color: Cesium.Color.CYAN.withAlpha(selectedRegionId === r.id ? 0.95 : 0.75),
+        pixelSize: selectedRegionId === r.id ? 10 : 5,
+        color: Cesium.Color.CYAN.withAlpha(selectedRegionId === r.id ? 1 : 0.75),
         outlineColor: Cesium.Color.WHITE,
-        outlineWidth: 1,
+        outlineWidth: selectedRegionId === r.id ? 2 : 1,
       };
       reg.label = {
         text: r.name || r.id,
@@ -607,25 +1149,72 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         pixelOffset: new Cesium.Cartesian2(0, -16),
       };
       reg.show = true;
+      if (selectedRegionId === r.id) {
+        const intel = latestRegionIntelligence[r.id] || null;
+        const status = intel ? intel.status : 'IDLE';
+        const color = status === 'HOT' ? '#ff8f8f' : (status === 'ACTIVE' ? '#ffd08f' : '#8fc5ff');
+        cesiumViewer.entities.add({
+          id: 'region-emphasis-' + r.id,
+          rwMeta: { kind: 'region', id: r.id },
+          position: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 0),
+          ellipse: {
+            semiMajorAxis: 220000,
+            semiMinorAxis: 220000,
+            material: Cesium.Color.fromCssColorString(color).withAlpha(0.08),
+            outline: true,
+            outlineColor: Cesium.Color.fromCssColorString(color).withAlpha(0.9),
+            outlineWidth: 2,
+          },
+        });
+      }
       regionsVisible++;
     }
-    for (const [id,entity] of Object.entries(cesiumEntityRefs.regions)) {
-      if (!seenRegions[id] || !showRegions || !layerState.regions) { cesiumViewer.entities.remove(entity); delete cesiumEntityRefs.regions[id]; }
-    }
-    lastCesiumRenderCounts = { entities: entitiesVisible, regions: regionsVisible };
+    lastCesiumRenderCounts = {
+      entities: entitiesVisible,
+      regions: regionsVisible,
+      satellites: satellitesRendered,
+      flightsDrawn,
+      earthInitialized: !!cesiumViewer,
+      tilesLoaded: !!cesiumGoogleTileset,
+      tilesState: lastCesiumRenderCounts.tilesState,
+      tilesError: lastCesiumRenderCounts.tilesError,
+    };
     const now = Date.now();
     if (now - lastCesiumDiagAt > 15000) {
       lastCesiumDiagAt = now;
       console.info('[RW Cesium] render counts', {
+        earthInitialized: !!cesiumViewer,
+        tilesLoaded: !!cesiumGoogleTileset,
         entities: entitiesVisible,
+        satellites: satellitesRendered,
         regions: regionsVisible,
         flightsFetched: openskyStatus.fetched,
         flightsMerged,
         flightsRendered: flightsDrawn,
         googleTilesLoaded: !!cesiumGoogleTileset,
+        flightsFetched: Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0,
+        flightsMerged,
+        flightsVisible: flightsVisibleAfterFilters,
+        flightsRendered: flightsDrawn,
+        flightsErrors: flightsErrored,
+        layers: {
+          liveFlights: layerState.liveFlights,
+          satellites: layerState.satellites,
+          regions: layerState.regions,
+          traffic: layerState.traffic,
+          weather: layerState.weather,
+        },
       });
     }
     cesiumViewer.scene.requestRender();
+  }
+
+  function viewerCameraSafetyCheck() {
+    if (!cesiumViewer || !cesiumViewer.camera || cesiumSafetyViewApplied) return;
+    cesiumViewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000)
+    });
+    cesiumSafetyViewApplied = true;
   }
 
   function getCesiumTrailPointsForEntity(agent) {
@@ -643,6 +1232,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       points.push(point.lng, point.lat, height);
     }
     return points;
+  }
+
+  function getCesiumLookaheadPoint(agent, ll) {
+    if (!agent || !ll) return null;
+    const headingDeg = Number(agent.heading);
+    if (!Number.isFinite(headingDeg)) return null;
+    const speedMps = Number.isFinite(Number(agent.speed)) ? Number(agent.speed) : 0;
+    if (speedMps < FORWARD_VECTOR_MIN_SPEED_MPS) return null;
+    const lookAheadKm = Math.min(FORWARD_VECTOR_MAX_DISTANCE_KM, Math.max(8, (speedMps * FORWARD_VECTOR_LOOKAHEAD_SEC) / 1000));
+    const distanceRatio = lookAheadKm / 111;
+    const headingRad = headingDeg * (Math.PI / 180);
+    const latDelta = Math.cos(headingRad) * distanceRatio;
+    const lngDenom = Math.max(0.2, Math.cos((ll.lat || 0) * (Math.PI / 180)));
+    const lngDelta = (Math.sin(headingRad) * distanceRatio) / lngDenom;
+    return {
+      lat: Math.max(-89.8, Math.min(89.8, ll.lat + latDelta)),
+      lng: ((((ll.lng + lngDelta) + 540) % 360) - 180),
+    };
   }
 
   function renderWorldOverlays(width, height, now, globeDebug) {
@@ -668,6 +1275,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       flightsMerged,
       flightsRendered: drawCounts.flightsDrawn,
     });
+    renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts);
+    lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: drawCounts.flightsDrawn, errors: 0 };
 
     deferredLabelDraws.forEach(function (drawLabel) { drawLabel(); });
     deferredSelectionDraws.forEach(function (drawSelection) { drawSelection(); });
@@ -721,10 +1330,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const regionKey = getCurrentTargetKey('region', r.id);
       const isFlagged = !!flaggedTargets[regionKey];
       const isFocused = focusTargetKey === regionKey && now < focusEffectUntil;
+      const palette = getRegionPaletteByMode(status, isSelected);
       const regionSize = 60 * viewport.zoom;
       const overlay = isGlobeRenderMode() ? getRegionGlobeOverlay(r, width, height, globeDebug) : null;
       ctx.save();
-      ctx.strokeStyle = status === 'HOT' ? '#ff8e8ecc' : status === 'ACTIVE' ? '#fccb88cc' : '#a8b0cc88';
+      ctx.strokeStyle = palette.stroke;
       ctx.lineWidth = isSelected ? 2.25 : 1.5;
       if (isFlagged) {
         ctx.shadowBlur = 6;
@@ -732,12 +1342,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       if (overlay) {
         if (globeDebug) globeDebug.regionsVisible++;
-        ctx.strokeStyle = status === 'HOT' ? '#ff9d9ddd' : status === 'ACTIVE' ? '#ffd293dd' : '#b8d2ffaa';
-        ctx.fillStyle = status === 'HOT'
-          ? (isSelected ? '#ff8e8e30' : '#ff8e8e1d')
-          : status === 'ACTIVE'
-            ? (isSelected ? '#fccb8830' : '#fccb881b')
-            : (isSelected ? '#8ec5ff24' : '#8ec5ff14');
+        ctx.strokeStyle = palette.strokeBold;
+        ctx.fillStyle = palette.fill;
         drawRegionOverlayShape(overlay);
         ctx.fill();
         ctx.setLineDash([6, 5]);
@@ -746,8 +1352,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         ctx.setLineDash([]);
         if (status === 'HOT') {
           ctx.shadowBlur = 10;
-          ctx.shadowColor = '#ff9b9b88';
-          ctx.strokeStyle = '#ff9b9bcc';
+          ctx.shadowColor = styleMode === 'flir' ? '#ffd09799' : '#ff9b9b88';
+          ctx.strokeStyle = palette.strokeBold;
           ctx.lineWidth = Math.max(ctx.lineWidth, 2.2);
           drawRegionOverlayShape(overlay, 2);
           ctx.stroke();
@@ -762,14 +1368,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         const rectX = rx - (regionSize / 2);
         const rectY = ry - (regionSize / 2);
         if (isSelected) {
-          ctx.fillStyle = status === 'HOT' ? '#ff8e8e26' : status === 'ACTIVE' ? '#fccb8824' : '#8ec5ff22';
+          ctx.fillStyle = palette.fill;
           ctx.fillRect(rectX, rectY, regionSize, regionSize);
         }
         ctx.setLineDash([4, 4]);
         ctx.strokeRect(rectX, rectY, regionSize, regionSize);
         ctx.setLineDash([]);
         if (status === 'HOT') {
-          ctx.strokeStyle = '#ff9b9bcc';
+          ctx.strokeStyle = palette.strokeBold;
           ctx.lineWidth = 2;
           ctx.strokeRect(rectX - 1, rectY - 1, regionSize + 2, regionSize + 2);
         }
@@ -787,7 +1393,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       deferredLabelDraws.push(function drawRegionLabel() {
         ctx.save();
         if (labelX >= -60 && labelX <= width + 60 && labelY >= -30 && labelY <= height + 30) {
-          ctx.fillStyle = '#fc7';
+          ctx.fillStyle = palette.label;
           ctx.font = Math.max(8, 10 * viewport.zoom).toFixed(1) + 'px monospace';
           ctx.fillText(regionLabel, labelX, labelY);
         }
@@ -823,40 +1429,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (!trail || trail.length < 2) {
         return;
       }
-      ctx.save();
-      ctx.beginPath();
-      const first = worldPointToCanvas(trail[0], width, height, GLOBE_PATH_MIN_Z, globeDebug);
-      if (!first) {
-        ctx.restore();
-        return;
-      }
-      ctx.moveTo(first.x, first.y);
       let hasSegment = false;
-      let penDown = true;
       for (let i = 1; i < trail.length; i++) {
+        const prevPt = worldPointToCanvas(trail[i - 1], width, height, GLOBE_PATH_MIN_Z, globeDebug);
         const pt = worldPointToCanvas(trail[i], width, height, GLOBE_PATH_MIN_Z, globeDebug);
-        if (!pt) {
-          penDown = false;
-          continue;
-        }
-        if (!penDown) {
-          ctx.moveTo(pt.x, pt.y);
-          penDown = true;
-          continue;
-        }
+        if (!prevPt || !pt) continue;
+        const ageRatio = i / (trail.length - 1);
+        const alpha = isSelected ? (0.35 + (ageRatio * 0.65)) : (0.18 + (ageRatio * 0.45));
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(prevPt.x, prevPt.y);
         ctx.lineTo(pt.x, pt.y);
+        ctx.strokeStyle = hexToRgba(isSelected ? typeStyle.stroke : typeStyle.fill, alpha);
+        ctx.lineWidth = isSelected ? 2 : 1;
+        ctx.stroke();
+        ctx.restore();
         hasSegment = true;
         if (globeDebug) globeDebug.pathSegmentsDrawn++;
       }
-      if (!hasSegment) {
-        ctx.restore();
-        return;
-      }
-      if (globeDebug) globeDebug.trailsVisible++;
-      ctx.strokeStyle = isSelected ? typeStyle.trailSelected : typeStyle.trail;
-      ctx.lineWidth = isSelected ? 2 : 1;
-      ctx.stroke();
-      ctx.restore();
+      if (hasSegment && globeDebug) globeDebug.trailsVisible++;
     });
   }
 
@@ -895,6 +1486,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       ctx.strokeStyle = isSelected ? '#e8f7ff' : (a.active ? typeStyle.stroke : '#223041');
       ctx.lineWidth = isSelected ? 2.5 : 1.5;
       ctx.stroke();
+      const headingDeg = Number(a.heading);
+      const speedMps = Number(a.speed);
+      if (Number.isFinite(headingDeg) && Number.isFinite(speedMps) && speedMps >= FORWARD_VECTOR_MIN_SPEED_MPS) {
+        const lookLen = Math.min(26, Math.max(10, (speedMps / 14))) * viewport.zoom;
+        const headingRad = headingDeg * (Math.PI / 180);
+        const tx = ax + (Math.sin(headingRad) * lookLen);
+        const ty = ay - (Math.cos(headingRad) * lookLen);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(tx, ty);
+        ctx.strokeStyle = isSelected ? '#ecf7ff' : '#9fc6e2';
+        ctx.lineWidth = isSelected ? 2 : 1.2;
+        ctx.stroke();
+      }
       if (isFlight) {
         ctx.shadowBlur = 8;
         ctx.shadowColor = '#ffe27a';
@@ -984,6 +1589,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  function hexToRgba(hex, alpha) {
+    const clean = String(hex || '').replace('#', '').trim();
+    if (clean.length !== 6) return 'rgba(160,190,220,' + alpha + ')';
+    const r = parseInt(clean.slice(0, 2), 16);
+    const g = parseInt(clean.slice(2, 4), 16);
+    const b = parseInt(clean.slice(4, 6), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+  }
+
   function eventMatchesSelected(ev) {
     if (!ev || typeof ev.msg !== 'string') return false;
     if (selectedAgentId && ev.msg.includes(selectedAgentId)) return true;
@@ -1015,6 +1629,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const entityIds = intel ? intel.entitiesInside : [];
     for (const id of entityIds) {
       if (msg.includes(id)) return true;
+    }
+    if (intel && Array.isArray(intel.relatedEntities)) {
+      for (const id of intel.relatedEntities) {
+        if (msg.includes(id)) return true;
+      }
+    }
+    if (ev.kind === 'region' && typeof ev.msg === 'string' && /occupancy|status|activity|region/i.test(ev.msg)) {
+      return true;
     }
     return false;
   }
@@ -1105,6 +1727,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         .filter(a => a.region === selectedRegion.id)
         .map(a => a.id);
       const insideSummary = insideIds.length > 8 ? (insideIds.length + ' agents') : insideIds.join(', ');
+      const relatedSummary = intel && intel.relatedEntities && intel.relatedEntities.length
+        ? (intel.relatedEntities.length > 8 ? (intel.relatedEntities.length + ' nearby') : intel.relatedEntities.join(', '))
+        : '—';
       const lastRegionEventTs = intel && intel.lastEventTs ? new Date(intel.lastEventTs).toISOString() : '—';
       selectedPanel.innerHTML =
         '<div class="selected-grid">' +
@@ -1118,6 +1743,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         '<span class="selected-label">FLAGGED</span><span class="selected-value">' + (isFlagged ? 'yes' : 'no') + '</span>' +
         '<span class="selected-label">LAST ACTION</span><span class="selected-value">' + escHtml(lastAction) + '</span>' +
         '<span class="selected-label">ENTITIES</span><span class="selected-value">' + escHtml(insideSummary || '—') + '</span>' +
+        '<span class="selected-label">NEARBY</span><span class="selected-value">' + escHtml(relatedSummary) + '</span>' +
         '<span class="selected-label">LAST EVENT</span><span class="selected-value">' + escHtml(lastEvent) + '</span>' +
         '</div>';
       syncActionButtons();
@@ -1128,15 +1754,28 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const agentKey = getCurrentTargetKey('agent', selected.id);
     const isFlagged = !!flaggedTargets[agentKey];
     const lastAction = lastOperatorActionByTarget[agentKey] || '—';
+    const selectedPoint = getEntityWorldPoint(selected);
+    const speed = Number.isFinite(Number(selected.speed)) ? Number(selected.speed) : null;
+    const heading = Number.isFinite(Number(selected.heading)) ? Number(selected.heading) : null;
+    const altitude = Number.isFinite(Number(selected.altitude)) ? Number(selected.altitude) : null;
+    const source = selected.source || (isOpenSkyFlight(selected) ? 'opensky' : 'sim');
+    const lastUpdate = Number.isFinite(Number(selected.lastUpdateMs))
+      ? new Date(Number(selected.lastUpdateMs)).toISOString()
+      : (selected.updatedAt || selected.lastSeen || '—');
     selectedPanel.innerHTML =
       '<div class="selected-grid">' +
       '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selected.id) + '</span>' +
       '<span class="selected-label">TYPE</span><span class="selected-value">' + escHtml(getEntityType(selected)) + '</span>' +
+      '<span class="selected-label">SOURCE</span><span class="selected-value">' + escHtml(source) + '</span>' +
       '<span class="selected-label">X</span><span class="selected-value">' + selected.x.toFixed(2) + '</span>' +
       '<span class="selected-label">Y</span><span class="selected-value">' + selected.y.toFixed(2) + '</span>' +
-      '<span class="selected-label">LAT</span><span class="selected-value">' + (Number.isFinite(selected.lat) ? selected.lat.toFixed(2) : '—') + '</span>' +
-      '<span class="selected-label">LNG</span><span class="selected-value">' + (Number.isFinite(selected.lng) ? selected.lng.toFixed(2) : '—') + '</span>' +
+      '<span class="selected-label">LAT</span><span class="selected-value">' + (Number.isFinite(selectedPoint.lat) ? selectedPoint.lat.toFixed(4) : '—') + '</span>' +
+      '<span class="selected-label">LNG</span><span class="selected-value">' + (Number.isFinite(selectedPoint.lng) ? selectedPoint.lng.toFixed(4) : '—') + '</span>' +
+      '<span class="selected-label">SPEED</span><span class="selected-value">' + (speed === null ? '—' : (speed.toFixed(1) + ' m/s')) + '</span>' +
+      '<span class="selected-label">HEADING</span><span class="selected-value">' + (heading === null ? '—' : (heading.toFixed(0) + '°')) + '</span>' +
+      '<span class="selected-label">ALTITUDE</span><span class="selected-value">' + (altitude === null ? '—' : (altitude.toFixed(0) + ' m')) + '</span>' +
       '<span class="selected-label">STATUS</span><span class="selected-value">' + escHtml(selected.state || (selected.active ? 'active' : 'inactive')) + '</span>' +
+      '<span class="selected-label">LAST UPDATE</span><span class="selected-value">' + escHtml(lastUpdate) + '</span>' +
       '<span class="selected-label">FLAGGED</span><span class="selected-value">' + (isFlagged ? 'yes' : 'no') + '</span>' +
       '<span class="selected-label">LAST ACTION</span><span class="selected-value">' + escHtml(lastAction) + '</span>' +
       '<span class="selected-label">LAST EVENT</span><span class="selected-value">' + escHtml(lastEvent) + '</span>' +
@@ -1157,10 +1796,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     flagActionBtn.disabled = !hasSelection;
     followTargetToggleEl.disabled = !hasSelection;
     if (!hasSelection && followTargetEnabled) {
-      followTargetEnabled = false;
-      cameraLerpTarget = null;
-      followTargetToggleEl.checked = false;
-      pushOperatorEvent('operator follow disabled (no selection)');
+      disableFollowTarget('no selection');
     }
   }
 
@@ -1169,6 +1805,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     eventLog.push(ev);
     if (eventLog.length > 120) eventLog.shift();
     pushEvent(ev);
+  }
+
+  function disableFollowTarget(reason) {
+    if (!followTargetEnabled && !cameraLerpTarget && !cesiumCameraLerpState) return;
+    followTargetEnabled = false;
+    cameraLerpTarget = null;
+    cesiumCameraLerpState = null;
+    followTargetToggleEl.checked = false;
+    if (reason) pushOperatorEvent('operator follow disabled (' + reason + ')');
   }
 
   function runFocusAction() {
@@ -1180,7 +1825,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (USE_CESIUM && cesiumViewer) {
       const ll = toLatLngWithFallback(focusPoint);
       if (ll) {
-        cesiumViewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 1800000), duration: 1.1 });
+        cesiumCameraLerpState = {
+          lng: ll.lng,
+          lat: ll.lat,
+          height: 1800000,
+        };
       }
     }
     focusTargetKey = targetKey;
@@ -1284,12 +1933,36 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (USE_CESIUM && cesiumViewer) {
       const ll = toLatLngWithFallback(cameraLerpTarget);
       if (!ll) return false;
-      cesiumViewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, followTargetEnabled ? 1400000 : 1800000),
-        duration: followTargetEnabled ? 0.35 : 0.9,
+      const currentCarto = Cesium.Cartographic.fromCartesian(cesiumViewer.camera.position);
+      const currentLng = Cesium.Math.toDegrees(currentCarto.longitude);
+      const currentLat = Cesium.Math.toDegrees(currentCarto.latitude);
+      const desiredHeight = followTargetEnabled ? 1400000 : 1800000;
+      if (!cesiumCameraLerpState) {
+        cesiumCameraLerpState = { lng: currentLng, lat: currentLat, height: currentCarto.height };
+      }
+      const lerp = followTargetEnabled ? CESIUM_FOLLOW_LERP : CESIUM_FOCUS_LERP;
+      cesiumCameraLerpState.lng = Cesium.Math.lerp(cesiumCameraLerpState.lng, ll.lng, lerp);
+      cesiumCameraLerpState.lat = Cesium.Math.lerp(cesiumCameraLerpState.lat, ll.lat, lerp);
+      cesiumCameraLerpState.height = Cesium.Math.lerp(cesiumCameraLerpState.height, desiredHeight, lerp);
+      cesiumCameraMoveInternal = true;
+      cesiumFollowDisengageMutedUntil = Date.now() + 120;
+      cesiumViewer.camera.setView({
+        destination: Cesium.Cartesian3.fromDegrees(
+          cesiumCameraLerpState.lng,
+          cesiumCameraLerpState.lat,
+          cesiumCameraLerpState.height
+        ),
       });
-      if (!followTargetEnabled) cameraLerpTarget = null;
-      return !!followTargetEnabled;
+      cesiumCameraMoveInternal = false;
+      const closeEnough = Math.abs(cesiumCameraLerpState.lng - ll.lng) < 0.012
+        && Math.abs(cesiumCameraLerpState.lat - ll.lat) < 0.012
+        && Math.abs(cesiumCameraLerpState.height - desiredHeight) < 1500;
+      if (closeEnough && !followTargetEnabled) {
+        cameraLerpTarget = null;
+        cesiumCameraLerpState = null;
+        return false;
+      }
+      return true;
     }
     const targetOffset = getViewportOffsetToCenterWorld(
       cameraLerpTarget.x,
@@ -1471,8 +2144,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function updateViewportReadout() {
     let text = 'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
     if (USE_CESIUM) {
-      text += ' · cesium e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions;
-      text += cesiumGoogleTileset ? ' · google tiles:on' : ' · google tiles:off';
+      text += ' · cesium e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions + ' s:' + lastCesiumRenderCounts.satellites;
+      text += ' · google tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'on' : 'off'));
       if (layerState.traffic) text += ' · traffic:unavailable';
       if (layerState.weather) text += ' · weather:not configured';
     } else if (isGlobeRenderMode() && globeOverlayDiagnostics) {
@@ -2076,6 +2749,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastEventTs: null,
         status: 'IDLE',
         entitiesInside: [],
+        relatedEntities: [],
       };
       regionToEntitySet[regionId] = new Set();
       movementCountByRegion[regionId] = 0;
@@ -2111,6 +2785,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const eventCount = recentEventCounts[regionId] || 0;
       const movementCount = movementCountByRegion[regionId] || 0;
       intel[regionId].entitiesInside = Array.from(regionToEntitySet[regionId] || []);
+      const region = state.regions[regionId];
+      const related = [];
+      if (region) {
+        const rp = getEntityWorldPoint(region);
+        for (const agent of Object.values(state.agents || {})) {
+          if (!isEntityTypeVisible(getEntityType(agent))) continue;
+          if (agent.region === regionId) continue;
+          const ap = getEntityWorldPoint(agent);
+          const dx = (Number(ap.x) - Number(rp.x));
+          const dy = (Number(ap.y) - Number(rp.y));
+          if (Math.hypot(dx, dy) <= 18) related.push(agent.id);
+        }
+      }
+      intel[regionId].relatedEntities = related.slice(0, 12);
       intel[regionId].activityLevel = eventCount + movementCount;
       intel[regionId].status = deriveRegionStatus(eventCount, movementCount);
     }
@@ -2128,11 +2816,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       : (Number.isFinite(Number(openskyStatus.merged)) ? Number(openskyStatus.merged) : 0);
     const visibleFlights = Number.isFinite(Number(lastFlightDebugCounts.visible)) ? Number(lastFlightDebugCounts.visible) : 0;
     const drawnFlights = Number.isFinite(Number(lastFlightDebugCounts.drawn)) ? Number(lastFlightDebugCounts.drawn) : 0;
-    const openskyMisconfigured = !!openskyStatus.enabled && !openskyStatus.authConfigured;
+    const erroredFlights = Number.isFinite(Number(lastFlightDebugCounts.errors)) ? Number(lastFlightDebugCounts.errors) : 0;
     const openskyError = openskyStatus && openskyStatus.lastErrorAt ? ' ERR' : '';
-    const flightDebugText = openskyMisconfigured
-      ? 'OpenSky auth missing'
-      : ('fetched:' + fetched + ' merged:' + merged + ' visible:' + visibleFlights + ' drawn:' + drawnFlights + openskyError);
+    const flightDebugText = 'fetched:' + fetched + ' merged:' + merged + ' visible:' + visibleFlights + ' drawn:' + drawnFlights + ' errors:' + erroredFlights + openskyError;
     const layerDiagnostics = buildLayerDiagnostics();
     lastLayerDiagnostics = layerDiagnostics;
     const layerDebugText = 'L:' + layerDiagnostics.liveFlights
@@ -2145,6 +2831,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     document.getElementById('s-regions').textContent = Object.keys(state.regions).length;
     document.getElementById('s-flights-debug').textContent = flightDebugText;
     document.getElementById('s-layers-debug').textContent = layerDebugText;
+    document.getElementById('s-render-debug').textContent =
+      'earth:' + (lastCesiumRenderCounts.earthInitialized ? 'ok' : 'pending')
+      + ' tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'ok' : 'pending'))
+      + (lastCesiumRenderCounts.tilesError ? ' (' + lastCesiumRenderCounts.tilesError + ')' : '')
+      + ' sat:' + (Number.isFinite(lastCesiumRenderCounts.satellites) ? lastCesiumRenderCounts.satellites : 0)
+      + ' reg:' + (Number.isFinite(lastCesiumRenderCounts.regions) ? lastCesiumRenderCounts.regions : 0);
     document.getElementById('s-speed').textContent   = simulationSpeed + 'x';
     if (state.started) {
       const sec = Math.floor((Date.now() - new Date(state.started)) / 1000);
@@ -2163,19 +2855,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   followTargetToggleEl.addEventListener('change', function () {
     const shouldFollow = !!followTargetToggleEl.checked;
     if (!shouldFollow) {
-      followTargetEnabled = false;
-      cameraLerpTarget = null;
+      disableFollowTarget('toggle off');
       return;
     }
     const selectedFocusPoint = getSelectedFocusPoint();
     if (!selectedFocusPoint) {
-      followTargetEnabled = false;
-      cameraLerpTarget = null;
-      followTargetToggleEl.checked = false;
+      disableFollowTarget('no selection');
       return;
     }
     followTargetEnabled = true;
     cameraLerpTarget = selectedFocusPoint;
+    const ll = toLatLngWithFallback(selectedFocusPoint);
+    if (ll) {
+      cesiumCameraLerpState = { lng: ll.lng, lat: ll.lat, height: 1400000 };
+    }
     pushOperatorEvent('operator follow enabled for ' + (selectedAgentId || ('region ' + selectedRegionId)));
     draw();
   });
@@ -2273,6 +2966,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   syncPauseButton();
   updateStats();
   updateViewportReadout();
+  setStylePreset('tactical', true);
+  ensureStyleAnimationLoop();
 
   zoomInBtnEl.addEventListener('click', function () {
     setViewportZoom(viewport.zoom + VIEWPORT_ZOOM_STEP);
@@ -2290,6 +2985,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     simulationSpeed = Number.isFinite(nextSpeed) && nextSpeed > 0 ? nextSpeed : 1;
     updateStats();
   });
+  styleModeSelectEl.addEventListener('change', function () {
+    const nextMode = styleModeSelectEl.value;
+    if (nextMode === 'crt' || nextMode === 'nvg' || nextMode === 'flir') {
+      styleMode = nextMode;
+      applyVisualStyle();
+      pushOperatorEvent('operator style mode set to ' + styleMode);
+    }
+  });
+  function bindFxSlider(inputEl, key) {
+    inputEl.addEventListener('input', function () {
+      const value = Number(inputEl.value);
+      styleFx[key] = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : styleFx[key];
+      activeStylePreset = 'custom';
+      syncPresetUi();
+      applyVisualStyle();
+    });
+  }
+  bindFxSlider(fxBloomEl, 'bloom');
+  bindFxSlider(fxSharpenEl, 'sharpen');
+  bindFxSlider(fxNoiseEl, 'noise');
+  bindFxSlider(fxVignetteEl, 'vignette');
+  bindFxSlider(fxPixelationEl, 'pixelation');
+  bindFxSlider(fxGlowEl, 'glow');
+  for (const btn of presetButtons) {
+    btn.addEventListener('click', function () {
+      setStylePreset(btn.dataset.stylePreset || 'tactical', false);
+    });
+  }
 
   if (USE_CESIUM) {
     toggleLayerTrafficEl.title = 'Traffic layer unavailable in current renderer mode (Cesium + Google 3D Tiles)';
@@ -2300,11 +3023,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const snapshotTsMs = Date.now();
     updateAgentTrails(state.agents, nextSnapshot.agents);
     updateFlightTracking(state.agents, nextSnapshot.agents, snapshotTsMs);
+    const receivedFlightCount = Object.values(nextSnapshot && nextSnapshot.agents ? nextSnapshot.agents : {}).filter(function (a) {
+      return a && a.type === 'flight';
+    }).length;
+    console.log('Flights received:', receivedFlightCount);
     previousAgentsById = state.agents || {};
     state = nextSnapshot;
     openskyStatus = nextSnapshot && nextSnapshot.opensky
       ? nextSnapshot.opensky
-      : { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null };
+      : { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null };
     latestRegionIntelligence = computeRegionIntelligence();
     clearSelectionIfHidden();
     if (selectedAgentId && !state.agents[selectedAgentId]) {
@@ -2490,9 +3217,15 @@ function snapshot() {
     opensky: {
       enabled: OPENSKY_ENABLED,
       authConfigured: openSkyLiveState.authConfigured,
+      pollingRunning: openSkyLiveState.pollingRunning,
       fetched: openSkyLiveState.lastFetchedCount,
       normalized: openSkyLiveState.lastNormalizedCount,
       merged: Object.keys(openSkyLiveState.flights).length,
+      modeUsed: openSkyLiveState.lastModeUsed,
+      visible: openSkyLiveState.lastVisibleCount,
+      drawn: openSkyLiveState.lastDrawnCount,
+      lastRequestUrl: openSkyLiveState.lastRequestUrl,
+      lastRequestStatus: openSkyLiveState.lastRequestStatus,
       lastPollAt: openSkyLiveState.lastPollAt,
       lastErrorAt: openSkyLiveState.lastErrorAt,
     },
@@ -2566,11 +3299,11 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
   if (!Array.isArray(row)) return null;
   const icao24 = String(row[0] || '').trim().toLowerCase();
   const callsign = String(row[1] || '').trim();
-  const lon = safeNumber(row[5]);
+  const lng = safeNumber(row[5]);
   const lat = safeNumber(row[6]);
-  if (!icao24 || lat === null || lon === null) return null;
-  const altitude = safeNumber(row[13] !== null && row[13] !== undefined ? row[13] : row[7]);
-  const speed = safeNumber(row[9]);
+  if (!icao24 || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const altitude = safeNumber(row[7] !== null && row[7] !== undefined ? row[7] : row[13]);
+  const velocity = safeNumber(row[9]);
   const heading = safeNumber(row[10]);
   const verticalRate = safeNumber(row[11]);
   const onGround = Boolean(row[8]);
@@ -2581,10 +3314,11 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
     name: callsign || icao24,
     icao24,
     lat,
-    lng: lon,
+    lng,
     altitude,
     heading,
-    speed,
+    velocity,
+    speed: velocity,
     verticalRate,
     onGround,
     source: 'opensky',
@@ -2598,14 +3332,14 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
     trail: Array.isArray(previousEntity && previousEntity.trail) ? previousEntity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS) : [],
     lastUpdateMs: Date.now(),
   };
-  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
     const moved = !previousEntity
       || !Number.isFinite(previousEntity.lat)
       || !Number.isFinite(previousEntity.lng)
       || Math.abs(previousEntity.lat - lat) > 0.0001
-      || Math.abs(previousEntity.lng - lon) > 0.0001;
+      || Math.abs(previousEntity.lng - lng) > 0.0001;
     if (entity.trail.length === 0 || moved) {
-      entity.trail.push({ lat, lng: lon, ts: entity.lastUpdateMs });
+      entity.trail.push({ lat, lng, ts: entity.lastUpdateMs });
     }
     entity.trail = entity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS);
   }
@@ -2614,63 +3348,68 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
   return entity;
 }
 
-async function getOpenSkyAccessToken() {
-  const now = Date.now();
-  if (openSkyLiveState.token && openSkyLiveState.tokenExpiresAtMs - now > 10000) {
-    return openSkyLiveState.token;
-  }
-  const body = new URLSearchParams({ grant_type: 'client_credentials' });
-  const authHeader = Buffer.from(OPENSKY_CLIENT_ID + ':' + OPENSKY_CLIENT_SECRET).toString('base64');
-  const res = await fetch(OPENSKY_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Authorization': 'Basic ' + authHeader,
-    },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    throw new Error('OpenSky token request failed with HTTP ' + res.status);
-  }
-  const payload = await res.json();
-  if (!payload || !payload.access_token) {
-    throw new Error('OpenSky token response missing access_token');
-  }
-  const expiresInSec = Number.isFinite(Number(payload.expires_in)) ? Number(payload.expires_in) : 300;
-  openSkyLiveState.token = payload.access_token;
-  openSkyLiveState.tokenExpiresAtMs = now + (expiresInSec * 1000);
-  return openSkyLiveState.token;
-}
-
 async function pollOpenSkyFlights() {
   if (!OPENSKY_ENABLED) return;
-  if (!OPENSKY_CLIENT_ID || !OPENSKY_CLIENT_SECRET) {
-    const warn = 'OpenSky polling disabled: missing OPENSKY_CLIENT_ID or OPENSKY_CLIENT_SECRET';
-    if (!openSkyLiveState.lastErrorAt) {
-      console.warn('[RW Worldview] ' + warn);
-      emit('system', warn, { source: 'opensky' });
-    }
-    openSkyLiveState.lastErrorAt = new Date().toISOString();
-    openSkyLiveState.authConfigured = false;
-    openSkyLiveState.lastFetchedCount = 0;
-    openSkyLiveState.lastNormalizedCount = 0;
-    return;
-  }
+  const authConfigured = !!(OPENSKY_USERNAME && OPENSKY_PASSWORD);
+  openSkyLiveState.authConfigured = authConfigured;
+  console.log('[RW Worldview] Polling OpenSky... running=' + openSkyLiveState.pollingRunning + ' authConfigured=' + authConfigured);
   try {
-    openSkyLiveState.authConfigured = true;
-    const token = await getOpenSkyAccessToken();
-    const res = await fetch(OPENSKY_STATES_URL, {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token },
-    });
-    if (res.status === 401 || res.status === 429) {
-      throw new Error('OpenSky live states unavailable (HTTP ' + res.status + ')');
+    const authHeader = authConfigured
+      ? 'Basic ' + Buffer.from(OPENSKY_USERNAME + ':' + OPENSKY_PASSWORD).toString('base64')
+      : null;
+
+    let modeUsed = authConfigured ? 'auth' : 'public';
+    let requestUrl = authConfigured ? OPENSKY_STATES_URL : OPENSKY_PUBLIC_STATES_URL;
+    let useAuth = !!authConfigured;
+
+    if (!authConfigured) {
+      console.warn('[RW Worldview] Falling back to public OpenSky endpoint');
     }
-    if (!res.ok) {
-      throw new Error('OpenSky live states request failed with HTTP ' + res.status);
+
+    const runRequest = async (url, auth) => {
+      console.log('[RW Worldview] OpenSky request lifecycle: url=' + url + ' auth=' + (auth ? 'basic' : 'none'));
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: auth && authHeader ? { Authorization: authHeader } : undefined,
+      });
+      openSkyLiveState.lastRequestUrl = url;
+      openSkyLiveState.lastRequestStatus = response.status;
+      const rawBody = await response.text();
+      console.log('[RW Worldview] OpenSky response status=' + response.status + ' bodyLength=' + rawBody.length);
+      return { response, rawBody };
+    };
+
+    let result = await runRequest(requestUrl, useAuth);
+
+    if (!result.response.ok && useAuth) {
+      console.warn('[RW Worldview] Falling back to public OpenSky endpoint');
+      modeUsed = 'public';
+      requestUrl = OPENSKY_PUBLIC_STATES_URL;
+      useAuth = false;
+      result = await runRequest(requestUrl, useAuth);
     }
-    const payload = await res.json();
-    const states = Array.isArray(payload && payload.states) ? payload.states : [];
+
+    openSkyLiveState.lastModeUsed = modeUsed;
+
+    if (!result.response.ok) {
+      throw new Error('OpenSky live states request failed with HTTP ' + result.response.status);
+    }
+
+    let payload;
+    try {
+      payload = result.rawBody ? JSON.parse(result.rawBody) : null;
+    } catch (parseErr) {
+      console.warn('[RW Worldview] OpenSky returned empty or invalid response');
+      throw new Error('OpenSky live states parse failed: ' + parseErr.message);
+    }
+
+    const hasStates = Array.isArray(payload && payload.states);
+    const states = hasStates ? payload.states : [];
+    console.log('[RW Worldview] OpenSky payload states exists=' + hasStates + ' count=' + states.length);
+    if (!hasStates || states.length === 0) {
+      console.warn('[RW Worldview] OpenSky returned empty or invalid response');
+    }
+
     const nextFlights = {};
     const previous = openSkyLiveState.flights;
     let normalizedCount = 0;
@@ -2682,7 +3421,11 @@ async function pollOpenSkyFlights() {
       normalizedCount++;
       nextFlights[normalized.id] = normalized;
     }
+
     const visibilityStats = countVisibleOpenSkyFlights(nextFlights, OPENSKY_GLOBE_MIN_Z);
+    const visibleCount = visibilityStats.passProjection;
+    const drawnCount = visibilityStats.passMinZ;
+
     openSkyLiveState.lastFetchedCount = states.length;
     openSkyLiveState.lastNormalizedCount = normalizedCount;
     console.log(
@@ -2697,6 +3440,10 @@ async function pollOpenSkyFlights() {
       flightsMerged: normalizedCount,
       flightsRendered: Object.keys(nextFlights).length,
     });
+    openSkyLiveState.lastVisibleCount = visibleCount;
+    openSkyLiveState.lastDrawnCount = drawnCount;
+
+    console.log('OpenSky: fetched ' + states.length + ' flights, normalized ' + normalizedCount + ', visible ' + visibleCount + ', drawn ' + drawnCount);
 
     let updatedCount = 0;
     for (const flightId of Object.keys(nextFlights)) {
@@ -2725,6 +3472,8 @@ async function pollOpenSkyFlights() {
     openSkyLiveState.lastErrorAt = new Date().toISOString();
     openSkyLiveState.lastFetchedCount = 0;
     openSkyLiveState.lastNormalizedCount = 0;
+    openSkyLiveState.lastVisibleCount = 0;
+    openSkyLiveState.lastDrawnCount = 0;
     emit('system', msg, { source: 'opensky' });
   }
 }
@@ -2734,7 +3483,10 @@ function startOpenSkyPolling() {
     console.log('[RW Worldview] OpenSky polling disabled (RW_OPENSKY_ENABLED != true)');
     return;
   }
+  openSkyLiveState.pollingRunning = true;
   console.log('[RW Worldview] OpenSky polling enabled; interval=' + OPENSKY_POLL_INTERVAL_MS + 'ms');
+  console.log('[RW Worldview] OpenSky polling URL=' + OPENSKY_STATES_URL + ' publicFallback=' + OPENSKY_PUBLIC_STATES_URL);
+  console.log('RW_OPENSKY_ENABLED', process.env.RW_OPENSKY_ENABLED);
   pollOpenSkyFlights().catch(() => {});
   setInterval(() => {
     pollOpenSkyFlights().catch(() => {});
@@ -3117,9 +3869,12 @@ function router(req, res) {
       opensky: {
         enabled: OPENSKY_ENABLED,
         authConfigured: openSkyLiveState.authConfigured,
+        pollingRunning: openSkyLiveState.pollingRunning,
         flights: Object.keys(openSkyLiveState.flights).length,
         fetched: openSkyLiveState.lastFetchedCount,
         normalized: openSkyLiveState.lastNormalizedCount,
+        lastRequestUrl: openSkyLiveState.lastRequestUrl,
+        lastRequestStatus: openSkyLiveState.lastRequestStatus,
         lastPollAt: openSkyLiveState.lastPollAt,
         lastErrorAt: openSkyLiveState.lastErrorAt,
       },
@@ -3172,11 +3927,35 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 initWorld();
-setInterval(simulationLoop, 800);
-startOpenSkyPolling();
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('[RW Worldview] listening on 0.0.0.0:' + PORT);
-  console.log('[RW Worldview] renderer=' + (RW_USE_CESIUM ? 'cesium' : 'legacy-canvas') + ' defaultView=' + RW_DEFAULT_VIEW);
-  console.log('[RW Worldview] googleTiles=' + (GOOGLE_MAPS_API_KEY ? 'configured' : 'missing GOOGLE_MAPS_API_KEY'));
-});
+if (require.main === module) {
+  setInterval(simulationLoop, 800);
+  startOpenSkyPolling();
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('[RW Worldview] listening on 0.0.0.0:' + PORT);
+    console.log('[RW Worldview] renderer=' + (RW_USE_CESIUM ? 'cesium' : 'legacy-canvas') + ' defaultView=' + RW_DEFAULT_VIEW);
+    console.log('[RW Worldview] googleTiles=' + (GOOGLE_MAPS_API_KEY ? 'configured' : 'missing GOOGLE_MAPS_API_KEY'));
+  });
+}
+
+// ─── Exports (for testing) ────────────────────────────────────────────────────
+module.exports = {
+  uid,
+  safeNumber,
+  hasLatLng,
+  latLngToGrid,
+  normalizeEntityGridPosition,
+  getGlobeUnitVectorFromLatLng,
+  countVisibleOpenSkyFlights,
+  resolveClosestRegion,
+  buildOpenSkyFlightEntity,
+  emit,
+  wsSend,
+  wsParse,
+  router,
+  snapshot,
+  worldview,
+  eventLog,
+  openSkyLiveState,
+};
