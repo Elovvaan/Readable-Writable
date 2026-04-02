@@ -185,3 +185,89 @@ describe('style preset ordering invariants', function () {
     assert.ok(src.includes('function timeSinceStr'), 'timeSinceStr must exist');
   });
 });
+
+// ── Jump-to-target camera helpers ─────────────────────────────────────────────
+describe('jumpToTarget camera helpers', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  test('jumpToTarget is defined', function () {
+    assert.ok(src.includes('function jumpToTarget'), 'jumpToTarget must be defined');
+  });
+
+  test('resolveTargetLatLng is defined and delegates to toLatLngWithFallback', function () {
+    assert.ok(src.includes('function resolveTargetLatLng'), 'resolveTargetLatLng must be defined');
+    const fnIdx = src.indexOf('function resolveTargetLatLng');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('toLatLngWithFallback'), 'must use toLatLngWithFallback for coord extraction');
+  });
+
+  test('getTargetOrbitDistance returns type-specific altitudes', function () {
+    assert.ok(src.includes('function getTargetOrbitDistance'), 'getTargetOrbitDistance must be defined');
+    const fnIdx = src.indexOf('function getTargetOrbitDistance');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes("'region'"),    'region must have its own distance');
+    assert.ok(body.includes("'flight'"),    'flight must have its own distance');
+    assert.ok(body.includes("'satellite'"), 'satellite must have its own distance');
+  });
+
+  test('getTargetOrbitDistance: region farther than flight', function () {
+    // Extract numeric literals from the function to verify ordering
+    const fnIdx = src.indexOf('function getTargetOrbitDistance');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    const nums = [...body.matchAll(/return\s+(\d+)/g)].map(m => Number(m[1]));
+    const regionDist = Number(body.match(/'region'\s*\)\s*return\s+(\d+)/)?.[1]);
+    const flightDist = Number(body.match(/'flight'\s*\)\s*return\s+(\d+)/)?.[1]);
+    assert.ok(regionDist > flightDist, 'region orbit distance must be greater than flight distance');
+  });
+
+  test('jumpToTarget fails gracefully on missing coordinates', function () {
+    const fnIdx = src.indexOf('function jumpToTarget');
+    assert.ok(fnIdx !== -1, 'jumpToTarget must exist');
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('if (!ll) return'), 'must bail gracefully when coords are missing');
+  });
+
+  test('jumpToTarget uses getTargetOrbitDistance and flyTo', function () {
+    const fnIdx = src.indexOf('function jumpToTarget');
+    const body = src.slice(fnIdx, fnIdx + 1000);
+    assert.ok(body.includes('getTargetOrbitDistance'), 'must call getTargetOrbitDistance for altitude');
+    assert.ok(body.includes('flyTo'), 'must animate with cesiumViewer.camera.flyTo');
+  });
+
+  test('setOrbitTarget is defined and writes cesiumCameraLerpState', function () {
+    assert.ok(src.includes('function setOrbitTarget'), 'setOrbitTarget must be defined');
+    const fnIdx = src.indexOf('function setOrbitTarget');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('cesiumCameraLerpState'), 'must update cesiumCameraLerpState for follow tracking');
+  });
+
+  test('runFocusAction delegates to jumpToTarget', function () {
+    const fnIdx = src.indexOf('function runFocusAction');
+    assert.ok(fnIdx !== -1, 'runFocusAction must exist');
+    const body = src.slice(fnIdx, fnIdx + 600);
+    assert.ok(body.includes('jumpToTarget'), 'runFocusAction must call jumpToTarget');
+  });
+
+  test('selectAgent calls jumpToTarget when a target is provided', function () {
+    const fnIdx = src.indexOf('function selectAgent');
+    assert.ok(fnIdx !== -1, 'selectAgent must exist');
+    const body = src.slice(fnIdx, fnIdx + 500);
+    assert.ok(body.includes('jumpToTarget'), 'selectAgent must call jumpToTarget on selection');
+  });
+
+  test('selectRegion calls jumpToTarget when a target is provided', function () {
+    const fnIdx = src.indexOf('function selectRegion');
+    assert.ok(fnIdx !== -1, 'selectRegion must exist');
+    const body = src.slice(fnIdx, fnIdx + 500);
+    assert.ok(body.includes('jumpToTarget'), 'selectRegion must call jumpToTarget on selection');
+  });
+
+  test('event entries carry agentId/regionId data attributes for click-to-jump', function () {
+    const fnIdx = src.indexOf('function createEventEntry');
+    assert.ok(fnIdx !== -1, 'createEventEntry must exist');
+    const body = src.slice(fnIdx, fnIdx + 600);
+    assert.ok(body.includes('dataset.agentId'),  'event entries must expose agentId for click-to-jump');
+    assert.ok(body.includes('dataset.regionId'), 'event entries must expose regionId for click-to-jump');
+  });
+});

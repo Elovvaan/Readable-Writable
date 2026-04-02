@@ -1945,6 +1945,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const evType = eventEntityType(ev);
     if (evType && !isEntityTypeVisible(evType)) div.classList.add('dimmed');
     if ((selectedAgentId || selectedRegionId) && eventMatchesSelected(ev)) div.classList.add('related');
+    // Attach target identity for click-to-jump from event stream
+    if (ev.agentId)  div.dataset.agentId  = ev.agentId;
+    if (ev.regionId) div.dataset.regionId = ev.regionId;
     const ts = new Date(ev.ts || Date.now()).toISOString().substr(11, 8);
     div.innerHTML = '<span class="ts">' + ts + '</span>' + escHtml(ev.msg || JSON.stringify(ev));
     return div;
@@ -2194,25 +2197,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const label = selectedAgentId ? targetId : ('region ' + targetId);
     lastOperatorActionByTarget[targetKey] = 'focus';
     pushOperatorEvent('operator focused ' + label);
-    if (USE_CESIUM && cesiumViewer) {
-      const ll = toLatLngWithFallback(focusPoint);
-      if (ll) {
-        cesiumCameraMoveInternal = true;
-        cesiumFollowDisengageMutedUntil = Date.now() + 2500;
-        cesiumViewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 1800000),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
-          duration: 1.8,
-          complete: function () { cesiumCameraMoveInternal = false; },
-          cancel:   function () { cesiumCameraMoveInternal = false; },
-        });
-        // One-shot focus — no continuous lerp; user can orbit freely after landing
-        cameraLerpTarget = null;
-        cesiumCameraLerpState = null;
-      }
-    } else {
-      cameraLerpTarget = focusPoint;
-    }
+    jumpToTarget(focusPoint);
     renderSelectedPanel();
     draw();
   }
@@ -2249,7 +2234,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     refreshRelatedEventHighlight();
     renderSelectedPanel();
     syncFollowTargetState();
-    if (agentId) openPanel('target');
+    if (agentId) {
+      openPanel('target');
+      const fp = getSelectedFocusPoint();
+      if (fp) jumpToTarget(fp);
+    }
     draw();
   }
 
@@ -2260,7 +2249,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     refreshRelatedEventHighlight();
     renderSelectedPanel();
     syncFollowTargetState();
-    if (regionId) openPanel('target');
+    if (regionId) {
+      openPanel('target');
+      const fp = getSelectedFocusPoint();
+      if (fp) jumpToTarget(fp);
+    }
     draw();
   }
 
@@ -2484,7 +2477,80 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     viewportReadoutEl.textContent = text;
   }
 
-  // Programmatic zoom for +/- buttons: move camera closer/farther by a factor.
+  // ── Jump-to-target camera helpers ─────────────────────────────────────────
+
+  // Extract {lat, lng} from any target type (agent, region, flight, event).
+  // Returns null when coordinates are absent or non-finite.
+  function resolveTargetLatLng(target) {
+    if (!target) return null;
+    // Direct lat/lng on the object (agent, flight, event)
+    const ll = toLatLngWithFallback(target);
+    if (ll) return ll;
+    // Region: look up live state by id
+    if ((target.kind === 'region' || target.type === 'region') && target.id) {
+      const region = state.regions[target.id];
+      if (region) return toLatLngWithFallback(region);
+    }
+    return null;
+  }
+
+  // Type-appropriate orbit altitude (metres) for a comfortable framing distance.
+  function getTargetOrbitDistance(target) {
+    if (!target) return 1500000;
+    const kind = target.kind || getEntityType(target);
+    if (kind === 'region')    return 1200000;
+    if (kind === 'satellite') return 2000000;
+    if (kind === 'flight')    return 600000;
+    if (kind === 'point')     return 300000;
+    return 800000; // agent / default
+  }
+
+  // Update follow-tracking state so continuous tracking uses the new target.
+  function setOrbitTarget(target) {
+    if (!target) { cesiumCameraLerpState = null; return; }
+    const ll = resolveTargetLatLng(target);
+    if (!ll) { cesiumCameraLerpState = null; return; }
+    cesiumCameraLerpState = { lng: ll.lng, lat: ll.lat, height: getTargetOrbitDistance(target) };
+  }
+
+  // Smoothly fly to any target and frame it correctly.
+  // Handles agents, regions, flights, and point events.
+  // Fails gracefully when coordinates are missing.
+  // If follow mode is on, tracking continues after landing.
+  function jumpToTarget(target) {
+    if (!target) return;
+    if (!USE_CESIUM || !cesiumViewer) {
+      // 2-D canvas fallback: set lerp target and let draw() handle it
+      const ll = resolveTargetLatLng(target);
+      if (!ll) return;
+      cameraLerpTarget = { lat: ll.lat, lng: ll.lng, kind: target.kind || 'agent', x: 50, y: 50 };
+      draw();
+      return;
+    }
+    const ll = resolveTargetLatLng(target);
+    if (!ll) return; // graceful: missing/invalid coords → no camera move, no error
+    const dist  = getTargetOrbitDistance(target);
+    const pitch = (target.kind === 'region')
+      ? Cesium.Math.toRadians(-75)
+      : Cesium.Math.toRadians(-55);
+    cesiumCameraMoveInternal = true;
+    cesiumFollowDisengageMutedUntil = Date.now() + 2500;
+    cesiumViewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, dist),
+      orientation: { heading: 0, pitch: pitch, roll: 0 },
+      duration: 1.8,
+      complete: function () {
+        cesiumCameraMoveInternal = false;
+        if (followTargetEnabled) setOrbitTarget(target);
+      },
+      cancel: function () { cesiumCameraMoveInternal = false; },
+    });
+    // Clear 2-D lerp state; if free-orbit (no follow), also clear Cesium lerp
+    cameraLerpTarget = null;
+    if (!followTargetEnabled) cesiumCameraLerpState = null;
+  }
+
+    // Programmatic zoom for +/- buttons: move camera closer/farther by a factor.
   // factor < 1 = zoom in (e.g. 0.6 = 40% closer); factor > 1 = zoom out.
   // Scroll-wheel and pinch are handled natively by Cesium ssc (enableZoom = true).
   function zoomBy(factor) {
@@ -3472,6 +3538,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       el.classList.toggle('active', el === chip);
     }
     renderEventLog();
+  });
+  // Click an event entry to jump to its associated agent or region
+  log.addEventListener('click', function (e) {
+    const entry = e.target.closest('.event-entry');
+    if (!entry) return;
+    const agentId  = entry.dataset.agentId;
+    const regionId = entry.dataset.regionId;
+    if (agentId  && state.agents[agentId])    { selectAgent(agentId);   return; }
+    if (regionId && state.regions[regionId])  { selectRegion(regionId); return; }
   });
 
   let _selectionClickLogged = false;
