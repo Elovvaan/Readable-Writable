@@ -581,7 +581,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   window.togglePanel = togglePanel;
   const canvas  = document.getElementById('world');
   const ctx     = canvas.getContext('2d');
-  const cesiumContainer = document.getElementById('worldview');
+  const cesiumContainer = document.getElementById('cesium-world');
   const bootstrapRaw = document.getElementById('rw-bootstrap');
   const BOOTSTRAP = bootstrapRaw ? JSON.parse(bootstrapRaw.textContent || '{}') : {};
   const USE_CESIUM = true;
@@ -1188,30 +1188,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
     });
-    cesiumViewer.camera.setView({
-  destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000)
-});
-const controller = cesiumViewer.scene.screenSpaceCameraController;
-
-controller.enableZoom = true;
-controller.enableTranslate = true;
-controller.enableTilt = true;
-controller.enableRotate = true;
     cesiumViewer.scene.skyBox.show = true;
     cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
     cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#080e1a');
-    cesiumViewer.scene.globe.depthTestAgainstTerrain = true;
+    cesiumViewer.scene.globe.depthTestAgainstTerrain = false;
+    cesiumViewer.scene.globe.enableLighting = false;
     cesiumViewer.scene.skyAtmosphere.show = true;
     cesiumViewer.scene.skyAtmosphere.atmosphereLightIntensity = 6.0;
-    cesiumViewer.scene.sun.show = false;
+    cesiumViewer.scene.sun.show = true;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
     // Full orbital camera control: allow rotate, tilt; zoom is disabled intentionally
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
     ssc.enableTilt   = true;
-    ssc.enableZoom   = true;
+    ssc.enableZoom   = false;
     ssc.enableTranslate = true;
     ssc.enableLook   = false;
     // Retained for reference / future programmatic zoom; has no effect while enableZoom is false.
@@ -1247,15 +1239,25 @@ controller.enableRotate = true;
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
       } else {
-        console.error('Missing GOOGLE_MAPS_API_KEY');
-        console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; using OpenStreetMap fallback imagery');
+        console.warn('[RW Cesium] No Google Maps API key — using built-in Natural Earth imagery');
         lastCesiumRenderCounts.tilesLoaded = false;
-        lastCesiumRenderCounts.tilesState = 'missing-key';
-        lastCesiumRenderCounts.tilesError = 'Missing GOOGLE_MAPS_API_KEY';
-        cesiumViewer.imageryLayers.removeAll();
-        cesiumViewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
-          url: 'https://tile.openstreetmap.org/',
-        }));
+        lastCesiumRenderCounts.tilesState = 'no-key';
+        lastCesiumRenderCounts.tilesError = null;
+        // Natural Earth II ships bundled with CesiumJS — no API key, no network required
+        try {
+          const naturalEarth = await Cesium.TileMapServiceImageryProvider.fromUrl(
+            Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII')
+          );
+          cesiumViewer.imageryLayers.removeAll();
+          cesiumViewer.imageryLayers.addImageryProvider(naturalEarth);
+        } catch (imgErr) {
+          console.warn('[RW Cesium] Natural Earth fallback failed, keeping default imagery', imgErr);
+        }
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
+          duration: 0,
+        });
       }
       lastCesiumRenderCounts.earthInitialized = true;
       lastCesiumRenderCounts.tilesLoaded = !!cesiumGoogleTileset;
