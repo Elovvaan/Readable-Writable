@@ -241,6 +241,58 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .lp-title, .selected-label, .stat-label, .drawer-title { color: color-mix(in srgb, var(--style-shell, #4ab8ac) 38%, #2a3840); }
     /* ── Global transitions ──────────────────────────────────────────────── */
     #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
+  /* === RW NEW LAYOUT === */
+
+#sidebar {
+  position: absolute;
+  left: 0;
+  top: 60px;
+  width: 200px;
+  bottom: 0;
+  background: rgba(0,0,0,0.85);
+  padding: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#sidebar button {
+  background: #111;
+  color: #0ff;
+  border: 1px solid #0ff;
+  padding: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+#sidebar button:hover {
+  background: #0ff;
+  color: #000;
+}
+
+#worldview {
+  position: absolute;
+  left: 200px;
+  top: 60px;
+  right: 0;
+  bottom: 0;
+}
+
+.panel {
+  position: absolute;
+  left: 200px;
+  right: 0;
+  bottom: 0;
+  height: 240px;
+  background: rgba(0,0,0,0.92);
+  color: white;
+  display: none;
+  z-index: 30;
+  overflow: auto;
+  padding: 12px;
+  border-top: 1px solid #0ff;
+}
   </style>
 </head>
 <body>
@@ -517,10 +569,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 <script>
 (function () {
   'use strict';
-
+  function togglePanel(name) {
+    document.querySelectorAll('.panel').forEach((p) => {
+      p.style.display = 'none';
+    });
+    const panel = document.getElementById('panel-' + name);
+    if (panel) {
+      panel.style.display = 'block';
+    }
+  }
+  window.togglePanel = togglePanel;
   const canvas  = document.getElementById('world');
   const ctx     = canvas.getContext('2d');
-  const cesiumContainer = document.getElementById('cesium-world');
+  const cesiumContainer = document.getElementById('worldview');
   const bootstrapRaw = document.getElementById('rw-bootstrap');
   const BOOTSTRAP = bootstrapRaw ? JSON.parse(bootstrapRaw.textContent || '{}') : {};
   const USE_CESIUM = true;
@@ -619,6 +680,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const GLOBE_PATH_MIN_Z = 0.01;
   const GLOBE_CONTINENT_MIN_Z = -1;
   const GLOBE_DISABLE_VISIBILITY_CULLING = true; // temporary: verify render path while debugging
+  const FORCE_RENDER_ALL_OPENSKY_FLIGHTS = true; // debug: render all fetched OpenSky flights globally
   const HIDE_GRID_REGIONS_ON_GLOBE = true;
 
   if (USE_CESIUM) {
@@ -1126,6 +1188,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
     });
+    cesiumViewer.camera.setView({
+  destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000)
+});
+const controller = cesiumViewer.scene.screenSpaceCameraController;
+
+controller.enableZoom = true;
+controller.enableTranslate = true;
+controller.enableTilt = true;
+controller.enableRotate = true;
     cesiumViewer.scene.skyBox.show = true;
     cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
@@ -1136,12 +1207,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.scene.sun.show = false;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
-    // Full orbital camera control: allow rotate, tilt, zoom; generous altitude range
+    // Full orbital camera control: allow rotate, tilt; zoom is disabled intentionally
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
     ssc.enableTilt   = true;
     ssc.enableZoom   = true;
+    ssc.enableTranslate = true;
     ssc.enableLook   = false;
+    // Retained for reference / future programmatic zoom; has no effect while enableZoom is false.
     ssc.minimumZoomDistance = 150;
     ssc.maximumZoomDistance = 40000000;
     try {
@@ -1173,11 +1246,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastCesiumRenderCounts.tilesLoaded = true;
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
-        cesiumViewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
-          duration: 0,
-        });
       } else {
         console.error('Missing GOOGLE_MAPS_API_KEY');
         console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; using OpenStreetMap fallback imagery');
@@ -1289,6 +1357,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     for (const a of allAgents) {
       const entityType = getEntityType(a);
+      const forceRender = shouldForceRenderOpenSkyFlight(a);
+      if (entityType === 'flight') flightsMerged++;
+      if (!(forceRender || (showAgents && isEntityTypeVisible(entityType)))) continue;
       if (!showAgents || !isEntityTypeVisible(entityType)) continue;
       if (entityType === 'flight') flightsVisibleAfterFilters++;
       const p = getEntityWorldPoint(a, nowMs);
@@ -1484,6 +1555,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         entities: entitiesVisible,
         satellites: satellitesRendered,
         regions: regionsVisible,
+        flightsFetched: openskyStatus.fetched,
+        flightsMerged,
+        flightsRendered: flightsDrawn,
+        googleTilesLoaded: !!cesiumGoogleTileset,
         flightsFetched: Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0,
         flightsMerged,
         flightsVisible: flightsVisibleAfterFilters,
@@ -1549,17 +1624,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const deferredSelectionDraws = [];
     const regions = Object.values(state.regions);
     const agents = Object.values(state.agents);
-    const visibleAgents = agents.filter(a => isEntityTypeVisible(getEntityType(a)));
+    const visibleAgents = agents.filter(function (a) {
+      return shouldForceRenderOpenSkyFlight(a) || isEntityTypeVisible(getEntityType(a));
+    });
     const flightsMerged = agents.filter(a => getEntityType(a) === 'flight').length;
-    const flightsVisibleAfterFilters = showAgents
-      ? visibleAgents.filter(a => getEntityType(a) === 'flight').length
-      : 0;
+    const flightsVisibleAfterFilters = visibleAgents.filter(a => getEntityType(a) === 'flight').length;
     const drawCounts = { flightsDrawn: 0 };
     latestRegionIntelligence = computeRegionIntelligence();
 
     globeRegionOverlaySuppressed = false;
     renderRegionOverlays(regions, width, height, now, globeDebug, deferredLabelDraws);
     renderTrailsAndArcs(visibleAgents, width, height, globeDebug);
+    renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts, showAgents);
+    lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: drawCounts.flightsDrawn };
+    console.info('[RW Flights][canvas]', {
+      flightsFetched: openskyStatus.fetched,
+      flightsMerged,
+      flightsRendered: drawCounts.flightsDrawn,
+    });
     renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts);
     lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: drawCounts.flightsDrawn, errors: 0 };
 
@@ -1736,9 +1818,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
   }
 
-  function renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts) {
-    if (!showAgents) return;
+  function renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts, agentsLayerEnabled) {
     visibleAgents.forEach(function (a) {
+      const forceRender = shouldForceRenderOpenSkyFlight(a);
+      if (!agentsLayerEnabled && !forceRender) return;
       const agentPoint = getEntityWorldPoint(a, now);
       if (globeDebug) {
         if (Number.isFinite(agentPoint.lat) && Number.isFinite(agentPoint.lng)) globeDebug.entitiesUsingLatLng++;
@@ -1947,6 +2030,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function getEntityTypeStyle(agent) {
     return TYPE_STYLE[getEntityType(agent)] || TYPE_STYLE.other;
+  }
+
+  function shouldForceRenderOpenSkyFlight(agent) {
+    return !!(FORCE_RENDER_ALL_OPENSKY_FLIGHTS && isOpenSkyFlight(agent));
   }
 
   function isEntityTypeVisible(type) {
@@ -2202,78 +2289,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     };
   }
 
+  // Camera auto-motion is disabled. This stub resets any stale follow/lerp state
+  // on each draw tick and returns false so the render loop does not reschedule
+  // on its behalf.
   function updateCameraMotion(width, height) {
-    if (followTargetEnabled) {
-      const selectedFocusPoint = getSelectedFocusPoint();
-      if (!selectedFocusPoint) {
-        followTargetEnabled = false;
-        cameraLerpTarget = null;
-        followTargetToggleEl.checked = false;
-      } else {
-        cameraLerpTarget = selectedFocusPoint;
-      }
-    }
-    if (!cameraLerpTarget) return false;
-    if (USE_CESIUM && cesiumViewer) {
-      const ll = toLatLngWithFallback(cameraLerpTarget);
-      if (!ll) return false;
-      const currentCarto = Cesium.Cartographic.fromCartesian(cesiumViewer.camera.position);
-      const currentLng = Cesium.Math.toDegrees(currentCarto.longitude);
-      const currentLat = Cesium.Math.toDegrees(currentCarto.latitude);
-      const desiredHeight = followTargetEnabled ? 1400000 : 1800000;
-      if (!cesiumCameraLerpState) {
-        cesiumCameraLerpState = { lng: currentLng, lat: currentLat, height: currentCarto.height };
-      }
-      const lerp = followTargetEnabled ? CESIUM_FOLLOW_LERP : CESIUM_FOCUS_LERP;
-      cesiumCameraLerpState.lng = Cesium.Math.lerp(cesiumCameraLerpState.lng, ll.lng, lerp);
-      cesiumCameraLerpState.lat = Cesium.Math.lerp(cesiumCameraLerpState.lat, ll.lat, lerp);
-      cesiumCameraLerpState.height = Cesium.Math.lerp(cesiumCameraLerpState.height, desiredHeight, lerp);
-      cesiumCameraMoveInternal = true;
-      cesiumFollowDisengageMutedUntil = Date.now() + 120;
-      cesiumViewer.camera.setView({
-        destination: Cesium.Cartesian3.fromDegrees(
-          cesiumCameraLerpState.lng,
-          cesiumCameraLerpState.lat,
-          cesiumCameraLerpState.height
-        ),
-      });
-      cesiumCameraMoveInternal = false;
-      const closeEnough = Math.abs(cesiumCameraLerpState.lng - ll.lng) < 0.012
-        && Math.abs(cesiumCameraLerpState.lat - ll.lat) < 0.012
-        && Math.abs(cesiumCameraLerpState.height - desiredHeight) < 1500;
-      if (closeEnough && !followTargetEnabled) {
-        cameraLerpTarget = null;
-        cesiumCameraLerpState = null;
-        return false;
-      }
-      return true;
-    }
-    const targetOffset = getViewportOffsetToCenterWorld(
-      cameraLerpTarget.x,
-      cameraLerpTarget.y,
-      width,
-      height,
-      cameraLerpTarget.lat,
-      cameraLerpTarget.lng
-    );
-    const nextOffsetX = viewport.offsetX + ((targetOffset.x - viewport.offsetX) * CAMERA_LERP_FACTOR);
-    const nextOffsetY = viewport.offsetY + ((targetOffset.y - viewport.offsetY) * CAMERA_LERP_FACTOR);
-    const deltaX = Math.abs(nextOffsetX - viewport.offsetX);
-    const deltaY = Math.abs(nextOffsetY - viewport.offsetY);
-    viewport.offsetX = nextOffsetX;
-    viewport.offsetY = nextOffsetY;
-    updateViewportReadout();
-
-    const closeEnough = Math.abs(targetOffset.x - viewport.offsetX) <= CAMERA_EPSILON_PX
-      && Math.abs(targetOffset.y - viewport.offsetY) <= CAMERA_EPSILON_PX;
-    if (closeEnough && !followTargetEnabled) {
-      viewport.offsetX = targetOffset.x;
-      viewport.offsetY = targetOffset.y;
-      cameraLerpTarget = null;
-      updateViewportReadout();
-      return false;
-    }
-    return deltaX > 0.01 || deltaY > 0.01 || followTargetEnabled;
+    followTargetEnabled = false;
+    cameraLerpTarget = null;
+    cesiumCameraLerpState = null;
+    return false;
   }
 
   function syncFollowTargetState() {
@@ -2456,12 +2479,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function setViewportZoom(nextZoom) {
-    const previousZoom = viewport.zoom;
     viewport.zoom = Math.max(VIEWPORT_ZOOM_MIN, Math.min(VIEWPORT_ZOOM_MAX, nextZoom));
-    if (USE_CESIUM && cesiumViewer) {
-      const ratio = viewport.zoom >= previousZoom ? 0.8 : 1.2;
-      cesiumViewer.camera.zoomBy(cesiumViewer.camera.positionCartographic.height * (ratio - 1));
-    }
+    // Cesium camera zoom is disabled (ssc.enableZoom = false); canvas overlay
+    // zoom still updates viewport.zoom for 2-D rendering scale only.
     syncFollowTargetState();
     updateViewportReadout();
     draw();
@@ -3810,6 +3830,18 @@ async function pollOpenSkyFlights() {
 
     openSkyLiveState.lastFetchedCount = states.length;
     openSkyLiveState.lastNormalizedCount = normalizedCount;
+    console.log(
+      '[RW Worldview] OpenSky visibility: fetched=' + states.length
+      + ' normalized=' + normalizedCount
+      + ' projection=' + visibilityStats.passProjection
+      + ' minZ=' + visibilityStats.passMinZ
+      + ' (threshold=' + OPENSKY_GLOBE_MIN_Z + ')'
+    );
+    console.info('[RW Flights][poll]', {
+      flightsFetched: states.length,
+      flightsMerged: normalizedCount,
+      flightsRendered: Object.keys(nextFlights).length,
+    });
     openSkyLiveState.lastVisibleCount = visibleCount;
     openSkyLiveState.lastDrawnCount = drawnCount;
 
