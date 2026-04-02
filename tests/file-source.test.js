@@ -157,7 +157,7 @@ describe('loadOpenSkyFile', () => {
     openSkyFileState.flights = {};
     openSkyFileState.lastLoadAt = null;
     openSkyFileState.lastErrorAt = null;
-    openSkyFileState.lastCount = 0;
+    openSkyFileState.lastContentHash = null;
     openSkyFileState.anomalies = [];
     eventLog.length = 0;
   });
@@ -165,7 +165,7 @@ describe('loadOpenSkyFile', () => {
   test('loads flights from a valid file', () => {
     withFile({ states: [makeRow()] }, () => {
       loadOpenSkyFile();
-      assert.equal(openSkyFileState.lastCount, 1);
+      assert.equal(Object.keys(openSkyFileState.flights).length, 1);
       assert.ok(openSkyFileState.lastLoadAt !== null);
       assert.equal(openSkyFileState.lastErrorAt, null);
     });
@@ -188,7 +188,7 @@ describe('loadOpenSkyFile', () => {
       ],
     }, () => {
       loadOpenSkyFile();
-      assert.equal(openSkyFileState.lastCount, 3);
+      assert.equal(Object.keys(openSkyFileState.flights).length, 3);
     });
   });
 
@@ -258,7 +258,7 @@ describe('loadOpenSkyFile', () => {
   test('handles empty states array without error', () => {
     withFile({ states: [] }, () => {
       loadOpenSkyFile();
-      assert.equal(openSkyFileState.lastCount, 0);
+      assert.equal(Object.keys(openSkyFileState.flights).length, 0);
       assert.equal(openSkyFileState.lastErrorAt, null);
     });
   });
@@ -266,7 +266,7 @@ describe('loadOpenSkyFile', () => {
   test('invalid rows are skipped without crashing', () => {
     withFile({ states: [null, 'bad', [], makeRow()] }, () => {
       loadOpenSkyFile();
-      assert.equal(openSkyFileState.lastCount, 1); // only the valid row
+      assert.equal(Object.keys(openSkyFileState.flights).length, 1); // only the valid row
     });
   });
 });

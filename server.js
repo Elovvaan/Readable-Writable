@@ -62,7 +62,7 @@ const openSkyFileState = {
   flights: {},
   lastLoadAt: null,
   lastErrorAt: null,
-  lastCount: 0,
+  lastContentHash: null,
   anomalies: [],
 };
 
@@ -581,7 +581,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let styleAnimationLoopActive = false;
   let globeOverlayDiagnostics = null;
   let globeRegionOverlaySuppressed = false;
-  let openskyStatus = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null, authMode: 'none', hasClientId: false, hasClientSecret: false, lastFetchStatus: 'none', lastFetchError: 'none', lastFetchAt: 'none' };
+  const OPENSKY_STATUS_DEFAULTS = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null, authMode: 'none', hasClientId: false, hasClientSecret: false, lastFetchStatus: 'none', lastFetchError: 'none' };
+  let openskyStatus = Object.assign({}, OPENSKY_STATUS_DEFAULTS);
   let lastFlightDebugCounts = { merged: 0, visible: 0, drawn: 0, errors: 0 };
   let lastLayerDiagnostics = {};
 
@@ -2822,11 +2823,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const drawnFlights = Number.isFinite(Number(lastFlightDebugCounts.drawn)) ? Number(lastFlightDebugCounts.drawn) : 0;
     const erroredFlights = Number.isFinite(Number(lastFlightDebugCounts.errors)) ? Number(lastFlightDebugCounts.errors) : 0;
     const openskyError = openskyStatus && openskyStatus.lastErrorAt ? ' ERR' : '';
-    // Compact timestamp: "HH:MM:SS" or "none"
+    // Compact UTC timestamp: "HH:MM:SS" or "none"
     const fetchAtStr = (function () {
-      const raw = openskyStatus && openskyStatus.lastFetchAt;
+      const raw = openskyStatus && openskyStatus.lastPollAt;
       if (!raw || raw === 'none') return 'none';
-      try { return new Date(raw).toTimeString().slice(0, 8); } catch (e) { return raw; }
+      try { return new Date(raw).toISOString().slice(11, 19); } catch (e) { return raw; }
     }());
     // Truncate error string so it fits on one line
     const fetchErrRaw = (openskyStatus && openskyStatus.lastFetchError) || 'none';
@@ -3056,7 +3057,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     state = nextSnapshot;
     openskyStatus = nextSnapshot && nextSnapshot.opensky
       ? nextSnapshot.opensky
-      : { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null, authMode: 'none', hasClientId: false, hasClientSecret: false, lastFetchStatus: 'none', lastFetchError: 'none', lastFetchAt: 'none' };
+      : Object.assign({}, OPENSKY_STATUS_DEFAULTS);
     latestRegionIntelligence = computeRegionIntelligence();
     clearSelectionIfHidden();
     if (selectedAgentId && !state.agents[selectedAgentId]) {
@@ -3211,6 +3212,27 @@ function uid(prefix) {
   return prefix + '-' + crypto.randomBytes(4).toString('hex');
 }
 
+function errMsg(err) {
+  return err && err.message ? err.message : String(err || 'unknown');
+}
+
+// Converts an OpenSky states array into a flights map using buildOpenSkyFlightEntity.
+// sourceOverride, if set, stamps entity.source (e.g. 'file'); omit for live API default.
+function normalizeStateBatch(states, previous, sourceOverride) {
+  const flights = {};
+  let count = 0;
+  for (const row of states) {
+    const icao24 = Array.isArray(row) ? String(row[0] || '').trim().toLowerCase() : '';
+    const prev = icao24 ? previous['flight-' + icao24] : null;
+    const entity = buildOpenSkyFlightEntity(row, prev);
+    if (!entity) continue;
+    if (sourceOverride) entity.source = sourceOverride;
+    count++;
+    flights[entity.id] = entity;
+  }
+  return { flights, count };
+}
+
 function broadcast(type, data) {
   const msg = JSON.stringify({ type, data });
   for (const client of wsClients) {
@@ -3260,7 +3282,6 @@ function snapshot() {
       hasClientSecret: !!(fileCredentials.credentialType === 'client_credentials' && fileCredentials.password),
       lastFetchStatus: openSkyLiveState.lastRequestStatus !== null ? openSkyLiveState.lastRequestStatus : 'none',
       lastFetchError: openSkyLiveState.lastErrorMessage || 'none',
-      lastFetchAt: openSkyLiveState.lastPollAt || 'none',
     },
   };
 }
@@ -3452,17 +3473,8 @@ async function pollOpenSkyFlights() {
       console.warn('[RW Worldview] OpenSky returned empty or invalid response');
     }
 
-    const nextFlights = {};
     const previous = openSkyLiveState.flights;
-    let normalizedCount = 0;
-    for (const row of states) {
-      const icao24 = Array.isArray(row) ? String(row[0] || '').trim().toLowerCase() : '';
-      const previousFlight = icao24 ? previous['flight-' + icao24] : null;
-      const normalized = buildOpenSkyFlightEntity(row, previousFlight);
-      if (!normalized) continue;
-      normalizedCount++;
-      nextFlights[normalized.id] = normalized;
-    }
+    const { flights: nextFlights, count: normalizedCount } = normalizeStateBatch(states, previous, null);
 
     const visibilityStats = countVisibleOpenSkyFlights(nextFlights, OPENSKY_GLOBE_MIN_Z);
     const visibleCount = visibilityStats.passProjection;
@@ -3498,10 +3510,10 @@ async function pollOpenSkyFlights() {
     openSkyLiveState.lastErrorMessage = null;
     broadcast('snapshot', snapshot());
   } catch (err) {
-    const msg = 'OpenSky poll warning: ' + (err && err.message ? err.message : String(err));
+    const msg = 'OpenSky poll warning: ' + errMsg(err);
     console.warn('[RW Worldview] ' + msg);
     openSkyLiveState.lastErrorAt = new Date().toISOString();
-    openSkyLiveState.lastErrorMessage = err && err.message ? err.message : String(err || 'unknown');
+    openSkyLiveState.lastErrorMessage = errMsg(err);
     openSkyLiveState.lastFetchedCount = 0;
     openSkyLiveState.lastNormalizedCount = 0;
     openSkyLiveState.lastVisibleCount = 0;
@@ -3567,7 +3579,6 @@ function loadOpenSkyFile() {
     raw = fs.readFileSync(OPENSKY_FILE_PATH, 'utf8');
   } catch (err) {
     if (err.code !== 'ENOENT') {
-      // File exists but couldn't be read — log and mark error
       console.warn('[RW File] Read error: ' + err.message);
       openSkyFileState.lastErrorAt = new Date().toISOString();
       emit('system', '[file] read error: ' + err.message, { source: 'file' });
@@ -3575,19 +3586,23 @@ function loadOpenSkyFile() {
     return;
   }
 
+  // Skip processing when the file content hasn't changed — avoids redundant
+  // parsing, anomaly detection, and broadcast on every 5 s poll tick.
+  const contentHash = crypto.createHash('md5').update(raw).digest('hex');
+  if (contentHash === openSkyFileState.lastContentHash) return;
+  openSkyFileState.lastContentHash = contentHash;
+
   let payload;
   try {
     payload = JSON.parse(raw);
   } catch (err) {
     console.warn('[RW File] Parse error in ' + OPENSKY_FILE_PATH + ': ' + err.message);
     openSkyFileState.lastErrorAt = new Date().toISOString();
-    emit('system', '[file] parse error: ' + err.message, { source: 'file' });
+    emit('system', '[file] parse error: ' + errMsg(err), { source: 'file' });
     return;
   }
 
-  // ── Credentials (optional) ──────────────────────────────────────────────────
-  // Supports username/password (OpenSky basic auth) or client_id/client_secret
-  // as field aliases.  Env vars OPENSKY_USERNAME / OPENSKY_PASSWORD always win.
+  // Env vars OPENSKY_USERNAME / OPENSKY_PASSWORD always win; file fields are fallback.
   const fileUser = String(payload.username || payload.client_id || '').trim();
   const filePass = String(payload.password || payload.client_secret || '').trim();
   if (fileUser && filePass) {
@@ -3599,18 +3614,9 @@ function loadOpenSkyFile() {
 
   const states = Array.isArray(payload && payload.states) ? payload.states : [];
   const previous = openSkyFileState.flights;
-  const nextFlights = {};
+  const { flights: nextFlights, count: nextCount } = normalizeStateBatch(states, previous, 'file');
 
-  for (const row of states) {
-    const icao24 = Array.isArray(row) ? String(row[0] || '').trim().toLowerCase() : '';
-    const prevFlight = icao24 ? previous['flight-' + icao24] : null;
-    const entity = buildOpenSkyFlightEntity(row, prevFlight);
-    if (!entity) continue;
-    entity.source = 'file'; // distinguish from live-API flights
-    nextFlights[entity.id] = entity;
-  }
-
-  // Anomaly detection — emit events only for newly detected anomalies
+  // Emit events only for newly detected anomalies (suppress duplicates across reloads).
   const anomalies = detectAnomalies(nextFlights);
   const prevMsgs = new Set(openSkyFileState.anomalies.map(a => a.msg));
   for (const anomaly of anomalies) {
@@ -3621,7 +3627,6 @@ function loadOpenSkyFile() {
   }
   openSkyFileState.anomalies = anomalies;
 
-  // Emit appear / disappear events
   for (const id of Object.keys(nextFlights)) {
     if (!previous[id]) {
       emit('agent', '[file] ' + id + ' appeared', { id, source: 'file', event: 'appear' }, 'flight');
@@ -3634,11 +3639,10 @@ function loadOpenSkyFile() {
   }
 
   openSkyFileState.flights = nextFlights;
-  openSkyFileState.lastCount = Object.keys(nextFlights).length;
   openSkyFileState.lastLoadAt = new Date().toISOString();
   openSkyFileState.lastErrorAt = null;
 
-  console.log('[RW File] Loaded ' + states.length + ' states → ' + openSkyFileState.lastCount + ' flights' +
+  console.log('[RW File] Loaded ' + states.length + ' states → ' + nextCount + ' flights' +
     (anomalies.length ? ' (' + anomalies.length + ' anomalies)' : ''));
 
   broadcast('snapshot', snapshot());
@@ -4135,4 +4139,6 @@ module.exports = {
   fileCredentials,
   detectAnomalies,
   loadOpenSkyFile,
+  normalizeStateBatch,
+  errMsg,
 };
