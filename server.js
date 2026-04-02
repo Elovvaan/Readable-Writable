@@ -581,7 +581,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   window.togglePanel = togglePanel;
   const canvas  = document.getElementById('world');
   const ctx     = canvas.getContext('2d');
-  const cesiumContainer = document.getElementById('worldview');
+  const cesiumContainer = document.getElementById('cesium-world');
   const bootstrapRaw = document.getElementById('rw-bootstrap');
   const BOOTSTRAP = bootstrapRaw ? JSON.parse(bootstrapRaw.textContent || '{}') : {};
   const USE_CESIUM = true;
@@ -1188,15 +1188,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
     });
-    cesiumViewer.camera.setView({
-  destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000)
-});
-const controller = cesiumViewer.scene.screenSpaceCameraController;
-
-controller.enableZoom = true;
-controller.enableTranslate = true;
-controller.enableTilt = true;
-controller.enableRotate = true;
     cesiumViewer.scene.skyBox.show = true;
     cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
