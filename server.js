@@ -2,6 +2,8 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4001;
@@ -20,6 +22,11 @@ const RW_USE_CESIUM = true;
 const RW_DEFAULT_VIEW = process.env.RW_DEFAULT_VIEW || 'earth';
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
 const CESIUM_ACCESS_TOKEN = process.env.CESIUM_ACCESS_TOKEN || '';
+const OPENSKY_FILE_PATH = path.resolve(process.env.OPENSKY_FILE_PATH || 'opensky.json');
+const OPENSKY_FILE_POLL_MS = 5000;
+// Anything above this speed (m/s) is flagged as physically impossible for civil aircraft.
+// Commercial jets cruise at ~240–280 m/s; 600 m/s ≈ Mach 1.8.
+const ANOMALY_MAX_SPEED_MS = 600;
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const worldview = {
@@ -38,15 +45,32 @@ const openSkyLiveState = {
   tokenExpiresAtMs: 0,
   lastPollAt: null,
   lastErrorAt: null,
+  lastErrorMessage: null,
   lastFetchedCount: 0,
   lastNormalizedCount: 0,
   authConfigured: true,
+  lastAuthMode: 'none',
   pollingRunning: false,
   lastRequestUrl: null,
   lastRequestStatus: null,
   lastModeUsed: 'public',
   lastVisibleCount: 0,
   lastDrawnCount: 0,
+};
+
+const openSkyFileState = {
+  flights: {},
+  lastLoadAt: null,
+  lastErrorAt: null,
+  lastContentHash: null,
+  anomalies: [],
+};
+
+// Credentials loaded from opensky.json — env vars always take priority.
+const fileCredentials = {
+  username: '',
+  password: '',
+  credentialType: '', // 'username_password' | 'client_credentials'
 };
 
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
@@ -58,104 +82,127 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <title>RW Worldview</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d0d0d; color: #e0e0e0; display: flex; flex-direction: column; height: 100vh; }
-    header { background: #111; border-bottom: 1px solid #222; padding: 10px 18px; display: flex; align-items: center; gap: 12px; }
-    header h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: .04em; color: #7cf; }
-    #status { font-size: .75rem; padding: 3px 8px; border-radius: 999px; background: #1e3a1e; color: #5f5; border: 1px solid #3a6a3a; }
-    #status.disconnected { background: #3a1e1e; color: #f55; border-color: #6a3a3a; }
-    #controls { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: .68rem; color: #aaa; flex-wrap: wrap; justify-content: flex-end; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #08090b; color: #8fa8bb; display: flex; flex-direction: column; height: 100vh; }
+    header { background: #09090d; border-bottom: 1px solid #141820; padding: 8px 16px; display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .06em; color: #2ab8a4; }
+    #status { font-size: .75rem; padding: 3px 8px; border-radius: 999px; background: #0d2218; color: #3ecb92; border: 1px solid #1a4a32; }
+    #status.disconnected { background: #1e0d0d; color: #c05050; border-color: #3d1a1a; }
+    #controls { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: .68rem; color: #607a8c; flex-wrap: wrap; justify-content: flex-end; }
     .ctrl-toggle { display: inline-flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap; cursor: pointer; }
-    .ctrl-toggle input { width: 13px; height: 13px; accent-color: #7cf; cursor: pointer; }
+    .ctrl-toggle input { width: 13px; height: 13px; accent-color: #2ab8a4; cursor: pointer; }
     .ctrl-inline { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-    .ctrl-compact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .62rem; color: #8ea4ba; }
-    .ctrl-compact input[type=range] { width: 58px; accent-color: #7cf; transition: filter 220ms ease, transform 220ms ease; }
-    .ctrl-compact input[type=range]:hover { filter: brightness(1.12); transform: translateY(-1px); }
-    .ctrl-compact select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .64rem; padding: 2px 4px; }
-    #style-indicator { border: 1px solid #324154; border-radius: 999px; font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; color: #9ec9f5; background: #101820; }
-    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .62rem; color: #8fb6d8; border: 1px solid #283849; border-radius: 6px; padding: 3px 7px; background: #0f161fcc; }
+    .ctrl-compact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .62rem; color: #607a8c; }
+    .ctrl-compact input[type=range] { width: 54px; accent-color: #2ab8a4; transition: filter 220ms ease, transform 220ms ease; }
+    .ctrl-compact input[type=range]:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .ctrl-compact select { border: 1px solid #1c2a36; background: #0e1520; color: #7fb8c8; border-radius: 4px; font-size: .64rem; padding: 2px 4px; }
+    #style-indicator { border: 1px solid #1c2e3a; border-radius: 999px; font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; color: #3ec9b8; background: #080e14; }
+    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .62rem; color: #4e7a8c; border: 1px solid #161e28; border-radius: 6px; padding: 3px 7px; background: #06080ccc; }
     .telemetry-item { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
-    .telemetry-label { color: #65839f; letter-spacing: .07em; }
-    .telemetry-value { color: #b9ddff; }
-    #telemetry-rec.live { color: #ff7878; text-shadow: 0 0 8px rgba(255,80,80,.4); animation: rec-pulse 1.4s ease-in-out infinite; }
+    .telemetry-label { color: #354e5e; letter-spacing: .07em; }
+    .telemetry-value { color: #6fa8bc; }
+    #telemetry-rec.live { color: #d05858; text-shadow: 0 0 8px rgba(200,60,60,.3); animation: rec-pulse 1.4s ease-in-out infinite; }
     @keyframes rec-pulse { 0%, 100% { opacity: .62; } 50% { opacity: 1; } }
     .preset-row { display: inline-flex; align-items: center; gap: 5px; }
-    .preset-btn { border: 1px solid #2b3c4d; background: #141c25; color: #9ec8e8; border-radius: 999px; font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; padding: 3px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; }
-    .preset-btn:hover { background: #1a2938; border-color: #3f658a; color: #d8efff; transform: translateY(-1px); }
-    .preset-btn.active { background: #213246; color: #d2e7ff; border-color: #4f80b0; }
-    #speed-select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 3px 6px; }
-    #pause-btn { border: 1px solid #2e3a46; background: #151a22; color: #a9d6ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
-    #pause-btn.active { background: #2b1e1e; color: #ffc2c2; border-color: #5a3333; }
-    main { display: grid; grid-template-columns: 1fr 320px; flex: 1; overflow: hidden; }
-    #canvas-wrap { position: relative; overflow: hidden; background: #0a0a12; }
+    .preset-btn { border: 1px solid #182430; background: #0c1219; color: #4e8096; border-radius: 999px; font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; padding: 3px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; }
+    .preset-btn:hover { background: #111e2a; border-color: #254056; color: #8abccc; transform: translateY(-1px); }
+    .preset-btn.active { background: #0e1f2e; color: #3ec9b8; border-color: #1f5e5a; }
+    #speed-select { border: 1px solid #1c2a36; background: #0e1520; color: #7fb8c8; border-radius: 4px; font-size: .68rem; padding: 3px 6px; }
+    #pause-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
+    #pause-btn.active { background: #1a0f0f; color: #c28080; border-color: #3d2020; }
+    main { display: grid; grid-template-columns: 180px 1fr 300px; flex: 1; overflow: hidden; }
+    #canvas-wrap { position: relative; overflow: hidden; background: #04050a; }
     #cesium-world, canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
     #cesium-world { z-index: 1; }
-    canvas { z-index: 2; pointer-events: auto; }
-    #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .45; transition: opacity 320ms ease, background 320ms ease, filter 320ms ease; }
+    canvas { z-index: 2; pointer-events: none; }
+    #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .35; transition: opacity 320ms ease, background 320ms ease, filter 320ms ease; }
     #fx-overlay .scanlines, #fx-overlay .noise, #fx-overlay .vignette, #fx-overlay .pixel-grid { position: absolute; inset: 0; }
-    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(220,255,255,.07) 0, rgba(220,255,255,.07) 1px, transparent 1px, transparent 3px); opacity: .2; }
-    #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.09) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .12; }
-    #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px); background-size: 10px 10px; opacity: .06; }
-    #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 48%, rgba(0,0,0,.58) 100%); opacity: .55; }
-    body[data-style-mode="crt"] { --style-accent: #8fd7ff; --style-shell: #90caf2; }
-    body[data-style-mode="nvg"] { --style-accent: #9dff95; --style-shell: #a3ffae; }
-    body[data-style-mode="flir"] { --style-accent: #ffd47f; --style-shell: #ffc983; }
-    header h1, .event-entry.agent, .viewport-readout, #style-indicator { color: var(--style-accent, #7cf); border-color: color-mix(in srgb, var(--style-accent, #7cf) 30%, #2e3a46); }
-    .panel-title, .selected-label, .stat-label { color: color-mix(in srgb, var(--style-shell, #9cb4cb) 48%, #3b4652); }
-    aside { background: #111; border-left: 1px solid #222; display: flex; flex-direction: column; overflow: hidden; }
-    .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #555; padding: 10px 14px 6px; border-bottom: 1px solid #1c1c1c; }
-    #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #1a1a1a; display: grid; gap: 6px; }
-    #event-search { width: 100%; border: 1px solid #2e3a46; background: #151a22; color: #d2e7ff; border-radius: 4px; font-size: .68rem; padding: 4px 6px; }
+    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(180,255,240,.05) 0, rgba(180,255,240,.05) 1px, transparent 1px, transparent 3px); opacity: .18; }
+    #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.07) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .1; }
+    #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px); background-size: 10px 10px; opacity: .05; }
+    #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 42%, rgba(0,0,0,.72) 100%); opacity: .65; }
+    body[data-style-mode="crt"] { --style-accent: #3ec9b8; --style-shell: #4ab8ac; }
+    body[data-style-mode="nvg"] { --style-accent: #7fe874; --style-shell: #88f580; }
+    body[data-style-mode="flir"] { --style-accent: #d4a055; --style-shell: #c89850; }
+    header h1, .event-entry.agent, .viewport-readout, #style-indicator { color: var(--style-accent, #3ec9b8); border-color: color-mix(in srgb, var(--style-accent, #3ec9b8) 28%, #182430); }
+    .panel-title, .selected-label, .stat-label { color: color-mix(in srgb, var(--style-shell, #4ab8ac) 38%, #2a3840); }
+    #left-panel { background: #09090d; border-right: 1px solid #141820; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding-bottom: 12px; }
+    .lp-title { font-size: .62rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; padding: 10px 12px 5px; }
+    .lp-toggle { display: flex; align-items: center; gap: 7px; padding: 4px 12px; font-size: .68rem; color: #5a7888; cursor: pointer; user-select: none; white-space: nowrap; transition: color 160ms; }
+    .lp-toggle:hover { color: #8ab8c8; }
+    .lp-toggle input { width: 12px; height: 12px; accent-color: #2ab8a4; cursor: pointer; flex-shrink: 0; }
+    .lp-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .lp-divider { margin: 6px 12px; border-top: 1px solid #121820; }
+    /* ── Data Layer rows ─────────────────────────────────────────────────── */
+    .layer-row { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-bottom: 1px solid #0e1420; cursor: default; }
+    .layer-row.unavailable { opacity: 0.38; pointer-events: none; }
+    .layer-icon { font-size: .82rem; line-height: 1; width: 16px; text-align: center; flex-shrink: 0; color: #2e4252; transition: color 200ms; }
+    .layer-row.on .layer-icon { color: var(--style-accent, #3ec9b8); }
+    .layer-info { flex: 1; min-width: 0; display: grid; gap: 1px; }
+    .layer-name { font-size: .65rem; font-weight: 600; color: #4a6878; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 200ms; }
+    .layer-row.on .layer-name { color: #7ab8c8; }
+    .layer-provider { font-size: .56rem; color: #243040; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .layer-freshness { font-size: .55rem; color: #243040; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .layer-row.on .layer-freshness { color: #2e6858; }
+    .layer-toggle { border: 1px solid #161e2a; background: #0b1018; color: #263444; border-radius: 3px; font-size: .54rem; font-weight: 700; letter-spacing: .08em; padding: 3px 5px; cursor: pointer; flex-shrink: 0; min-width: 28px; text-align: center; transition: background 160ms, border-color 160ms, color 160ms; }
+    .layer-toggle:hover { border-color: #1e3a50; color: #4a7898; background: #0e1828; }
+    .layer-toggle.active { border-color: #1f5e5a; background: #0a2422; color: #3ec9b8; }
+    .layer-toggle:disabled { cursor: not-allowed; opacity: 0.5; }
+    /* ── Visibility + Entity type rows ───────────────────────────────────── */ border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; }
+    .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #2a3e4a; padding: 10px 14px 6px; border-bottom: 1px solid #111820; }
+    #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #111820; display: grid; gap: 6px; }
+    #event-search { width: 100%; border: 1px solid #1c2a36; background: #0e1520; color: #8ab8cc; border-radius: 4px; font-size: .68rem; padding: 4px 6px; }
     #event-chip-row { display: flex; gap: 5px; flex-wrap: wrap; }
-    .event-chip { border: 1px solid #2a2f3a; border-radius: 999px; background: #12151d; color: #9cb4cb; padding: 2px 8px; font-size: .64rem; cursor: pointer; }
-    .event-chip.active { background: #213246; color: #d2e7ff; border-color: #3f658a; }
+    .event-chip { border: 1px solid #181e28; border-radius: 999px; background: #0b0e16; color: #4e7888; padding: 2px 8px; font-size: .64rem; cursor: pointer; }
+    .event-chip.active { background: #0d1a28; color: #3ec9b8; border-color: #1a4a44; }
     #event-log { flex: 1; overflow-y: auto; padding: 8px 0; font-size: .72rem; font-family: 'Cascadia Code', 'Fira Code', monospace; }
-    .event-entry { padding: 3px 14px; border-bottom: 1px solid #161616; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .event-entry .ts { color: #444; margin-right: 6px; }
-    .event-entry.agent { color: #7cf; }
-    .event-entry.region { color: #fc7; }
-    .event-entry.system { color: #a7f; }
-    .event-entry.related { background: #1a2330; box-shadow: inset 2px 0 0 #7cf; }
-    .event-entry.dimmed { opacity: 0.42; }
-    .event-empty { padding: 8px 14px; color: #666; font-style: italic; }
-    #selected-panel { border-top: 1px solid #1c1c1c; padding: 10px 14px; font-size: .72rem; }
-    #action-panel { border-top: 1px solid #1c1c1c; padding: 8px 14px 10px; font-size: .72rem; }
+    .event-entry { padding: 3px 14px; border-bottom: 1px solid #0e1218; color: #4e6878; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .event-entry .ts { color: #283038; margin-right: 6px; }
+    .event-entry.agent { color: #3ec9b8; }
+    .event-entry.region { color: #b89040; }
+    .event-entry.system { color: #8060b8; }
+    .event-entry.related { background: #0c1820; box-shadow: inset 2px 0 0 #2ab8a4; }
+    .event-entry.dimmed { opacity: 0.38; }
+    .event-empty { padding: 8px 14px; color: #38505e; font-style: italic; }
+    #selected-panel { border-top: 1px solid #111820; padding: 10px 14px; font-size: .72rem; }
+    #action-panel { border-top: 1px solid #111820; padding: 8px 14px 10px; font-size: .72rem; }
     .action-row { display: flex; gap: 6px; }
     .action-row.secondary { margin-top: 8px; }
-    .action-btn { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
-    .action-btn:disabled { cursor: not-allowed; opacity: .45; }
+    .action-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
+    .action-btn:disabled { cursor: not-allowed; opacity: .35; }
     .selected-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
-    .selected-label { color: #555; }
-    .selected-value { color: #ccc; font-family: monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .selected-empty { color: #666; font-style: italic; }
-    #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #1c1c1c; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
-    .stat-label { color: #555; }
-    .stat-value { color: #ccc; font-family: monospace; text-align: right; }
-    .pod-lab { border-top: 1px solid #1c1c1c; padding: 10px 14px 14px; display: grid; gap: 10px; background: #0f1118; }
+    .selected-label { color: #2e4050; }
+    .selected-value { color: #7098a8; font-family: monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .selected-empty { color: #2e4050; font-style: italic; }
+    #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #111820; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+    .stat-label { color: #2e4050; }
+    .stat-value { color: #7098a8; font-family: monospace; text-align: right; }
+    .pod-lab { border-top: 1px solid #111820; padding: 10px 14px 14px; display: grid; gap: 10px; background: #07080c; }
     .pod-stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-    .pod-step-chip { border: 1px solid #2e3a46; border-radius: 999px; font-size: .62rem; text-align: center; padding: 3px 0; color: #9ab5cf; background: #121926; }
-    .pod-step-chip.active { border-color: #4f80b0; color: #d2e7ff; background: #1e2f45; }
-    .pod-step-chip.done { border-color: #2d6f52; color: #b6ffd2; background: #183127; }
-    .pod-lock { border: 1px dashed #52424a; border-radius: 6px; padding: 7px 8px; font-size: .68rem; color: #d8a9b8; background: #21151b; }
-    .pod-lock.unlocked { border-style: solid; border-color: #2d6f52; color: #b8ffd6; background: #14261d; }
+    .pod-step-chip { border: 1px solid #1c2a36; border-radius: 999px; font-size: .62rem; text-align: center; padding: 3px 0; color: #4e7888; background: #0b1218; }
+    .pod-step-chip.active { border-color: #1f4e5a; color: #3ec9b8; background: #0c1e28; }
+    .pod-step-chip.done { border-color: #1a4a32; color: #60c88a; background: #0a1e16; }
+    .pod-lock { border: 1px dashed #2e2030; border-radius: 6px; padding: 7px 8px; font-size: .68rem; color: #9070a0; background: #100d18; }
+    .pod-lock.unlocked { border-style: solid; border-color: #1a4a32; color: #60c88a; background: #0a1e16; }
     .pod-lock.flash { animation: pod-unlock-flash 900ms ease; }
-    @keyframes pod-unlock-flash { 0% { box-shadow: 0 0 0 0 rgba(120,255,180,.65); } 100% { box-shadow: 0 0 0 14px rgba(120,255,180,0); } }
-    .pod-field { display: grid; gap: 4px; font-size: .66rem; color: #8ea4ba; }
-    .pod-field textarea { width: 100%; min-height: 52px; border: 1px solid #2e3a46; background: #151a22; color: #d7ebff; border-radius: 4px; padding: 6px; font-size: .68rem; resize: vertical; }
-    .pod-field textarea:disabled { opacity: .45; cursor: not-allowed; }
-    .pod-live-score { display: grid; gap: 4px; border: 1px solid #2e3a46; background: #121926; border-radius: 6px; padding: 7px 8px; }
-    .pod-live-score-row { display: flex; justify-content: space-between; font-size: .66rem; color: #a8c6e2; }
-    .pod-live-score strong { color: #ddf0ff; }
-    .pod-compare { border: 1px solid #3c4d63; border-radius: 6px; background: #131c28; padding: 7px 8px; font-size: .66rem; color: #b7d4ef; }
+    @keyframes pod-unlock-flash { 0% { box-shadow: 0 0 0 0 rgba(60,200,140,.5); } 100% { box-shadow: 0 0 0 14px rgba(60,200,140,0); } }
+    .pod-field { display: grid; gap: 4px; font-size: .66rem; color: #4e7888; }
+    .pod-field textarea { width: 100%; min-height: 52px; border: 1px solid #1c2a36; background: #0e1520; color: #8ab8cc; border-radius: 4px; padding: 6px; font-size: .68rem; resize: vertical; }
+    .pod-field textarea:disabled { opacity: .35; cursor: not-allowed; }
+    .pod-live-score { display: grid; gap: 4px; border: 1px solid #1c2a36; background: #0b1218; border-radius: 6px; padding: 7px 8px; }
+    .pod-live-score-row { display: flex; justify-content: space-between; font-size: .66rem; color: #4e7888; }
+    .pod-live-score strong { color: #7098a8; }
+    .pod-compare { border: 1px solid #1e3040; border-radius: 6px; background: #0a1220; padding: 7px 8px; font-size: .66rem; color: #5a8098; }
     .pod-actions { display: flex; gap: 6px; }
-    .pod-actions button { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 8px; cursor: pointer; }
-    .pod-actions button:disabled { opacity: .45; cursor: not-allowed; }
-    .type-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #2a2f3a; border-radius: 999px; padding: 2px 7px; }
+    .pod-actions button { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 4px 8px; cursor: pointer; }
+    .pod-actions button:disabled { opacity: .35; cursor: not-allowed; }
+    .type-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #181e28; border-radius: 999px; padding: 2px 7px; }
     .type-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-    #viewport-controls { position: absolute; top: 10px; left: 10px; display: grid; gap: 6px; z-index: 2; }
+    #viewport-controls { position: absolute; bottom: 14px; left: 12px; display: grid; gap: 5px; z-index: 10; }
     .viewport-row { display: flex; gap: 4px; }
-    .viewport-btn { border: 1px solid #2e3a46; background: #151a22e0; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, transform 180ms ease; }
-    .viewport-btn:hover { background: #1b2633f0; border-color: #44627f; transform: translateY(-1px); }
-    .viewport-readout { font-size: .62rem; color: #8ea4ba; background: #0d1219cc; border: 1px solid #253244; border-radius: 4px; padding: 2px 6px; width: fit-content; }
+    .viewport-btn { border: 1px solid #1c2e3a; background: #07101acc; color: #4e8898; border-radius: 4px; font-size: .66rem; padding: 5px 9px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; backdrop-filter: blur(4px); }
+    .viewport-btn:hover { background: #0e2030e0; border-color: #2a5060; color: #7abcc8; transform: translateY(-1px); }
+    .viewport-btn.reset { border-color: #1f4e5a; color: #3ec9b8; }
+    .viewport-readout { font-size: .6rem; color: #3a5868; background: #05090ecc; border: 1px solid #141e28; border-radius: 4px; padding: 2px 6px; width: fit-content; backdrop-filter: blur(4px); }
     #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
   </style>
 </head>
@@ -164,17 +211,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <h1>RW Worldview</h1>
   <span id="status" class="disconnected">disconnected</span>
   <div id="controls">
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-agents" checked>Show Agents</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-regions" checked>Show Regions</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-trails" checked>Show Trails</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-flights" checked>Live Flights</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-traffic" checked>Traffic</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-satellites" checked>Satellites</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-regions" checked>Regions Layer</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-weather">Weather</label>
-    <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#7cc4ff"></span><input type="checkbox" id="toggle-type-agent" checked>Agents</label>
-    <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#ffb77d"></span><input type="checkbox" id="toggle-type-flight" checked>Flights</label>
-    <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#d0a3ff"></span><input type="checkbox" id="toggle-type-satellite" checked>Satellites</label>
     <label class="ctrl-inline" for="speed-select">Speed
       <select id="speed-select" aria-label="Simulation speed">
         <option value="0.5">0.5x</option>
@@ -203,30 +239,129 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <button class="preset-btn" type="button" data-style-preset="cinematic">Cinematic</button>
       <button class="preset-btn" type="button" data-style-preset="minimal">Minimal</button>
     </div>
-    <label class="ctrl-compact" for="fx-bloom">Bloom<input id="fx-bloom" type="range" min="0" max="100" value="40"></label>
-    <label class="ctrl-compact" for="fx-sharpen">Sharp<input id="fx-sharpen" type="range" min="0" max="100" value="35"></label>
-    <label class="ctrl-compact" for="fx-noise">Noise<input id="fx-noise" type="range" min="0" max="100" value="28"></label>
-    <label class="ctrl-compact" for="fx-vignette">Vignette<input id="fx-vignette" type="range" min="0" max="100" value="40"></label>
-    <label class="ctrl-compact" for="fx-pixelation">Density<input id="fx-pixelation" type="range" min="0" max="100" value="22"></label>
-    <label class="ctrl-compact" for="fx-glow">Glow<input id="fx-glow" type="range" min="0" max="100" value="45"></label>
-    <button id="pause-btn" type="button" aria-pressed="false">Pause Simulation</button>
+    <label class="ctrl-compact" for="fx-bloom">Bloom<input id="fx-bloom" type="range" min="0" max="100" value="20"></label>
+    <label class="ctrl-compact" for="fx-sharpen">Sharp<input id="fx-sharpen" type="range" min="0" max="100" value="30"></label>
+    <label class="ctrl-compact" for="fx-noise">Noise<input id="fx-noise" type="range" min="0" max="100" value="18"></label>
+    <label class="ctrl-compact" for="fx-vignette">Vignette<input id="fx-vignette" type="range" min="0" max="100" value="50"></label>
+    <label class="ctrl-compact" for="fx-pixelation">Density<input id="fx-pixelation" type="range" min="0" max="100" value="14"></label>
+    <label class="ctrl-compact" for="fx-glow">Glow<input id="fx-glow" type="range" min="0" max="100" value="18"></label>
+    <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
   </div>
 </header>
 <main>
+  <nav id="left-panel" aria-label="Data layer controls">
+    <div class="lp-title">Data Layers</div>
+
+    <div class="layer-row on" data-layer="liveFlights">
+      <div class="layer-icon">✈</div>
+      <div class="layer-info">
+        <div class="layer-name">Live Flights</div>
+        <div class="layer-provider">OpenSky Network</div>
+        <div class="layer-freshness" id="layer-status-liveFlights">—</div>
+      </div>
+      <button class="layer-toggle active" id="toggle-layer-flights" type="button" aria-pressed="true">ON</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="militaryFlights">
+      <div class="layer-icon">★</div>
+      <div class="layer-info">
+        <div class="layer-name">Military Flights</div>
+        <div class="layer-provider">ADS-B Exchange</div>
+        <div class="layer-freshness" id="layer-status-militaryFlights">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-militaryFlights" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="earthquakes">
+      <div class="layer-icon">◎</div>
+      <div class="layer-info">
+        <div class="layer-name">Earthquakes</div>
+        <div class="layer-provider">USGS NEIC</div>
+        <div class="layer-freshness" id="layer-status-earthquakes">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-earthquakes" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row on" data-layer="satellites">
+      <div class="layer-icon">●</div>
+      <div class="layer-info">
+        <div class="layer-name">Satellites</div>
+        <div class="layer-provider">Celestrak / TLE</div>
+        <div class="layer-freshness" id="layer-status-satellites">—</div>
+      </div>
+      <button class="layer-toggle active" id="toggle-layer-satellites" type="button" aria-pressed="true">ON</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="traffic">
+      <div class="layer-icon">≡</div>
+      <div class="layer-info">
+        <div class="layer-name">Street Traffic</div>
+        <div class="layer-provider">HERE / TomTom</div>
+        <div class="layer-freshness" id="layer-status-traffic">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-traffic" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="weather">
+      <div class="layer-icon">☁</div>
+      <div class="layer-info">
+        <div class="layer-name">Weather Radar</div>
+        <div class="layer-provider">NOAA / NWS</div>
+        <div class="layer-freshness" id="layer-status-weather">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-weather" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="cctvMesh">
+      <div class="layer-icon">□</div>
+      <div class="layer-info">
+        <div class="layer-name">CCTV Mesh</div>
+        <div class="layer-provider">City Feed</div>
+        <div class="layer-freshness" id="layer-status-cctvMesh">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-cctvMesh" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="bikeshare">
+      <div class="layer-icon">⊕</div>
+      <div class="layer-info">
+        <div class="layer-name">Bikeshare</div>
+        <div class="layer-provider">GBFS Network</div>
+        <div class="layer-freshness" id="layer-status-bikeshare">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-bikeshare" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="lp-divider"></div>
+    <div class="lp-title">Visibility</div>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-agents" checked><span>Agents</span></label>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-regions" checked><span>Regions</span></label>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-trails" checked><span>Trails</span></label>
+
+    <div class="lp-divider"></div>
+    <div class="lp-title">Entity Types</div>
+    <label class="lp-toggle"><span class="lp-dot" style="background:#3ec9b8"></span><input type="checkbox" id="toggle-type-agent" checked><span>Agents</span></label>
+    <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-flight" checked><span>Flights</span></label>
+    <label class="lp-toggle"><span class="lp-dot" style="background:#9a70d8"></span><input type="checkbox" id="toggle-type-satellite" checked><span>Sats</span></label>
+
+    <div class="lp-divider"></div>
+    <div class="lp-title">Region Layer</div>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
+  </nav>
   <div id="canvas-wrap">
     <div id="viewport-controls">
       <div class="viewport-row">
-        <button id="zoom-out-btn" class="viewport-btn" type="button">−</button>
-        <button id="zoom-in-btn" class="viewport-btn" type="button">+</button>
-        <button id="reset-view-btn" class="viewport-btn" type="button">Reset View</button>
+        <button id="zoom-out-btn" class="viewport-btn" type="button" title="Zoom out">−</button>
+        <button id="zoom-in-btn" class="viewport-btn" type="button" title="Zoom in">+</button>
       </div>
       <div class="viewport-row">
-        <button id="pan-left-btn" class="viewport-btn" type="button">←</button>
-        <button id="pan-up-btn" class="viewport-btn" type="button">↑</button>
-        <button id="pan-down-btn" class="viewport-btn" type="button">↓</button>
-        <button id="pan-right-btn" class="viewport-btn" type="button">→</button>
+        <button id="pan-left-btn" class="viewport-btn" type="button" title="Pan left">←</button>
+        <button id="pan-up-btn" class="viewport-btn" type="button" title="Pan up">↑</button>
+        <button id="pan-down-btn" class="viewport-btn" type="button" title="Pan down">↓</button>
+        <button id="pan-right-btn" class="viewport-btn" type="button" title="Pan right">→</button>
       </div>
-      <div id="viewport-readout" class="viewport-readout">zoom 1.00x</div>
+      <button id="reset-view-btn" class="viewport-btn reset" type="button" title="Reset to default globe view">⌂ Reset</button>
+      <div id="viewport-readout" class="viewport-readout">orbit free</div>
     </div>
     <div id="cesium-world"></div>
     <canvas id="world"></canvas>
@@ -357,11 +492,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleAgentsEl = document.getElementById('toggle-agents');
   const toggleRegionsEl = document.getElementById('toggle-regions');
   const toggleTrailsEl = document.getElementById('toggle-trails');
-  const toggleLayerFlightsEl = document.getElementById('toggle-layer-flights');
-  const toggleLayerTrafficEl = document.getElementById('toggle-layer-traffic');
-  const toggleLayerSatellitesEl = document.getElementById('toggle-layer-satellites');
-  const toggleLayerRegionsEl = document.getElementById('toggle-layer-regions');
-  const toggleLayerWeatherEl = document.getElementById('toggle-layer-weather');
+  // Layer toggle buttons (now <button> elements, not checkboxes)
+  const toggleLayerFlightsEl     = document.getElementById('toggle-layer-flights');
+  const toggleLayerSatellitesEl  = document.getElementById('toggle-layer-satellites');
+  const toggleLayerRegionsEl     = document.getElementById('toggle-layer-regions');
+  // kept for title-init compatibility; these are disabled buttons in unavailable state
+  const toggleLayerTrafficEl     = document.getElementById('toggle-layer-traffic');
+  const toggleLayerWeatherEl     = document.getElementById('toggle-layer-weather');
   const toggleTypeAgentEl = document.getElementById('toggle-type-agent');
   const toggleTypeFlightEl = document.getElementById('toggle-type-flight');
   const toggleTypeSatelliteEl = document.getElementById('toggle-type-satellite');
@@ -527,7 +664,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let showRegions = true;
   let showTrails = true;
   let visibleEntityTypes = { agent: true, flight: true, satellite: true, other: true };
-  const layerState = { liveFlights: true, traffic: true, satellites: true, regions: true, weather: false };
+  const layerState = {
+    liveFlights:     true,   // OpenSky API + file source
+    militaryFlights: false,  // UNAVAILABLE — no data source wired
+    earthquakes:     false,  // UNAVAILABLE — no data source wired
+    satellites:      true,   // Celestrak / TLE
+    traffic:         false,  // UNAVAILABLE — incompatible with Cesium 3D Tiles renderer
+    weather:         false,  // UNAVAILABLE — stub only, not configured
+    cctvMesh:        false,  // UNAVAILABLE — no data source wired
+    bikeshare:       false,  // UNAVAILABLE — no data source wired
+    regions:         true,   // region overlay
+  };
+  // Which layers have a real data pipeline (others show UNAVAILABLE and cannot be toggled)
+  const LAYER_AVAILABLE = {
+    liveFlights: true, militaryFlights: false, earthquakes: false,
+    satellites: true,  traffic: false, weather: false, cctvMesh: false, bikeshare: false,
+  };
   let paused = false;
   let simulationSpeed = 1;
   let snapshotQueue = [];
@@ -540,10 +692,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let activeEventFilter = 'all';
   let styleMode = 'crt';
   const STYLE_PRESETS = {
-    tactical: { bloom: 48, sharpen: 44, noise: 32, vignette: 50, pixelation: 28, glow: 54 },
-    surveillance: { bloom: 30, sharpen: 64, noise: 24, vignette: 62, pixelation: 34, glow: 36 },
-    cinematic: { bloom: 72, sharpen: 28, noise: 40, vignette: 70, pixelation: 18, glow: 66 },
-    minimal: { bloom: 18, sharpen: 40, noise: 8, vignette: 26, pixelation: 8, glow: 20 },
+    tactical:     { bloom: 20, sharpen: 30, noise: 18, vignette: 50, pixelation: 14, glow: 18 },
+    surveillance: { bloom: 14, sharpen: 52, noise: 12, vignette: 60, pixelation: 20, glow: 10 },
+    cinematic:    { bloom: 38, sharpen: 18, noise: 28, vignette: 68, pixelation: 10, glow: 32 },
+    minimal:      { bloom: 6,  sharpen: 32, noise: 4,  vignette: 30, pixelation: 4,  glow: 6  },
   };
   let activeStylePreset = 'tactical';
   let styleFx = { ...STYLE_PRESETS.tactical };
@@ -558,9 +710,45 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let styleAnimationLoopActive = false;
   let globeOverlayDiagnostics = null;
   let globeRegionOverlaySuppressed = false;
-  let openskyStatus = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null };
+  const OPENSKY_STATUS_DEFAULTS = { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null, authMode: 'none', hasClientId: false, hasClientSecret: false, lastFetchStatus: 'none', lastFetchError: 'none' };
+  let openskyStatus = Object.assign({}, OPENSKY_STATUS_DEFAULTS);
   let lastFlightDebugCounts = { merged: 0, visible: 0, drawn: 0, errors: 0 };
   let lastLayerDiagnostics = {};
+  // per-layer last-update timestamps (ms since epoch, null = never fetched yet)
+  const layerLastUpdated = {
+    liveFlights: null,
+    satellites:  null,
+  };
+
+  // ── Layer UI helpers ──────────────────────────────────────────────────────
+  function timeSinceStr(tsMs) {
+    if (!tsMs) return '—';
+    const secs = Math.floor((Date.now() - tsMs) / 1000);
+    if (secs < 10) return 'just now';
+    if (secs < 60) return secs + 's ago';
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'm ago';
+    return Math.floor(mins / 60) + 'h ago';
+  }
+
+  function setLayerStatus(key, text) {
+    const el = document.getElementById('layer-status-' + key);
+    if (el) el.textContent = text;
+  }
+
+  function setLayerOn(key, on) {
+    if (key in LAYER_AVAILABLE && !LAYER_AVAILABLE[key]) return; // can't toggle unavailable
+    layerState[key] = on;
+    const btn = document.getElementById('toggle-layer-' + key);
+    if (btn) {
+      btn.textContent = on ? 'ON' : 'OFF';
+      btn.setAttribute('aria-pressed', String(on));
+      btn.classList.toggle('active', on);
+    }
+    const row = btn ? btn.closest('.layer-row') : null;
+    if (row) row.classList.toggle('on', on);
+    if (!on) setLayerStatus(key, 'paused');
+  }
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -838,15 +1026,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
     });
-    cesiumViewer.scene.skyBox.show = false;
-    cesiumViewer.scene.backgroundColor = Cesium.Color.BLACK;
+    cesiumViewer.scene.skyBox.show = true;
+    cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
-    cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0b1220');
+    cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#080e1a');
     cesiumViewer.scene.globe.depthTestAgainstTerrain = true;
     cesiumViewer.scene.skyAtmosphere.show = true;
+    cesiumViewer.scene.skyAtmosphere.atmosphereLightIntensity = 6.0;
     cesiumViewer.scene.sun.show = false;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
+    // Full orbital camera control: allow rotate, tilt, zoom; generous altitude range
+    const ssc = cesiumViewer.scene.screenSpaceCameraController;
+    ssc.enableRotate = true;
+    ssc.enableTilt   = true;
+    ssc.enableZoom   = true;
+    ssc.enableLook   = false;
+    ssc.minimumZoomDistance = 150;
+    ssc.maximumZoomDistance = 40000000;
     try {
       if (BOOTSTRAP.googleMapsApiKey) {
         console.info('[RW Cesium] Google Photorealistic 3D Tiles request started');
@@ -877,7 +1074,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
         cesiumViewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(-95, 40, 20000000),
+          destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
+          duration: 0,
         });
       } else {
         console.error('Missing GOOGLE_MAPS_API_KEY');
@@ -1682,21 +1881,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const satellitesInState = allAgents.filter(a => getEntityType(a) === 'satellite').length;
     const regionsInState = Object.keys(state.regions || {}).length;
     return {
-      liveFlights: layerState.liveFlights
-        ? (flightsInState > 0 ? 'active' : 'no data')
-        : 'off',
-      traffic: layerState.traffic
-        ? 'unavailable in current renderer mode'
-        : 'off',
-      satellites: layerState.satellites
-        ? (satellitesInState > 0 ? 'active' : 'no data')
-        : 'off',
-      regions: layerState.regions
-        ? (regionsInState > 0 ? 'active' : 'no data')
-        : 'off',
-      weather: layerState.weather
-        ? 'not configured'
-        : 'off',
+      liveFlights:     layerState.liveFlights ? (flightsInState > 0 ? 'active' : 'no data') : 'off',
+      militaryFlights: 'unavailable',
+      earthquakes:     'unavailable',
+      satellites:      layerState.satellites ? (satellitesInState > 0 ? 'active' : 'no data') : 'off',
+      traffic:         'unavailable',
+      weather:         'unavailable',
+      cctvMesh:        'unavailable',
+      bikeshare:       'unavailable',
+      regions:         layerState.regions ? (regionsInState > 0 ? 'active' : 'no data') : 'off',
     };
   }
 
@@ -1821,23 +2014,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!targetKey) return;
     const focusPoint = getSelectedFocusPoint();
     if (!focusPoint) return;
-    cameraLerpTarget = focusPoint;
-    if (USE_CESIUM && cesiumViewer) {
-      const ll = toLatLngWithFallback(focusPoint);
-      if (ll) {
-        cesiumCameraLerpState = {
-          lng: ll.lng,
-          lat: ll.lat,
-          height: 1800000,
-        };
-      }
-    }
     focusTargetKey = targetKey;
     focusEffectUntil = Date.now() + 2200;
     const targetId = selectedAgentId || selectedRegionId;
     const label = selectedAgentId ? targetId : ('region ' + targetId);
     lastOperatorActionByTarget[targetKey] = 'focus';
     pushOperatorEvent('operator focused ' + label);
+    if (USE_CESIUM && cesiumViewer) {
+      const ll = toLatLngWithFallback(focusPoint);
+      if (ll) {
+        cesiumCameraMoveInternal = true;
+        cesiumFollowDisengageMutedUntil = Date.now() + 2500;
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 1800000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+          duration: 1.8,
+          complete: function () { cesiumCameraMoveInternal = false; },
+          cancel:   function () { cesiumCameraMoveInternal = false; },
+        });
+        // One-shot focus — no continuous lerp; user can orbit freely after landing
+        cameraLerpTarget = null;
+        cesiumCameraLerpState = null;
+      }
+    } else {
+      cameraLerpTarget = focusPoint;
+    }
     renderSelectedPanel();
     draw();
   }
@@ -2142,11 +2343,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function updateViewportReadout() {
-    let text = 'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
+    let text;
     if (USE_CESIUM) {
-      text += ' · cesium e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions + ' s:' + lastCesiumRenderCounts.satellites;
-      text += ' · google tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'on' : 'off'));
-      if (layerState.traffic) text += ' · traffic:unavailable';
+      text = 'orbit free';
+      if (cesiumViewer) {
+        const h = cesiumViewer.camera.positionCartographic.height;
+        const altKm = (h / 1000).toFixed(0);
+        text += ' · alt ' + altKm + ' km';
+        const pitch = Cesium.Math.toDegrees(cesiumViewer.camera.pitch).toFixed(0);
+        text += ' · pitch ' + pitch + '°';
+      }
+      text += ' · e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions + ' s:' + lastCesiumRenderCounts.satellites;
+      text += ' · tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'on' : 'off'));
+    } else {
+      text = 'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
+    }
+    if (USE_CESIUM) {
       if (layerState.weather) text += ' · weather:not configured';
     } else if (isGlobeRenderMode() && globeOverlayDiagnostics) {
       text += ' · vis e:' + globeOverlayDiagnostics.entitiesVisible
@@ -2190,8 +2402,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     viewport.offsetX = 0;
     viewport.offsetY = 0;
     cameraLerpTarget = null;
+    cesiumCameraLerpState = null;
     followTargetEnabled = false;
     followTargetToggleEl.checked = false;
+    if (USE_CESIUM && cesiumViewer) {
+      cesiumCameraMoveInternal = true;
+      cesiumFollowDisengageMutedUntil = Date.now() + 2000;
+      cesiumViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
+        orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
+        duration: 1.5,
+        complete: function () { cesiumCameraMoveInternal = false; },
+        cancel:   function () { cesiumCameraMoveInternal = false; },
+      });
+    }
     updateViewportReadout();
     draw();
   }
@@ -2818,7 +3042,28 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const drawnFlights = Number.isFinite(Number(lastFlightDebugCounts.drawn)) ? Number(lastFlightDebugCounts.drawn) : 0;
     const erroredFlights = Number.isFinite(Number(lastFlightDebugCounts.errors)) ? Number(lastFlightDebugCounts.errors) : 0;
     const openskyError = openskyStatus && openskyStatus.lastErrorAt ? ' ERR' : '';
-    const flightDebugText = 'fetched:' + fetched + ' merged:' + merged + ' visible:' + visibleFlights + ' drawn:' + drawnFlights + ' errors:' + erroredFlights + openskyError;
+    // Compact UTC timestamp: "HH:MM:SS" or "none"
+    const fetchAtStr = (function () {
+      const raw = openskyStatus && openskyStatus.lastPollAt;
+      if (!raw || raw === 'none') return 'none';
+      try { return new Date(raw).toISOString().slice(11, 19); } catch (e) { return raw; }
+    }());
+    // Truncate error string so it fits on one line
+    const fetchErrRaw = (openskyStatus && openskyStatus.lastFetchError) || 'none';
+    const fetchErrStr = fetchErrRaw.length > 60 ? fetchErrRaw.slice(0, 57) + '…' : fetchErrRaw;
+    const flightDebugText =
+      'fetched:' + fetched +
+      ' merged:' + merged +
+      ' visible:' + visibleFlights +
+      ' drawn:' + drawnFlights +
+      ' errors:' + erroredFlights +
+      ' | auth:' + ((openskyStatus && openskyStatus.authMode) || 'none') +
+      ' cid:' + ((openskyStatus && openskyStatus.hasClientId) ? 'yes' : 'no') +
+      ' csec:' + ((openskyStatus && openskyStatus.hasClientSecret) ? 'yes' : 'no') +
+      ' | status:' + ((openskyStatus && openskyStatus.lastFetchStatus !== undefined) ? openskyStatus.lastFetchStatus : 'none') +
+      ' err:' + fetchErrStr +
+      ' at:' + fetchAtStr +
+      openskyError;
     const layerDiagnostics = buildLayerDiagnostics();
     lastLayerDiagnostics = layerDiagnostics;
     const layerDebugText = 'L:' + layerDiagnostics.liveFlights
@@ -2843,6 +3088,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
       document.getElementById('s-uptime').textContent =
         (h ? h+'h ' : '') + (m ? m+'m ' : '') + s+'s';
+    }
+    // ── Layer freshness panel update ──────────────────────────────────────
+    if (layerState.liveFlights) {
+      const pollTs = openskyStatus && openskyStatus.lastPollAt
+        ? new Date(openskyStatus.lastPollAt).getTime() : null;
+      if (pollTs) layerLastUpdated.liveFlights = pollTs;
+      setLayerStatus('liveFlights', openskyStatus && openskyStatus.lastErrorAt
+        ? 'error · ' + timeSinceStr(layerLastUpdated.liveFlights)
+        : timeSinceStr(layerLastUpdated.liveFlights));
+    }
+    const satCount = Object.values(state.agents || {}).filter(a => getEntityType(a) === 'satellite').length;
+    if (layerState.satellites) {
+      if (satCount > 0 && !layerLastUpdated.satellites) layerLastUpdated.satellites = Date.now();
+      setLayerStatus('satellites', satCount > 0
+        ? satCount + ' tracked · ' + timeSinceStr(layerLastUpdated.satellites)
+        : 'no data');
     }
   }
   setInterval(updateStats, 1000);
@@ -2914,20 +3175,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     showTrails = !!toggleTrailsEl.checked;
     draw();
   });
-  toggleLayerFlightsEl.addEventListener('change', function () {
-    layerState.liveFlights = !!toggleLayerFlightsEl.checked;
+  // Layer toggle buttons — available layers use click to flip ON/OFF
+  toggleLayerFlightsEl.addEventListener('click', function () {
+    setLayerOn('liveFlights', !layerState.liveFlights);
     clearSelectionIfHidden();
     refreshEventVisibilityStyling();
     updateStats();
     draw();
   });
-  toggleLayerTrafficEl.addEventListener('change', function () {
-    layerState.traffic = !!toggleLayerTrafficEl.checked;
-    updateStats();
-    draw();
-  });
-  toggleLayerSatellitesEl.addEventListener('change', function () {
-    layerState.satellites = !!toggleLayerSatellitesEl.checked;
+  toggleLayerSatellitesEl.addEventListener('click', function () {
+    setLayerOn('satellites', !layerState.satellites);
     clearSelectionIfHidden();
     refreshEventVisibilityStyling();
     updateStats();
@@ -2938,10 +3195,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     clearSelectionIfHidden();
     updateStats();
     draw();
-  });
-  toggleLayerWeatherEl.addEventListener('change', function () {
-    layerState.weather = !!toggleLayerWeatherEl.checked;
-    updateStats();
   });
   function onTypeToggleChange() {
     visibleEntityTypes.agent = !!toggleTypeAgentEl.checked;
@@ -3014,15 +3267,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
   }
 
-  if (USE_CESIUM) {
-    toggleLayerTrafficEl.title = 'Traffic layer unavailable in current renderer mode (Cesium + Google 3D Tiles)';
-  }
-  toggleLayerWeatherEl.title = 'Weather layer is present as a stub and currently not configured';
-
   function applySnapshot(nextSnapshot) {
     const snapshotTsMs = Date.now();
     updateAgentTrails(state.agents, nextSnapshot.agents);
-    updateFlightTracking(state.agents, nextSnapshot.agents, snapshotTsMs);
+    // Gate flight tracking on live-flights layer — OFF layer must not process flight events
+    if (layerState.liveFlights) {
+      updateFlightTracking(state.agents, nextSnapshot.agents, snapshotTsMs);
+    }
     const receivedFlightCount = Object.values(nextSnapshot && nextSnapshot.agents ? nextSnapshot.agents : {}).filter(function (a) {
       return a && a.type === 'flight';
     }).length;
@@ -3031,7 +3282,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     state = nextSnapshot;
     openskyStatus = nextSnapshot && nextSnapshot.opensky
       ? nextSnapshot.opensky
-      : { enabled: false, authConfigured: false, fetched: 0, normalized: 0, merged: 0, lastPollAt: null, lastErrorAt: null, pollingRunning: false, lastRequestUrl: null, lastRequestStatus: null };
+      : Object.assign({}, OPENSKY_STATUS_DEFAULTS);
     latestRegionIntelligence = computeRegionIntelligence();
     clearSelectionIfHidden();
     if (selectedAgentId && !state.agents[selectedAgentId]) {
@@ -3130,7 +3381,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           return;
         }
         updateAgentTrails(state.agents, msg.data.agents);
-        updateFlightTracking(state.agents, msg.data.agents, Date.now());
+        if (layerState.liveFlights) {
+          updateFlightTracking(state.agents, msg.data.agents, Date.now());
+        }
         previousAgentsById = state.agents || {};
         state = msg.data;
         latestRegionIntelligence = computeRegionIntelligence();
@@ -3186,6 +3439,27 @@ function uid(prefix) {
   return prefix + '-' + crypto.randomBytes(4).toString('hex');
 }
 
+function errMsg(err) {
+  return err && err.message ? err.message : String(err || 'unknown');
+}
+
+// Converts an OpenSky states array into a flights map using buildOpenSkyFlightEntity.
+// sourceOverride, if set, stamps entity.source (e.g. 'file'); omit for live API default.
+function normalizeStateBatch(states, previous, sourceOverride) {
+  const flights = {};
+  let count = 0;
+  for (const row of states) {
+    const icao24 = Array.isArray(row) ? String(row[0] || '').trim().toLowerCase() : '';
+    const prev = icao24 ? previous['flight-' + icao24] : null;
+    const entity = buildOpenSkyFlightEntity(row, prev);
+    if (!entity) continue;
+    if (sourceOverride) entity.source = sourceOverride;
+    count++;
+    flights[entity.id] = entity;
+  }
+  return { flights, count };
+}
+
 function broadcast(type, data) {
   const msg = JSON.stringify({ type, data });
   for (const client of wsClients) {
@@ -3207,6 +3481,7 @@ function emit(kind, msg, patch, entityType) {
 function snapshot() {
   const mergedAgents = {
     ...worldview.agents,
+    ...openSkyFileState.flights,   // file-sourced flights (live API wins on icao collision)
     ...openSkyLiveState.flights,
   };
   return {
@@ -3228,6 +3503,12 @@ function snapshot() {
       lastRequestStatus: openSkyLiveState.lastRequestStatus,
       lastPollAt: openSkyLiveState.lastPollAt,
       lastErrorAt: openSkyLiveState.lastErrorAt,
+      // ── diagnostic fields ──────────────────────────────────────────────────
+      authMode: OPENSKY_ENABLED ? (openSkyLiveState.lastAuthMode || 'public') : 'none',
+      hasClientId: !!(fileCredentials.credentialType === 'client_credentials' && fileCredentials.username),
+      hasClientSecret: !!(fileCredentials.credentialType === 'client_credentials' && fileCredentials.password),
+      lastFetchStatus: openSkyLiveState.lastRequestStatus !== null ? openSkyLiveState.lastRequestStatus : 'none',
+      lastFetchError: openSkyLiveState.lastErrorMessage || 'none',
     },
   };
 }
@@ -3350,12 +3631,21 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
 
 async function pollOpenSkyFlights() {
   if (!OPENSKY_ENABLED) return;
-  const authConfigured = !!(OPENSKY_USERNAME && OPENSKY_PASSWORD);
+  // Env vars take priority; fall back to credentials loaded from opensky.json.
+  const effectiveUser = OPENSKY_USERNAME || fileCredentials.username;
+  const effectivePass = OPENSKY_PASSWORD || fileCredentials.password;
+  const authConfigured = !!(effectiveUser && effectivePass);
+  const usingFileCreds = !OPENSKY_USERNAME && !!fileCredentials.username;
   openSkyLiveState.authConfigured = authConfigured;
+  openSkyLiveState.lastAuthMode = !authConfigured
+    ? 'public'
+    : (usingFileCreds && fileCredentials.credentialType === 'client_credentials')
+      ? 'client_credentials'
+      : 'username_password';
   console.log('[RW Worldview] Polling OpenSky... running=' + openSkyLiveState.pollingRunning + ' authConfigured=' + authConfigured);
   try {
     const authHeader = authConfigured
-      ? 'Basic ' + Buffer.from(OPENSKY_USERNAME + ':' + OPENSKY_PASSWORD).toString('base64')
+      ? 'Basic ' + Buffer.from(effectiveUser + ':' + effectivePass).toString('base64')
       : null;
 
     let modeUsed = authConfigured ? 'auth' : 'public';
@@ -3410,17 +3700,8 @@ async function pollOpenSkyFlights() {
       console.warn('[RW Worldview] OpenSky returned empty or invalid response');
     }
 
-    const nextFlights = {};
     const previous = openSkyLiveState.flights;
-    let normalizedCount = 0;
-    for (const row of states) {
-      const icao24 = Array.isArray(row) ? String(row[0] || '').trim().toLowerCase() : '';
-      const previousFlight = icao24 ? previous['flight-' + icao24] : null;
-      const normalized = buildOpenSkyFlightEntity(row, previousFlight);
-      if (!normalized) continue;
-      normalizedCount++;
-      nextFlights[normalized.id] = normalized;
-    }
+    const { flights: nextFlights, count: normalizedCount } = normalizeStateBatch(states, previous, null);
 
     const visibilityStats = countVisibleOpenSkyFlights(nextFlights, OPENSKY_GLOBE_MIN_Z);
     const visibleCount = visibilityStats.passProjection;
@@ -3465,11 +3746,13 @@ async function pollOpenSkyFlights() {
     openSkyLiveState.flights = nextFlights;
     openSkyLiveState.lastPollAt = new Date().toISOString();
     openSkyLiveState.lastErrorAt = null;
+    openSkyLiveState.lastErrorMessage = null;
     broadcast('snapshot', snapshot());
   } catch (err) {
-    const msg = 'OpenSky poll warning: ' + (err && err.message ? err.message : String(err));
+    const msg = 'OpenSky poll warning: ' + errMsg(err);
     console.warn('[RW Worldview] ' + msg);
     openSkyLiveState.lastErrorAt = new Date().toISOString();
+    openSkyLiveState.lastErrorMessage = errMsg(err);
     openSkyLiveState.lastFetchedCount = 0;
     openSkyLiveState.lastNormalizedCount = 0;
     openSkyLiveState.lastVisibleCount = 0;
@@ -3491,6 +3774,138 @@ function startOpenSkyPolling() {
   setInterval(() => {
     pollOpenSkyFlights().catch(() => {});
   }, OPENSKY_POLL_INTERVAL_MS);
+}
+
+// ─── OpenSky file source ──────────────────────────────────────────────────────
+
+function detectAnomalies(flights) {
+  const anomalies = [];
+  const seenIcao = {}; // icao24 → first entity id seen
+
+  for (const entity of Object.values(flights)) {
+    // Impossible speed
+    if (Number.isFinite(entity.velocity) && entity.velocity > ANOMALY_MAX_SPEED_MS) {
+      anomalies.push({
+        type: 'impossible_speed',
+        id: entity.id,
+        icao24: entity.icao24,
+        velocity: entity.velocity,
+        msg: entity.id + ' impossible speed ' + entity.velocity.toFixed(1) + ' m/s',
+      });
+    }
+
+    // Duplicate ICAO — same icao24 appearing more than once in the states array
+    if (entity.icao24) {
+      if (seenIcao[entity.icao24]) {
+        anomalies.push({
+          type: 'duplicate_icao',
+          icao24: entity.icao24,
+          ids: [seenIcao[entity.icao24], entity.id],
+          msg: 'duplicate ICAO ' + entity.icao24 + ' (' + seenIcao[entity.icao24] + ' and ' + entity.id + ')',
+        });
+      } else {
+        seenIcao[entity.icao24] = entity.id;
+      }
+    }
+  }
+
+  return anomalies;
+}
+
+function loadOpenSkyFile() {
+  let raw;
+  try {
+    raw = fs.readFileSync(OPENSKY_FILE_PATH, 'utf8');
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.warn('[RW File] Read error: ' + err.message);
+      openSkyFileState.lastErrorAt = new Date().toISOString();
+      emit('system', '[file] read error: ' + err.message, { source: 'file' });
+    }
+    return;
+  }
+
+  // Skip processing when the file content hasn't changed — avoids redundant
+  // parsing, anomaly detection, and broadcast on every 5 s poll tick.
+  const contentHash = crypto.createHash('md5').update(raw).digest('hex');
+  if (contentHash === openSkyFileState.lastContentHash) return;
+  openSkyFileState.lastContentHash = contentHash;
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (err) {
+    console.warn('[RW File] Parse error in ' + OPENSKY_FILE_PATH + ': ' + err.message);
+    openSkyFileState.lastErrorAt = new Date().toISOString();
+    emit('system', '[file] parse error: ' + errMsg(err), { source: 'file' });
+    return;
+  }
+
+  // Env vars OPENSKY_USERNAME / OPENSKY_PASSWORD always win; file fields are fallback.
+  const fileUser = String(payload.username || payload.client_id || '').trim();
+  const filePass = String(payload.password || payload.client_secret || '').trim();
+  if (fileUser && filePass) {
+    fileCredentials.username = fileUser;
+    fileCredentials.password = filePass;
+    fileCredentials.credentialType = payload.client_id ? 'client_credentials' : 'username_password';
+    console.log('[RW File] Credentials loaded (' + fileCredentials.credentialType + ') for user: ' + fileUser);
+  }
+
+  const states = Array.isArray(payload && payload.states) ? payload.states : [];
+  const previous = openSkyFileState.flights;
+  const { flights: nextFlights, count: nextCount } = normalizeStateBatch(states, previous, 'file');
+
+  // Emit events only for newly detected anomalies (suppress duplicates across reloads).
+  const anomalies = detectAnomalies(nextFlights);
+  const prevMsgs = new Set(openSkyFileState.anomalies.map(a => a.msg));
+  for (const anomaly of anomalies) {
+    if (!prevMsgs.has(anomaly.msg)) {
+      console.warn('[RW File] Anomaly: ' + anomaly.msg);
+      emit('system', '[file] anomaly: ' + anomaly.msg, { source: 'file', anomaly }, 'flight');
+    }
+  }
+  openSkyFileState.anomalies = anomalies;
+
+  for (const id of Object.keys(nextFlights)) {
+    if (!previous[id]) {
+      emit('agent', '[file] ' + id + ' appeared', { id, source: 'file', event: 'appear' }, 'flight');
+    }
+  }
+  for (const id of Object.keys(previous)) {
+    if (!nextFlights[id]) {
+      emit('agent', '[file] ' + id + ' disappeared', { id, source: 'file', event: 'disappear' }, 'flight');
+    }
+  }
+
+  openSkyFileState.flights = nextFlights;
+  openSkyFileState.lastLoadAt = new Date().toISOString();
+  openSkyFileState.lastErrorAt = null;
+
+  console.log('[RW File] Loaded ' + states.length + ' states → ' + nextCount + ' flights' +
+    (anomalies.length ? ' (' + anomalies.length + ' anomalies)' : ''));
+
+  broadcast('snapshot', snapshot());
+}
+
+let _fileWatchDebounce = null;
+
+function startOpenSkyFileWatcher() {
+  loadOpenSkyFile();
+
+  // Real-time watch — debounced to handle editors that write twice in quick succession
+  try {
+    fs.watch(OPENSKY_FILE_PATH, { persistent: false }, () => {
+      clearTimeout(_fileWatchDebounce);
+      _fileWatchDebounce = setTimeout(loadOpenSkyFile, 150);
+    });
+    console.log('[RW File] Watching ' + OPENSKY_FILE_PATH);
+  } catch (err) {
+    // File may not exist yet; polling below will pick it up when it appears
+    console.log('[RW File] Watch unavailable (' + err.message + '); using ' + OPENSKY_FILE_POLL_MS + 'ms polling');
+  }
+
+  // Polling fallback — also re-loads when file is replaced or watch was unavailable
+  setInterval(loadOpenSkyFile, OPENSKY_FILE_POLL_MS);
 }
 
 // ─── Simulation / Agent loop ──────────────────────────────────────────────────
@@ -3931,6 +4346,7 @@ initWorld();
 if (require.main === module) {
   setInterval(simulationLoop, 800);
   startOpenSkyPolling();
+  startOpenSkyFileWatcher();
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log('[RW Worldview] listening on 0.0.0.0:' + PORT);
@@ -3958,4 +4374,10 @@ module.exports = {
   worldview,
   eventLog,
   openSkyLiveState,
+  openSkyFileState,
+  fileCredentials,
+  detectAnomalies,
+  loadOpenSkyFile,
+  normalizeStateBatch,
+  errMsg,
 };

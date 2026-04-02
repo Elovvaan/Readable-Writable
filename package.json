@@ -4,6 +4,6 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/utils.test.js tests/flight-entity.test.js tests/websocket.test.js tests/event-log.test.js tests/router.test.js"
+    "test": "node --test tests/utils.test.js tests/flight-entity.test.js tests/websocket.test.js tests/event-log.test.js tests/router.test.js tests/file-source.test.js tests/camera.test.js"
   }
 }
