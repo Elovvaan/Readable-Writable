@@ -101,17 +101,15 @@ describe('style preset ordering invariants', function () {
     assert.ok(src.includes('ssc.enableTilt   = true'), 'tilt must be enabled for orbital control');
   });
 
-  test('screenSpaceCameraController enableZoom is false', function () {
-    assert.ok(src.includes('ssc.enableZoom   = false'), 'zoom must be disabled on the Cesium globe');
+  test('screenSpaceCameraController enableZoom is true', function () {
+    assert.ok(src.includes('ssc.enableZoom   = true'), 'scroll-wheel zoom must be enabled for orbital control');
   });
 
-  test('setViewportZoom does not call cesiumViewer.camera.zoomBy', function () {
-    const fnIdx = src.indexOf('function setViewportZoom');
-    assert.ok(fnIdx !== -1, 'setViewportZoom must exist');
-    // Find the closing brace of setViewportZoom by locating the next top-level function
-    const nextFnIdx = src.indexOf('\n  function ', fnIdx + 1);
-    const body = src.slice(fnIdx, nextFnIdx === -1 ? fnIdx + 600 : nextFnIdx);
-    assert.ok(!body.includes('zoomBy'), 'setViewportZoom must not call camera.zoomBy when zoom is disabled');
+  test('zoomBy helper exists for +/- button programmatic zoom', function () {
+    assert.ok(src.includes('function zoomBy'), 'zoomBy must be defined for button-driven zoom');
+    const fnIdx = src.indexOf('function zoomBy');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('positionCartographic'), 'zoomBy must move camera via positionCartographic');
   });
 
   test('flyTo used for runFocusAction in Cesium path', function () {

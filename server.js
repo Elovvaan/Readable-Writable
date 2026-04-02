@@ -1199,14 +1199,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.scene.sun.show = true;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
-    // Full orbital camera control: allow rotate, tilt; zoom is disabled intentionally
+    // Full orbital camera: rotate, tilt, and scroll/pinch zoom all enabled natively
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
     ssc.enableTilt   = true;
-    ssc.enableZoom   = false;
+    ssc.enableZoom   = true;
     ssc.enableTranslate = true;
     ssc.enableLook   = false;
-    // Retained for reference / future programmatic zoom; has no effect while enableZoom is false.
     ssc.minimumZoomDistance = 150;
     ssc.maximumZoomDistance = 40000000;
     try {
@@ -1238,6 +1237,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastCesiumRenderCounts.tilesLoaded = true;
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
+          duration: 0,
+        });
       } else {
         console.warn('[RW Cesium] No Google Maps API key — using built-in Natural Earth imagery');
         lastCesiumRenderCounts.tilesLoaded = false;
@@ -2295,9 +2299,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   // on each draw tick and returns false so the render loop does not reschedule
   // on its behalf.
   function updateCameraMotion(width, height) {
-    followTargetEnabled = false;
-    cameraLerpTarget = null;
-    cesiumCameraLerpState = null;
+    // Cesium orbital motion is handled natively by the screenSpaceCameraController.
+    // Follow state (followTargetEnabled, cameraLerpTarget) is managed by the toggle
+    // and disengaged via camera.moveStart — do NOT clear it here every tick.
     return false;
   }
 
@@ -2480,10 +2484,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     viewportReadoutEl.textContent = text;
   }
 
+  // Programmatic zoom for +/- buttons: move camera closer/farther by a factor.
+  // factor < 1 = zoom in (e.g. 0.6 = 40% closer); factor > 1 = zoom out.
+  // Scroll-wheel and pinch are handled natively by Cesium ssc (enableZoom = true).
+  function zoomBy(factor) {
+    if (!USE_CESIUM || !cesiumViewer) return;
+    const h = cesiumViewer.camera.positionCartographic.height;
+    const next = Math.max(150, Math.min(40000000, h * factor));
+    const cart = cesiumViewer.camera.positionCartographic.clone();
+    cart.height = next;
+    cesiumViewer.camera.position = Cesium.Ellipsoid.WGS84.cartographicToCartesian(cart);
+    updateViewportReadout();
+  }
+
   function setViewportZoom(nextZoom) {
+    // 2-D canvas renderer only; Cesium zoom goes through zoomBy() and native ssc.
     viewport.zoom = Math.max(VIEWPORT_ZOOM_MIN, Math.min(VIEWPORT_ZOOM_MAX, nextZoom));
-    // Cesium camera zoom is disabled (ssc.enableZoom = false); canvas overlay
-    // zoom still updates viewport.zoom for 2-D rendering scale only.
     syncFollowTargetState();
     updateViewportReadout();
     draw();
@@ -2491,8 +2507,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function panViewport(dx, dy) {
     if (USE_CESIUM && cesiumViewer) {
-      cesiumViewer.camera.moveRight(dx * 2000);
-      cesiumViewer.camera.moveUp(dy * -2000);
+      // Orbit the camera around the globe center (5 degrees per click)
+      const panRad = 5 * Math.PI / 180;
+      if (dx < 0) cesiumViewer.camera.rotateLeft(panRad);
+      else if (dx > 0) cesiumViewer.camera.rotateRight(panRad);
+      if (dy < 0) cesiumViewer.camera.rotateUp(panRad);
+      else if (dy > 0) cesiumViewer.camera.rotateDown(panRad);
       return;
     }
     if (isGlobeRenderMode()) return;
@@ -3328,9 +3348,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   ensureStyleAnimationLoop();
 
   zoomInBtnEl.addEventListener('click', function () {
+    if (USE_CESIUM && cesiumViewer) { zoomBy(0.60); return; }
     setViewportZoom(viewport.zoom + VIEWPORT_ZOOM_STEP);
   });
   zoomOutBtnEl.addEventListener('click', function () {
+    if (USE_CESIUM && cesiumViewer) { zoomBy(1.65); return; }
     setViewportZoom(viewport.zoom - VIEWPORT_ZOOM_STEP);
   });
   resetViewBtnEl.addEventListener('click', resetViewport);
