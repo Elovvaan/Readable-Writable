@@ -64,6 +64,12 @@ const openSkyFileState = {
   anomalies: [],
 };
 
+// Credentials loaded from opensky.json — env vars always take priority.
+const fileCredentials = {
+  username: '',
+  password: '',
+};
+
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
 const FRONTEND_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -3346,12 +3352,15 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
 
 async function pollOpenSkyFlights() {
   if (!OPENSKY_ENABLED) return;
-  const authConfigured = !!(OPENSKY_USERNAME && OPENSKY_PASSWORD);
+  // Env vars take priority; fall back to credentials loaded from opensky.json.
+  const effectiveUser = OPENSKY_USERNAME || fileCredentials.username;
+  const effectivePass = OPENSKY_PASSWORD || fileCredentials.password;
+  const authConfigured = !!(effectiveUser && effectivePass);
   openSkyLiveState.authConfigured = authConfigured;
   console.log('[RW Worldview] Polling OpenSky... running=' + openSkyLiveState.pollingRunning + ' authConfigured=' + authConfigured);
   try {
     const authHeader = authConfigured
-      ? 'Basic ' + Buffer.from(OPENSKY_USERNAME + ':' + OPENSKY_PASSWORD).toString('base64')
+      ? 'Basic ' + Buffer.from(effectiveUser + ':' + effectivePass).toString('base64')
       : null;
 
     let modeUsed = authConfigured ? 'auth' : 'public';
@@ -3535,6 +3544,17 @@ function loadOpenSkyFile() {
     openSkyFileState.lastErrorAt = new Date().toISOString();
     emit('system', '[file] parse error: ' + err.message, { source: 'file' });
     return;
+  }
+
+  // ── Credentials (optional) ──────────────────────────────────────────────────
+  // Supports username/password (OpenSky basic auth) or client_id/client_secret
+  // as field aliases.  Env vars OPENSKY_USERNAME / OPENSKY_PASSWORD always win.
+  const fileUser = String(payload.username || payload.client_id || '').trim();
+  const filePass = String(payload.password || payload.client_secret || '').trim();
+  if (fileUser && filePass) {
+    fileCredentials.username = fileUser;
+    fileCredentials.password = filePass;
+    console.log('[RW File] Credentials loaded for user: ' + fileUser);
   }
 
   const states = Array.isArray(payload && payload.states) ? payload.states : [];
@@ -4072,6 +4092,7 @@ module.exports = {
   eventLog,
   openSkyLiveState,
   openSkyFileState,
+  fileCredentials,
   detectAnomalies,
   loadOpenSkyFile,
 };

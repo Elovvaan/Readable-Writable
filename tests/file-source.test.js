@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  fileCredentials,
   detectAnomalies,
   loadOpenSkyFile,
   openSkyFileState,
@@ -266,6 +267,64 @@ describe('loadOpenSkyFile', () => {
     withFile({ states: [null, 'bad', [], makeRow()] }, () => {
       loadOpenSkyFile();
       assert.equal(openSkyFileState.lastCount, 1); // only the valid row
+    });
+  });
+});
+
+// ─── File credentials ─────────────────────────────────────────────────────────
+
+describe('loadOpenSkyFile credential loading', () => {
+  beforeEach(() => {
+    fileCredentials.username = '';
+    fileCredentials.password = '';
+  });
+
+  test('loads username and password fields', () => {
+    withFile({ username: 'myuser', password: 'mypass', states: [] }, () => {
+      loadOpenSkyFile();
+      assert.equal(fileCredentials.username, 'myuser');
+      assert.equal(fileCredentials.password, 'mypass');
+    });
+  });
+
+  test('accepts client_id / client_secret as aliases', () => {
+    withFile({ client_id: 'cid', client_secret: 'csecret', states: [] }, () => {
+      loadOpenSkyFile();
+      assert.equal(fileCredentials.username, 'cid');
+      assert.equal(fileCredentials.password, 'csecret');
+    });
+  });
+
+  test('username takes priority over client_id when both present', () => {
+    withFile({ username: 'u', client_id: 'c', password: 'p', states: [] }, () => {
+      loadOpenSkyFile();
+      assert.equal(fileCredentials.username, 'u');
+    });
+  });
+
+  test('does not set credentials when only one field is present', () => {
+    withFile({ username: 'u', states: [] }, () => {
+      loadOpenSkyFile();
+      assert.equal(fileCredentials.username, '');
+    });
+  });
+
+  test('trims whitespace from credential values', () => {
+    withFile({ username: '  user  ', password: '  pass  ', states: [] }, () => {
+      loadOpenSkyFile();
+      assert.equal(fileCredentials.username, 'user');
+      assert.equal(fileCredentials.password, 'pass');
+    });
+  });
+
+  test('does not update credentials when fields are absent', () => {
+    fileCredentials.username = 'prev';
+    fileCredentials.password = 'prevpass';
+    withFile({ states: [] }, () => {
+      loadOpenSkyFile();
+      // Unchanged — no credentials in file
+      assert.equal(fileCredentials.username, 'prev');
+      assert.equal(fileCredentials.password, 'prevpass');
     });
   });
 });

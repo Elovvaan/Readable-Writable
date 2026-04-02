@@ -1,5 +1,7 @@
 {
-  "_comment": "OpenSky Network states format. Replace or regenerate this file with real data.",
+  "_comment": "OpenSky credentials (optional) + states array. Env vars OPENSKY_USERNAME / OPENSKY_PASSWORD always take priority over these fields.",
+  "username": "",
+  "password": "",
   "time": 1700000000,
   "states": [
     ["a3e5f1", "UAL123  ", "United States",  1700000000, 1700000000,  -87.6298,  41.8781, 10668, false, 245.0,  270.0,  0.0, null, 10972, "2577", false, 0],
