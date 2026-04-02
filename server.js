@@ -82,57 +82,90 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <title>RW Worldview</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #08090b; color: #8fa8bb; display: flex; flex-direction: column; height: 100vh; }
-    header { background: #09090d; border-bottom: 1px solid #141820; padding: 8px 16px; display: flex; align-items: center; gap: 12px; }
-    header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .06em; color: #2ab8a4; }
-    #status { font-size: .75rem; padding: 3px 8px; border-radius: 999px; background: #0d2218; color: #3ecb92; border: 1px solid #1a4a32; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #08090b; color: #8fa8bb; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    /* ── Header ──────────────────────────────────────────────────────────── */
+    header { background: #09090d; border-bottom: 1px solid #141820; padding: 5px 14px; display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-height: 40px; }
+    header h1 { font-size: .95rem; font-weight: 600; letter-spacing: .06em; color: #2ab8a4; margin-right: auto; }
+    #status { font-size: .72rem; padding: 2px 7px; border-radius: 999px; background: #0d2218; color: #3ecb92; border: 1px solid #1a4a32; white-space: nowrap; }
     #status.disconnected { background: #1e0d0d; color: #c05050; border-color: #3d1a1a; }
-    #controls { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: .68rem; color: #607a8c; flex-wrap: wrap; justify-content: flex-end; }
-    .ctrl-toggle { display: inline-flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap; cursor: pointer; }
-    .ctrl-toggle input { width: 13px; height: 13px; accent-color: #2ab8a4; cursor: pointer; }
-    .ctrl-inline { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-    .ctrl-compact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .62rem; color: #607a8c; }
-    .ctrl-compact input[type=range] { width: 54px; accent-color: #2ab8a4; transition: filter 220ms ease, transform 220ms ease; }
-    .ctrl-compact input[type=range]:hover { filter: brightness(1.15); transform: translateY(-1px); }
-    .ctrl-compact select { border: 1px solid #1c2a36; background: #0e1520; color: #7fb8c8; border-radius: 4px; font-size: .64rem; padding: 2px 4px; }
-    #style-indicator { border: 1px solid #1c2e3a; border-radius: 999px; font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; color: #3ec9b8; background: #080e14; }
-    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .62rem; color: #4e7a8c; border: 1px solid #161e28; border-radius: 6px; padding: 3px 7px; background: #06080ccc; }
+    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .6rem; color: #4e7a8c; border: 1px solid #161e28; border-radius: 6px; padding: 3px 7px; background: #06080ccc; }
     .telemetry-item { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
     .telemetry-label { color: #354e5e; letter-spacing: .07em; }
     .telemetry-value { color: #6fa8bc; }
     #telemetry-rec.live { color: #d05858; text-shadow: 0 0 8px rgba(200,60,60,.3); animation: rec-pulse 1.4s ease-in-out infinite; }
     @keyframes rec-pulse { 0%, 100% { opacity: .62; } 50% { opacity: 1; } }
-    .preset-row { display: inline-flex; align-items: center; gap: 5px; }
-    .preset-btn { border: 1px solid #182430; background: #0c1219; color: #4e8096; border-radius: 999px; font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; padding: 3px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; }
-    .preset-btn:hover { background: #111e2a; border-color: #254056; color: #8abccc; transform: translateY(-1px); }
-    .preset-btn.active { background: #0e1f2e; color: #3ec9b8; border-color: #1f5e5a; }
-    #speed-select { border: 1px solid #1c2a36; background: #0e1520; color: #7fb8c8; border-radius: 4px; font-size: .68rem; padding: 3px 6px; }
-    #pause-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
+    #pause-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
     #pause-btn.active { background: #1a0f0f; color: #c28080; border-color: #3d2020; }
-    main { display: grid; grid-template-columns: 180px 1fr 300px; flex: 1; overflow: hidden; }
-    #canvas-wrap { position: relative; overflow: hidden; background: #04050a; }
-    #cesium-world, canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
-    #cesium-world { z-index: 1; }
-    canvas { z-index: 2; pointer-events: none; }
+    /* ── Globe shell — fills remaining space ─────────────────────────────── */
+    #globe-shell { position: relative; flex: 1; overflow: hidden; background: #04050a; min-height: 0; }
+    #cesium-world { position: absolute; inset: 0; z-index: 1; display: block; width: 100%; height: 100%; }
+    canvas#world { position: absolute; inset: 0; z-index: 2; display: block; width: 100%; height: 100%; pointer-events: none; }
     #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .35; transition: opacity 320ms ease, background 320ms ease, filter 320ms ease; }
     #fx-overlay .scanlines, #fx-overlay .noise, #fx-overlay .vignette, #fx-overlay .pixel-grid { position: absolute; inset: 0; }
     #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(180,255,240,.05) 0, rgba(180,255,240,.05) 1px, transparent 1px, transparent 3px); opacity: .18; }
     #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.07) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .1; }
     #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px); background-size: 10px 10px; opacity: .05; }
     #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 42%, rgba(0,0,0,.72) 100%); opacity: .65; }
-    body[data-style-mode="crt"] { --style-accent: #3ec9b8; --style-shell: #4ab8ac; }
-    body[data-style-mode="nvg"] { --style-accent: #7fe874; --style-shell: #88f580; }
-    body[data-style-mode="flir"] { --style-accent: #d4a055; --style-shell: #c89850; }
-    header h1, .event-entry.agent, .viewport-readout, #style-indicator { color: var(--style-accent, #3ec9b8); border-color: color-mix(in srgb, var(--style-accent, #3ec9b8) 28%, #182430); }
-    .panel-title, .selected-label, .stat-label { color: color-mix(in srgb, var(--style-shell, #4ab8ac) 38%, #2a3840); }
-    #left-panel { background: #09090d; border-right: 1px solid #141820; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding-bottom: 12px; }
+    /* ── Launcher rail ───────────────────────────────────────────────────── */
+    #rail { position: absolute; left: 0; top: 0; bottom: 0; width: 44px; z-index: 20; display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 4px; background: #07080cdd; border-right: 1px solid #141820; backdrop-filter: blur(6px); }
+    .rail-btn { width: 34px; height: 34px; border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 6px; font-size: .9rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 160ms, border-color 160ms, color 160ms, transform 160ms; user-select: none; }
+    .rail-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; transform: translateY(-1px); }
+    .rail-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+    .rail-sep { width: 22px; height: 1px; background: #141e28; margin: 4px 0; flex-shrink: 0; }
+    /* ── Viewport controls ───────────────────────────────────────────────── */
+    #viewport-controls { position: absolute; bottom: 14px; left: 56px; display: grid; gap: 5px; z-index: 10; pointer-events: auto; }
+    .viewport-row { display: flex; gap: 4px; }
+    .viewport-btn { border: 1px solid #1c2e3a; background: #07101acc; color: #4e8898; border-radius: 4px; font-size: .66rem; padding: 5px 9px; cursor: pointer; transition: all 180ms ease; backdrop-filter: blur(4px); }
+    .viewport-btn:hover { background: #0e2030e0; border-color: #2a5060; color: #7abcc8; transform: translateY(-1px); }
+    .viewport-btn.reset { border-color: #1f4e5a; color: #3ec9b8; }
+    .viewport-readout { font-size: .6rem; color: #3a5868; background: #05090ecc; border: 1px solid #141e28; border-radius: 4px; padding: 2px 6px; width: fit-content; backdrop-filter: blur(4px); }
+    /* ── Drawers — all position:absolute inside #globe-shell ─────────────── */
+    .drawer { position: absolute; z-index: 15; background: #09090d; display: flex; flex-direction: column; overflow: hidden; pointer-events: none; opacity: 0; transition: transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
+    .drawer.open { pointer-events: auto; opacity: 1; }
+    .drawer-left  { left: 44px; top: 0; bottom: 0; width: 240px; border-right: 1px solid #141820; transform: translateX(-240px); }
+    .drawer-right { right: 0; top: 0; bottom: 0; width: 280px; border-left: 1px solid #141820; transform: translateX(280px); }
+    .drawer-bottom { left: 44px; right: 0; bottom: 0; height: 280px; border-top: 1px solid #141820; transform: translateY(280px); }
+    .drawer-top { left: 44px; right: 0; top: 0; border-bottom: 1px solid #141820; transform: translateY(-100%); }
+    .drawer-left.open  { transform: translateX(0); }
+    .drawer-right.open { transform: translateX(0); }
+    .drawer-bottom.open { transform: translateY(0); }
+    .drawer-top.open { transform: translateY(0); }
+    .drawer-header { display: flex; align-items: center; padding: 7px 12px; border-bottom: 1px solid #111820; flex-shrink: 0; gap: 8px; }
+    .drawer-title { font-size: .6rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; flex: 1; }
+    .drawer-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; line-height: 1; transition: color 160ms; flex-shrink: 0; }
+    .drawer-close:hover { color: #6898aa; }
+    .drawer-body { flex: 1; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; min-height: 0; }
+    /* ── Right drawer tabs ───────────────────────────────────────────────── */
+    .drawer-tabs { display: flex; border-bottom: 1px solid #111820; flex-shrink: 0; }
+    .dtab { flex: 1; border: none; background: #07080c; color: #2e4050; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 7px 4px; cursor: pointer; transition: color 160ms, background 160ms; border-bottom: 2px solid transparent; }
+    .dtab:hover { color: #5a8098; background: #0c1018; }
+    .dtab.active { color: #3ec9b8; border-bottom-color: #3ec9b8; background: #09090d; }
+    .rtab-content { display: flex; flex-direction: column; flex: 1; overflow-y: auto; min-height: 0; }
+    .rtab-content.hidden { display: none; }
+    /* ── Style drawer controls ───────────────────────────────────────────── */
+    #style-drawer-body { padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
+    .style-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .68rem; color: #607a8c; }
+    .fx-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 10px; }
+    .ctrl-toggle { display: inline-flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap; cursor: pointer; font-size: .68rem; color: #607a8c; }
+    .ctrl-toggle input { width: 12px; height: 12px; accent-color: #2ab8a4; cursor: pointer; }
+    .ctrl-inline { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: .68rem; color: #607a8c; }
+    .ctrl-compact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .62rem; color: #607a8c; }
+    .ctrl-compact input[type=range] { width: 52px; accent-color: #2ab8a4; transition: filter 200ms, transform 200ms; }
+    .ctrl-compact input[type=range]:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .ctrl-compact select { border: 1px solid #1c2a36; background: #0e1520; color: #7fb8c8; border-radius: 4px; font-size: .64rem; padding: 2px 4px; }
+    #style-indicator { border: 1px solid #1c2e3a; border-radius: 999px; font-size: .6rem; letter-spacing: .08em; text-transform: uppercase; padding: 2px 7px; color: #3ec9b8; background: #080e14; }
+    #speed-select { border: 1px solid #1c2a36; background: #0e1520; color: #7fb8c8; border-radius: 4px; font-size: .66rem; padding: 2px 5px; }
+    .preset-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+    .preset-btn { border: 1px solid #182430; background: #0c1219; color: #4e8096; border-radius: 999px; font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; padding: 3px 7px; cursor: pointer; transition: background 180ms, border-color 180ms, color 180ms, transform 180ms; }
+    .preset-btn:hover { background: #111e2a; border-color: #254056; color: #8abccc; transform: translateY(-1px); }
+    .preset-btn.active { background: #0e1f2e; color: #3ec9b8; border-color: #1f5e5a; }
+    /* ── Data layer rows ─────────────────────────────────────────────────── */
     .lp-title { font-size: .62rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; padding: 10px 12px 5px; }
     .lp-toggle { display: flex; align-items: center; gap: 7px; padding: 4px 12px; font-size: .68rem; color: #5a7888; cursor: pointer; user-select: none; white-space: nowrap; transition: color 160ms; }
     .lp-toggle:hover { color: #8ab8c8; }
     .lp-toggle input { width: 12px; height: 12px; accent-color: #2ab8a4; cursor: pointer; flex-shrink: 0; }
     .lp-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .lp-divider { margin: 6px 12px; border-top: 1px solid #121820; }
-    /* ── Data Layer rows ─────────────────────────────────────────────────── */
     .layer-row { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-bottom: 1px solid #0e1420; cursor: default; }
     .layer-row.unavailable { opacity: 0.38; pointer-events: none; }
     .layer-icon { font-size: .82rem; line-height: 1; width: 16px; text-align: center; flex-shrink: 0; color: #2e4252; transition: color 200ms; }
@@ -147,14 +180,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .layer-toggle:hover { border-color: #1e3a50; color: #4a7898; background: #0e1828; }
     .layer-toggle.active { border-color: #1f5e5a; background: #0a2422; color: #3ec9b8; }
     .layer-toggle:disabled { cursor: not-allowed; opacity: 0.5; }
-    /* ── Visibility + Entity type rows ───────────────────────────────────── */ border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; }
-    .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #2a3e4a; padding: 10px 14px 6px; border-bottom: 1px solid #111820; }
-    #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #111820; display: grid; gap: 6px; }
+    /* ── Event log ───────────────────────────────────────────────────────── */
+    #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #111820; display: grid; gap: 6px; flex-shrink: 0; }
     #event-search { width: 100%; border: 1px solid #1c2a36; background: #0e1520; color: #8ab8cc; border-radius: 4px; font-size: .68rem; padding: 4px 6px; }
     #event-chip-row { display: flex; gap: 5px; flex-wrap: wrap; }
     .event-chip { border: 1px solid #181e28; border-radius: 999px; background: #0b0e16; color: #4e7888; padding: 2px 8px; font-size: .64rem; cursor: pointer; }
     .event-chip.active { background: #0d1a28; color: #3ec9b8; border-color: #1a4a44; }
-    #event-log { flex: 1; overflow-y: auto; padding: 8px 0; font-size: .72rem; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    #event-log { flex: 1; overflow-y: auto; padding: 8px 0; font-size: .72rem; font-family: 'Cascadia Code', 'Fira Code', monospace; min-height: 0; }
     .event-entry { padding: 3px 14px; border-bottom: 1px solid #0e1218; color: #4e6878; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .event-entry .ts { color: #283038; margin-right: 6px; }
     .event-entry.agent { color: #3ec9b8; }
@@ -163,8 +195,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .event-entry.related { background: #0c1820; box-shadow: inset 2px 0 0 #2ab8a4; }
     .event-entry.dimmed { opacity: 0.38; }
     .event-empty { padding: 8px 14px; color: #38505e; font-style: italic; }
-    #selected-panel { border-top: 1px solid #111820; padding: 10px 14px; font-size: .72rem; }
-    #action-panel { border-top: 1px solid #111820; padding: 8px 14px 10px; font-size: .72rem; }
+    /* ── Selected target / actions ───────────────────────────────────────── */
+    #selected-panel { padding: 10px 14px; font-size: .72rem; flex-shrink: 0; }
+    #action-panel { border-top: 1px solid #111820; padding: 8px 14px 10px; font-size: .72rem; flex-shrink: 0; }
     .action-row { display: flex; gap: 6px; }
     .action-row.secondary { margin-top: 8px; }
     .action-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
@@ -173,10 +206,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .selected-label { color: #2e4050; }
     .selected-value { color: #7098a8; font-family: monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .selected-empty { color: #2e4050; font-style: italic; }
-    #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #111820; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+    /* ── Stats ───────────────────────────────────────────────────────────── */
+    #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #111820; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; flex-shrink: 0; }
     .stat-label { color: #2e4050; }
     .stat-value { color: #7098a8; font-family: monospace; text-align: right; }
-    .pod-lab { border-top: 1px solid #111820; padding: 10px 14px 14px; display: grid; gap: 10px; background: #07080c; }
+    /* ── Pod ─────────────────────────────────────────────────────────────── */
+    .pod-lab { padding: 10px 14px 14px; display: grid; gap: 10px; background: #07080c; }
     .pod-stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
     .pod-step-chip { border: 1px solid #1c2a36; border-radius: 999px; font-size: .62rem; text-align: center; padding: 3px 0; color: #4e7888; background: #0b1218; }
     .pod-step-chip.active { border-color: #1f4e5a; color: #3ec9b8; background: #0c1e28; }
@@ -195,14 +230,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .pod-actions { display: flex; gap: 6px; }
     .pod-actions button { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 4px 8px; cursor: pointer; }
     .pod-actions button:disabled { opacity: .35; cursor: not-allowed; }
+    /* ── Entity type chips ───────────────────────────────────────────────── */
     .type-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #181e28; border-radius: 999px; padding: 2px 7px; }
     .type-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-    #viewport-controls { position: absolute; bottom: 14px; left: 12px; display: grid; gap: 5px; z-index: 10; }
-    .viewport-row { display: flex; gap: 4px; }
-    .viewport-btn { border: 1px solid #1c2e3a; background: #07101acc; color: #4e8898; border-radius: 4px; font-size: .66rem; padding: 5px 9px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; backdrop-filter: blur(4px); }
-    .viewport-btn:hover { background: #0e2030e0; border-color: #2a5060; color: #7abcc8; transform: translateY(-1px); }
-    .viewport-btn.reset { border-color: #1f4e5a; color: #3ec9b8; }
-    .viewport-readout { font-size: .6rem; color: #3a5868; background: #05090ecc; border: 1px solid #141e28; border-radius: 4px; padding: 2px 6px; width: fit-content; backdrop-filter: blur(4px); }
+    /* ── Style accent vars and theme cascades ────────────────────────────── */
+    body[data-style-mode="crt"]  { --style-accent: #3ec9b8; --style-shell: #4ab8ac; }
+    body[data-style-mode="nvg"]  { --style-accent: #7fe874; --style-shell: #88f580; }
+    body[data-style-mode="flir"] { --style-accent: #d4a055; --style-shell: #c89850; }
+    header h1, .event-entry.agent, .viewport-readout, #style-indicator { color: var(--style-accent, #3ec9b8); }
+    .lp-title, .selected-label, .stat-label, .drawer-title { color: color-mix(in srgb, var(--style-shell, #4ab8ac) 38%, #2a3840); }
+    /* ── Global transitions ──────────────────────────────────────────────── */
     #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
   /* === RW NEW LAYOUT === */
 
@@ -262,256 +299,270 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 <header>
   <h1>RW Worldview</h1>
   <span id="status" class="disconnected">disconnected</span>
- </header>
- 
-  <div id="sidebar">
-<button onclick="togglePanel('events')">Event Stream</button>
-<button onclick="togglePanel('layers')">Data Layers</button>
-<button onclick="togglePanel('agents')">Agents</button>
-</div>
-
-<main id="worldview"></main>
-
-<div id="panel-events" class="panel"></div>
-<div id="panel-layers" class="panel"></div>
-<div id="panel-agents" class="panel"></div>
-    <label class="ctrl-inline" for="speed-select">Speed
-      <select id="speed-select" aria-label="Simulation speed">
-        <option value="0.5">0.5x</option>
-        <option value="1" selected>1x</option>
-        <option value="2">2x</option>
-        <option value="4">4x</option>
-      </select>
-    </label>
-    <label class="ctrl-compact" for="style-mode-select">Style
-      <select id="style-mode-select" aria-label="Visual style mode">
-        <option value="crt" selected>CRT</option>
-        <option value="nvg">NVG</option>
-        <option value="flir">FLIR</option>
-      </select>
-    </label>
-    <span id="style-indicator">mode: crt</span>
-    <div id="telemetry-bar" aria-live="polite">
-      <span class="telemetry-item"><span class="telemetry-label">MODE</span><span class="telemetry-value" id="telemetry-mode">CRT</span></span>
-      <span class="telemetry-item"><span class="telemetry-label">REC</span><span class="telemetry-value" id="telemetry-rec">●</span></span>
-      <span class="telemetry-item"><span class="telemetry-label">LAT/LNG</span><span class="telemetry-value" id="telemetry-coords">--.--, --.--</span></span>
-      <span class="telemetry-item"><span class="telemetry-label">UTC</span><span class="telemetry-value" id="telemetry-utc">--:--:--</span></span>
-    </div>
-    <div class="preset-row">
-      <button class="preset-btn active" type="button" data-style-preset="tactical">Tactical</button>
-      <button class="preset-btn" type="button" data-style-preset="surveillance">Surveillance</button>
-      <button class="preset-btn" type="button" data-style-preset="cinematic">Cinematic</button>
-      <button class="preset-btn" type="button" data-style-preset="minimal">Minimal</button>
-    </div>
-    <label class="ctrl-compact" for="fx-bloom">Bloom<input id="fx-bloom" type="range" min="0" max="100" value="20"></label>
-    <label class="ctrl-compact" for="fx-sharpen">Sharp<input id="fx-sharpen" type="range" min="0" max="100" value="30"></label>
-    <label class="ctrl-compact" for="fx-noise">Noise<input id="fx-noise" type="range" min="0" max="100" value="18"></label>
-    <label class="ctrl-compact" for="fx-vignette">Vignette<input id="fx-vignette" type="range" min="0" max="100" value="50"></label>
-    <label class="ctrl-compact" for="fx-pixelation">Density<input id="fx-pixelation" type="range" min="0" max="100" value="14"></label>
-    <label class="ctrl-compact" for="fx-glow">Glow<input id="fx-glow" type="range" min="0" max="100" value="18"></label>
-    <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
+  <div id="telemetry-bar" aria-live="polite">
+    <span class="telemetry-item"><span class="telemetry-label">MODE</span><span class="telemetry-value" id="telemetry-mode">CRT</span></span>
+    <span class="telemetry-item"><span class="telemetry-label">REC</span><span class="telemetry-value" id="telemetry-rec">●</span></span>
+    <span class="telemetry-item"><span class="telemetry-label">LAT/LNG</span><span class="telemetry-value" id="telemetry-coords">--.--, --.--</span></span>
+    <span class="telemetry-item"><span class="telemetry-label">UTC</span><span class="telemetry-value" id="telemetry-utc">--:--:--</span></span>
   </div>
+  <span id="style-indicator">mode: crt</span>
+  <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
 </header>
-<main>
-  <nav id="left-panel" aria-label="Data layer controls">
-    <div class="lp-title">Data Layers</div>
+<div id="globe-shell">
 
-    <div class="layer-row on" data-layer="liveFlights">
-      <div class="layer-icon">✈</div>
-      <div class="layer-info">
-        <div class="layer-name">Live Flights</div>
-        <div class="layer-provider">OpenSky Network</div>
-        <div class="layer-freshness" id="layer-status-liveFlights">—</div>
-      </div>
-      <button class="layer-toggle active" id="toggle-layer-flights" type="button" aria-pressed="true">ON</button>
-    </div>
-
-    <div class="layer-row unavailable" data-layer="militaryFlights">
-      <div class="layer-icon">★</div>
-      <div class="layer-info">
-        <div class="layer-name">Military Flights</div>
-        <div class="layer-provider">ADS-B Exchange</div>
-        <div class="layer-freshness" id="layer-status-militaryFlights">UNAVAILABLE</div>
-      </div>
-      <button class="layer-toggle" id="toggle-layer-militaryFlights" type="button" aria-pressed="false" disabled>—</button>
-    </div>
-
-    <div class="layer-row unavailable" data-layer="earthquakes">
-      <div class="layer-icon">◎</div>
-      <div class="layer-info">
-        <div class="layer-name">Earthquakes</div>
-        <div class="layer-provider">USGS NEIC</div>
-        <div class="layer-freshness" id="layer-status-earthquakes">UNAVAILABLE</div>
-      </div>
-      <button class="layer-toggle" id="toggle-layer-earthquakes" type="button" aria-pressed="false" disabled>—</button>
-    </div>
-
-    <div class="layer-row on" data-layer="satellites">
-      <div class="layer-icon">●</div>
-      <div class="layer-info">
-        <div class="layer-name">Satellites</div>
-        <div class="layer-provider">Celestrak / TLE</div>
-        <div class="layer-freshness" id="layer-status-satellites">—</div>
-      </div>
-      <button class="layer-toggle active" id="toggle-layer-satellites" type="button" aria-pressed="true">ON</button>
-    </div>
-
-    <div class="layer-row unavailable" data-layer="traffic">
-      <div class="layer-icon">≡</div>
-      <div class="layer-info">
-        <div class="layer-name">Street Traffic</div>
-        <div class="layer-provider">HERE / TomTom</div>
-        <div class="layer-freshness" id="layer-status-traffic">UNAVAILABLE</div>
-      </div>
-      <button class="layer-toggle" id="toggle-layer-traffic" type="button" aria-pressed="false" disabled>—</button>
-    </div>
-
-    <div class="layer-row unavailable" data-layer="weather">
-      <div class="layer-icon">☁</div>
-      <div class="layer-info">
-        <div class="layer-name">Weather Radar</div>
-        <div class="layer-provider">NOAA / NWS</div>
-        <div class="layer-freshness" id="layer-status-weather">UNAVAILABLE</div>
-      </div>
-      <button class="layer-toggle" id="toggle-layer-weather" type="button" aria-pressed="false" disabled>—</button>
-    </div>
-
-    <div class="layer-row unavailable" data-layer="cctvMesh">
-      <div class="layer-icon">□</div>
-      <div class="layer-info">
-        <div class="layer-name">CCTV Mesh</div>
-        <div class="layer-provider">City Feed</div>
-        <div class="layer-freshness" id="layer-status-cctvMesh">UNAVAILABLE</div>
-      </div>
-      <button class="layer-toggle" id="toggle-layer-cctvMesh" type="button" aria-pressed="false" disabled>—</button>
-    </div>
-
-    <div class="layer-row unavailable" data-layer="bikeshare">
-      <div class="layer-icon">⊕</div>
-      <div class="layer-info">
-        <div class="layer-name">Bikeshare</div>
-        <div class="layer-provider">GBFS Network</div>
-        <div class="layer-freshness" id="layer-status-bikeshare">UNAVAILABLE</div>
-      </div>
-      <button class="layer-toggle" id="toggle-layer-bikeshare" type="button" aria-pressed="false" disabled>—</button>
-    </div>
-
-    <div class="lp-divider"></div>
-    <div class="lp-title">Visibility</div>
-    <label class="lp-toggle"><input type="checkbox" id="toggle-agents" checked><span>Agents</span></label>
-    <label class="lp-toggle"><input type="checkbox" id="toggle-regions" checked><span>Regions</span></label>
-    <label class="lp-toggle"><input type="checkbox" id="toggle-trails" checked><span>Trails</span></label>
-
-    <div class="lp-divider"></div>
-    <div class="lp-title">Entity Types</div>
-    <label class="lp-toggle"><span class="lp-dot" style="background:#3ec9b8"></span><input type="checkbox" id="toggle-type-agent" checked><span>Agents</span></label>
-    <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-flight" checked><span>Flights</span></label>
-    <label class="lp-toggle"><span class="lp-dot" style="background:#9a70d8"></span><input type="checkbox" id="toggle-type-satellite" checked><span>Sats</span></label>
-
-    <div class="lp-divider"></div>
-    <div class="lp-title">Region Layer</div>
-    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
+  <!-- Launcher rail -->
+  <nav id="rail" aria-label="Panel launcher">
+    <button class="rail-btn" type="button" data-panel="layers" title="Data Layers" aria-label="Toggle Layers panel">☰</button>
+    <button class="rail-btn" type="button" data-panel="events" title="Event Stream" aria-label="Toggle Events panel">◉</button>
+    <button class="rail-btn" type="button" data-panel="target" title="Selected Target" aria-label="Toggle Target panel">⊕</button>
+    <button class="rail-btn" type="button" data-panel="stats"  title="Stats" aria-label="Toggle Stats panel">▦</button>
+    <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel">◈</button>
   </nav>
-  <div id="canvas-wrap">
-    <div id="viewport-controls">
-      <div class="viewport-row">
-        <button id="zoom-out-btn" class="viewport-btn" type="button" title="Zoom out">−</button>
-        <button id="zoom-in-btn" class="viewport-btn" type="button" title="Zoom in">+</button>
+
+  <!-- Layers drawer (left) -->
+  <div id="drawer-layers" class="drawer drawer-left" role="region" aria-label="Data Layers">
+    <div class="drawer-header"><span class="drawer-title">Data Layers</span><button class="drawer-close" type="button" aria-label="Close">✕</button></div>
+    <div class="drawer-body">
+      <div class="layer-row on" data-layer="liveFlights">
+        <div class="layer-icon">✈</div>
+        <div class="layer-info">
+          <div class="layer-name">Live Flights</div>
+          <div class="layer-provider">OpenSky Network</div>
+          <div class="layer-freshness" id="layer-status-liveFlights">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-flights" type="button" aria-pressed="true">ON</button>
       </div>
-      <div class="viewport-row">
-        <button id="pan-left-btn" class="viewport-btn" type="button" title="Pan left">←</button>
-        <button id="pan-up-btn" class="viewport-btn" type="button" title="Pan up">↑</button>
-        <button id="pan-down-btn" class="viewport-btn" type="button" title="Pan down">↓</button>
-        <button id="pan-right-btn" class="viewport-btn" type="button" title="Pan right">→</button>
+      <div class="layer-row unavailable" data-layer="militaryFlights">
+        <div class="layer-icon">★</div>
+        <div class="layer-info">
+          <div class="layer-name">Military Flights</div>
+          <div class="layer-provider">ADS-B Exchange</div>
+          <div class="layer-freshness" id="layer-status-militaryFlights">UNAVAILABLE</div>
+        </div>
+        <button class="layer-toggle" id="toggle-layer-militaryFlights" type="button" aria-pressed="false" disabled>—</button>
       </div>
-      <button id="reset-view-btn" class="viewport-btn reset" type="button" title="Reset to default globe view">⌂ Reset</button>
-      <div id="viewport-readout" class="viewport-readout">orbit free</div>
-    </div>
-    <div id="cesium-world"></div>
-    <canvas id="world"></canvas>
-    <div id="fx-overlay" aria-hidden="true">
-      <div class="scanlines"></div>
-      <div class="noise"></div>
-      <div class="pixel-grid"></div>
-      <div class="vignette"></div>
+      <div class="layer-row unavailable" data-layer="earthquakes">
+        <div class="layer-icon">◎</div>
+        <div class="layer-info">
+          <div class="layer-name">Earthquakes</div>
+          <div class="layer-provider">USGS NEIC</div>
+          <div class="layer-freshness" id="layer-status-earthquakes">UNAVAILABLE</div>
+        </div>
+        <button class="layer-toggle" id="toggle-layer-earthquakes" type="button" aria-pressed="false" disabled>—</button>
+      </div>
+      <div class="layer-row on" data-layer="satellites">
+        <div class="layer-icon">●</div>
+        <div class="layer-info">
+          <div class="layer-name">Satellites</div>
+          <div class="layer-provider">Celestrak / TLE</div>
+          <div class="layer-freshness" id="layer-status-satellites">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-satellites" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row unavailable" data-layer="traffic">
+        <div class="layer-icon">≡</div>
+        <div class="layer-info">
+          <div class="layer-name">Street Traffic</div>
+          <div class="layer-provider">HERE / TomTom</div>
+          <div class="layer-freshness" id="layer-status-traffic">UNAVAILABLE</div>
+        </div>
+        <button class="layer-toggle" id="toggle-layer-traffic" type="button" aria-pressed="false" disabled>—</button>
+      </div>
+      <div class="layer-row unavailable" data-layer="weather">
+        <div class="layer-icon">☁</div>
+        <div class="layer-info">
+          <div class="layer-name">Weather Radar</div>
+          <div class="layer-provider">NOAA / NWS</div>
+          <div class="layer-freshness" id="layer-status-weather">UNAVAILABLE</div>
+        </div>
+        <button class="layer-toggle" id="toggle-layer-weather" type="button" aria-pressed="false" disabled>—</button>
+      </div>
+      <div class="layer-row unavailable" data-layer="cctvMesh">
+        <div class="layer-icon">□</div>
+        <div class="layer-info">
+          <div class="layer-name">CCTV Mesh</div>
+          <div class="layer-provider">City Feed</div>
+          <div class="layer-freshness" id="layer-status-cctvMesh">UNAVAILABLE</div>
+        </div>
+        <button class="layer-toggle" id="toggle-layer-cctvMesh" type="button" aria-pressed="false" disabled>—</button>
+      </div>
+      <div class="layer-row unavailable" data-layer="bikeshare">
+        <div class="layer-icon">⊕</div>
+        <div class="layer-info">
+          <div class="layer-name">Bikeshare</div>
+          <div class="layer-provider">GBFS Network</div>
+          <div class="layer-freshness" id="layer-status-bikeshare">UNAVAILABLE</div>
+        </div>
+        <button class="layer-toggle" id="toggle-layer-bikeshare" type="button" aria-pressed="false" disabled>—</button>
+      </div>
+      <div class="lp-divider"></div>
+      <div class="lp-title">Visibility</div>
+      <label class="lp-toggle"><input type="checkbox" id="toggle-agents" checked><span>Agents</span></label>
+      <label class="lp-toggle"><input type="checkbox" id="toggle-regions" checked><span>Regions</span></label>
+      <label class="lp-toggle"><input type="checkbox" id="toggle-trails" checked><span>Trails</span></label>
+      <div class="lp-divider"></div>
+      <div class="lp-title">Entity Types</div>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#3ec9b8"></span><input type="checkbox" id="toggle-type-agent" checked><span>Agents</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-flight" checked><span>Flights</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#9a70d8"></span><input type="checkbox" id="toggle-type-satellite" checked><span>Sats</span></label>
+      <div class="lp-divider"></div>
+      <div class="lp-title">Region Layer</div>
+      <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
     </div>
   </div>
-  <aside>
-    <div class="panel-title">Event Stream</div>
-    <div id="event-tools">
-      <input id="event-search" type="text" placeholder="Search events" aria-label="Search events">
-      <div id="event-chip-row">
-        <button class="event-chip active" type="button" data-event-filter="all">All</button>
-        <button class="event-chip" type="button" data-event-filter="tick">Tick</button>
-        <button class="event-chip" type="button" data-event-filter="movement">Movement / state events</button>
-        <button class="event-chip" type="button" data-event-filter="region">Region events</button>
-        <button class="event-chip" type="button" data-event-filter="operator">Operator events</button>
+
+  <!-- Events drawer (bottom) -->
+  <div id="drawer-events" class="drawer drawer-bottom" role="region" aria-label="Event Stream">
+    <div class="drawer-header"><span class="drawer-title">Event Stream</span><button class="drawer-close" type="button" aria-label="Close">✕</button></div>
+    <div class="drawer-body">
+      <div id="event-tools">
+        <input id="event-search" type="text" placeholder="Search events" aria-label="Search events">
+        <div id="event-chip-row">
+          <button class="event-chip active" type="button" data-event-filter="all">All</button>
+          <button class="event-chip" type="button" data-event-filter="tick">Tick</button>
+          <button class="event-chip" type="button" data-event-filter="movement">Movement / state events</button>
+          <button class="event-chip" type="button" data-event-filter="region">Region events</button>
+          <button class="event-chip" type="button" data-event-filter="operator">Operator events</button>
+        </div>
+      </div>
+      <div id="event-log"></div>
+    </div>
+  </div>
+
+  <!-- Right drawer (Target / Stats tabs) -->
+  <div id="drawer-right" class="drawer drawer-right" role="region" aria-label="Target and Stats">
+    <div class="drawer-tabs">
+      <button class="dtab active" type="button" data-tab="target">Target</button>
+      <button class="dtab" type="button" data-tab="stats">Stats</button>
+    </div>
+    <div id="rtab-target" class="rtab-content">
+      <div class="panel-title">Selected Target</div>
+      <div id="selected-panel"></div>
+      <div id="action-panel">
+        <div class="action-row">
+          <button id="action-focus" class="action-btn" type="button">Focus</button>
+          <button id="action-ping" class="action-btn" type="button">Ping</button>
+          <button id="action-flag" class="action-btn" type="button">Flag</button>
+        </div>
+        <div class="action-row secondary">
+          <label class="ctrl-toggle"><input type="checkbox" id="toggle-follow-target">Follow Target</label>
+        </div>
       </div>
     </div>
-    <div id="event-log"></div>
-    <div class="panel-title">Selected Target</div>
-    <div id="selected-panel"></div>
-    <div id="action-panel">
-      <div class="action-row">
-        <button id="action-focus" class="action-btn" type="button">Focus</button>
-        <button id="action-ping" class="action-btn" type="button">Ping</button>
-        <button id="action-flag" class="action-btn" type="button">Flag</button>
+    <div id="rtab-stats" class="rtab-content hidden">
+      <div class="panel-title">Stats</div>
+      <div id="stats">
+        <span class="stat-label">Tick</span><span class="stat-value" id="s-tick">—</span>
+        <span class="stat-label">Agents</span><span class="stat-value" id="s-agents">—</span>
+        <span class="stat-label">Regions</span><span class="stat-value" id="s-regions">—</span>
+        <span class="stat-label">FlightsDbg</span><span class="stat-value" id="s-flights-debug">—</span>
+        <span class="stat-label">Layers</span><span class="stat-value" id="s-layers-debug">—</span>
+        <span class="stat-label">RenderDbg</span><span class="stat-value" id="s-render-debug">—</span>
+        <span class="stat-label">Speed</span><span class="stat-value" id="s-speed">1x</span>
+        <span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span>
       </div>
-      <div class="action-row secondary">
-        <label class="ctrl-toggle"><input type="checkbox" id="toggle-follow-target">Follow Target</label>
+      <div class="panel-title">Pod 1 Run Coach</div>
+      <section id="pod-lab" class="pod-lab">
+        <div class="pod-stepper" aria-label="Pod run steps">
+          <span class="pod-step-chip active" data-pod-step="1">1 Prompt</span>
+          <span class="pod-step-chip" data-pod-step="2">2 AI Gate</span>
+          <span class="pod-step-chip" data-pod-step="3">3 Verify</span>
+          <span class="pod-step-chip" data-pod-step="4">4 Compare</span>
+        </div>
+        <div id="pod-ai-lock" class="pod-lock">AI locked — submit your first answer to unlock.</div>
+        <label class="pod-field">Prompt
+          <textarea id="pod-user-answer" placeholder="Write your Pod 1 answer first..."></textarea>
+        </label>
+        <label class="pod-field">AI output (gated)
+          <textarea id="pod-ai-output" disabled placeholder="Locked until your first answer is submitted."></textarea>
+        </label>
+        <label class="pod-field">Verification: what's wrong
+          <textarea id="pod-verify-wrong" disabled placeholder="Required critique section #1"></textarea>
+        </label>
+        <label class="pod-field">Verification: what's missing
+          <textarea id="pod-verify-missing" disabled placeholder="Required critique section #2"></textarea>
+        </label>
+        <label class="pod-field">Verification: what would you change
+          <textarea id="pod-verify-change" disabled placeholder="Required critique section #3"></textarea>
+        </label>
+        <div id="pod-compare-box" class="pod-compare" hidden>
+          Compare moment (required): explicitly contrast your answer and AI output to continue.
+        </div>
+        <div class="pod-live-score" aria-live="polite">
+          <div class="pod-live-score-row"><span>Current step</span><strong id="pod-score-step">1 / 4</strong></div>
+          <div class="pod-live-score-row"><span>Structured critique</span><strong id="pod-score-critique">0 / 3</strong></div>
+          <div class="pod-live-score-row"><span>Comparison complete</span><strong id="pod-score-compare">No</strong></div>
+          <div class="pod-live-score-row"><span>Live score</span><strong id="pod-score-total">0</strong></div>
+        </div>
+        <div class="pod-actions">
+          <button id="pod-unlock-ai-btn" type="button">Unlock AI</button>
+          <button id="pod-compare-btn" type="button" disabled>Complete Compare</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Style / FX drawer (top) -->
+  <div id="drawer-style" class="drawer drawer-top" role="region" aria-label="Style and FX">
+    <div class="drawer-header"><span class="drawer-title">Style / FX</span><button class="drawer-close" type="button" aria-label="Close">✕</button></div>
+    <div id="style-drawer-body">
+      <label class="ctrl-inline" for="speed-select">Speed
+        <select id="speed-select" aria-label="Simulation speed">
+          <option value="0.5">0.5x</option>
+          <option value="1" selected>1x</option>
+          <option value="2">2x</option>
+          <option value="4">4x</option>
+        </select>
+      </label>
+      <label class="ctrl-compact" for="style-mode-select">Style
+        <select id="style-mode-select" aria-label="Visual style mode">
+          <option value="crt" selected>CRT</option>
+          <option value="nvg">NVG</option>
+          <option value="flir">FLIR</option>
+        </select>
+      </label>
+      <div class="preset-row">
+        <button class="preset-btn active" type="button" data-style-preset="tactical">Tactical</button>
+        <button class="preset-btn" type="button" data-style-preset="surveillance">Surveillance</button>
+        <button class="preset-btn" type="button" data-style-preset="cinematic">Cinematic</button>
+        <button class="preset-btn" type="button" data-style-preset="minimal">Minimal</button>
+      </div>
+      <div class="fx-grid">
+        <label class="ctrl-compact" for="fx-bloom">Bloom<input id="fx-bloom" type="range" min="0" max="100" value="20"></label>
+        <label class="ctrl-compact" for="fx-sharpen">Sharp<input id="fx-sharpen" type="range" min="0" max="100" value="30"></label>
+        <label class="ctrl-compact" for="fx-noise">Noise<input id="fx-noise" type="range" min="0" max="100" value="18"></label>
+        <label class="ctrl-compact" for="fx-vignette">Vignette<input id="fx-vignette" type="range" min="0" max="100" value="50"></label>
+        <label class="ctrl-compact" for="fx-pixelation">Density<input id="fx-pixelation" type="range" min="0" max="100" value="14"></label>
+        <label class="ctrl-compact" for="fx-glow">Glow<input id="fx-glow" type="range" min="0" max="100" value="18"></label>
       </div>
     </div>
-    <div class="panel-title">Stats</div>
-    <div id="stats">
-      <span class="stat-label">Tick</span><span class="stat-value" id="s-tick">—</span>
-      <span class="stat-label">Agents</span><span class="stat-value" id="s-agents">—</span>
-      <span class="stat-label">Regions</span><span class="stat-value" id="s-regions">—</span>
-      <span class="stat-label">FlightsDbg</span><span class="stat-value" id="s-flights-debug">—</span>
-      <span class="stat-label">Layers</span><span class="stat-value" id="s-layers-debug">—</span>
-      <span class="stat-label">RenderDbg</span><span class="stat-value" id="s-render-debug">—</span>
-      <span class="stat-label">Speed</span><span class="stat-value" id="s-speed">1x</span>
-      <span class="stat-label">Uptime</span><span class="stat-value" id="s-uptime">—</span>
+  </div>
+
+  <!-- Globe viewport -->
+  <div id="viewport-controls">
+    <div class="viewport-row">
+      <button id="zoom-out-btn" class="viewport-btn" type="button" title="Zoom out">−</button>
+      <button id="zoom-in-btn" class="viewport-btn" type="button" title="Zoom in">+</button>
     </div>
-    <div class="panel-title">Pod 1 Run Coach</div>
-    <section id="pod-lab" class="pod-lab">
-      <div class="pod-stepper" aria-label="Pod run steps">
-        <span class="pod-step-chip active" data-pod-step="1">1 Prompt</span>
-        <span class="pod-step-chip" data-pod-step="2">2 AI Gate</span>
-        <span class="pod-step-chip" data-pod-step="3">3 Verify</span>
-        <span class="pod-step-chip" data-pod-step="4">4 Compare</span>
-      </div>
-      <div id="pod-ai-lock" class="pod-lock">AI locked — submit your first answer to unlock.</div>
-      <label class="pod-field">Prompt
-        <textarea id="pod-user-answer" placeholder="Write your Pod 1 answer first..."></textarea>
-      </label>
-      <label class="pod-field">AI output (gated)
-        <textarea id="pod-ai-output" disabled placeholder="Locked until your first answer is submitted."></textarea>
-      </label>
-      <label class="pod-field">Verification: what's wrong
-        <textarea id="pod-verify-wrong" disabled placeholder="Required critique section #1"></textarea>
-      </label>
-      <label class="pod-field">Verification: what's missing
-        <textarea id="pod-verify-missing" disabled placeholder="Required critique section #2"></textarea>
-      </label>
-      <label class="pod-field">Verification: what would you change
-        <textarea id="pod-verify-change" disabled placeholder="Required critique section #3"></textarea>
-      </label>
-      <div id="pod-compare-box" class="pod-compare" hidden>
-        Compare moment (required): explicitly contrast your answer and AI output to continue.
-      </div>
-      <div class="pod-live-score" aria-live="polite">
-        <div class="pod-live-score-row"><span>Current step</span><strong id="pod-score-step">1 / 4</strong></div>
-        <div class="pod-live-score-row"><span>Structured critique</span><strong id="pod-score-critique">0 / 3</strong></div>
-        <div class="pod-live-score-row"><span>Comparison complete</span><strong id="pod-score-compare">No</strong></div>
-        <div class="pod-live-score-row"><span>Live score</span><strong id="pod-score-total">0</strong></div>
-      </div>
-      <div class="pod-actions">
-        <button id="pod-unlock-ai-btn" type="button">Unlock AI</button>
-        <button id="pod-compare-btn" type="button" disabled>Complete Compare</button>
-      </div>
-    </section>
-  </aside>
-</main>
+    <div class="viewport-row">
+      <button id="pan-left-btn" class="viewport-btn" type="button" title="Pan left">←</button>
+      <button id="pan-up-btn" class="viewport-btn" type="button" title="Pan up">↑</button>
+      <button id="pan-down-btn" class="viewport-btn" type="button" title="Pan down">↓</button>
+      <button id="pan-right-btn" class="viewport-btn" type="button" title="Pan right">→</button>
+    </div>
+    <button id="reset-view-btn" class="viewport-btn reset" type="button" title="Reset to default globe view">⌂ Reset</button>
+    <div id="viewport-readout" class="viewport-readout">orbit free</div>
+  </div>
+  <div id="cesium-world"></div>
+  <canvas id="world"></canvas>
+  <div id="fx-overlay" aria-hidden="true">
+    <div class="scanlines"></div>
+    <div class="noise"></div>
+    <div class="pixel-grid"></div>
+    <div class="vignette"></div>
+  </div>
+
+</div>
 <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
 <script id="rw-bootstrap" type="application/json">__RW_BOOTSTRAP__</script>
@@ -821,6 +872,44 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const row = btn ? btn.closest('.layer-row') : null;
     if (row) row.classList.toggle('on', on);
     if (!on) setLayerStatus(key, 'paused');
+  }
+
+  // ── Panel / drawer state ──────────────────────────────────────────────────
+  let activePanelId = null;
+  let activeRightTab = 'target';
+
+  function openPanel(id) {
+    if (activePanelId === id) { closePanel(); return; }
+    closePanel();
+    activePanelId = id;
+    const drawerId = (id === 'target' || id === 'stats') ? 'drawer-right' : 'drawer-' + id;
+    const drawerEl = document.getElementById(drawerId);
+    if (drawerEl) drawerEl.classList.add('open');
+    if (id === 'target') switchRightTab('target');
+    if (id === 'stats') switchRightTab('stats');
+    document.querySelectorAll('.rail-btn').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.panel === id);
+    });
+  }
+
+  function closePanel() {
+    if (!activePanelId) return;
+    const drawerId = (activePanelId === 'target' || activePanelId === 'stats') ? 'drawer-right' : 'drawer-' + activePanelId;
+    const drawerEl = document.getElementById(drawerId);
+    if (drawerEl) drawerEl.classList.remove('open');
+    document.querySelectorAll('.rail-btn').forEach(function (b) { b.classList.remove('active'); });
+    activePanelId = null;
+  }
+
+  function switchRightTab(tab) {
+    activeRightTab = tab;
+    document.querySelectorAll('.dtab').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.tab === tab);
+    });
+    const targetContent = document.getElementById('rtab-target');
+    const statsContent  = document.getElementById('rtab-stats');
+    if (targetContent) targetContent.classList.toggle('hidden', tab !== 'target');
+    if (statsContent)  statsContent.classList.toggle('hidden', tab !== 'stats');
   }
 
   const TYPE_STYLE = {
@@ -2154,6 +2243,7 @@ controller.enableRotate = true;
     refreshRelatedEventHighlight();
     renderSelectedPanel();
     syncFollowTargetState();
+    if (agentId) openPanel('target');
     draw();
   }
 
@@ -2164,6 +2254,7 @@ controller.enableRotate = true;
     refreshRelatedEventHighlight();
     renderSelectedPanel();
     syncFollowTargetState();
+    if (regionId) openPanel('target');
     draw();
   }
 
@@ -3245,6 +3336,24 @@ controller.enableRotate = true;
   panRightBtnEl.addEventListener('click', function () { panViewport(VIEWPORT_PAN_STEP, 0); });
   panUpBtnEl.addEventListener('click', function () { panViewport(0, -VIEWPORT_PAN_STEP); });
   panDownBtnEl.addEventListener('click', function () { panViewport(0, VIEWPORT_PAN_STEP); });
+
+  // ── Rail + drawer event listeners ─────────────────────────────────────────
+  document.querySelectorAll('.rail-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
+  });
+  document.querySelectorAll('.drawer-close').forEach(function (btn) {
+    btn.addEventListener('click', closePanel);
+  });
+  document.querySelectorAll('.dtab').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      switchRightTab(btn.dataset.tab);
+      activePanelId = btn.dataset.tab;
+      document.querySelectorAll('.rail-btn').forEach(function (b) {
+        b.classList.toggle('active', b.dataset.panel === activePanelId);
+      });
+    });
+  });
+
   speedSelectEl.addEventListener('change', function () {
     const nextSpeed = Number(speedSelectEl.value);
     simulationSpeed = Number.isFinite(nextSpeed) && nextSpeed > 0 ? nextSpeed : 1;

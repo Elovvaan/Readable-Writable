@@ -125,23 +125,25 @@ describe('style preset ordering invariants', function () {
     assert.ok(resetBody.includes('flyTo'), 'resetViewport must flyTo default position');
   });
 
-  test('left-panel exists in HTML', function () {
-    assert.ok(src.includes('id="left-panel"'), 'left panel nav must exist in HTML');
+  test('drawer-layers exists in HTML', function () {
+    assert.ok(src.includes('id="drawer-layers"'), 'layers drawer must exist in HTML');
   });
 
-  test('data toggles are in left panel, not in #controls', function () {
-    const controlsStart = src.indexOf('id="controls"');
-    const leftPanelStart = src.indexOf('id="left-panel"');
-    assert.ok(controlsStart !== -1 && leftPanelStart !== -1);
+  test('data toggles are in drawer-layers', function () {
+    const drawerStart = src.indexOf('id="drawer-layers"');
+    assert.ok(drawerStart !== -1, 'drawer-layers must exist');
     const flightToggleIdx = src.indexOf('id="toggle-layer-flights"');
-    assert.ok(flightToggleIdx > leftPanelStart, 'toggle-layer-flights must be inside left panel');
-    assert.ok(flightToggleIdx > controlsStart, 'toggle-layer-flights appears after controls div');
+    assert.ok(flightToggleIdx > drawerStart, 'toggle-layer-flights must be inside drawer-layers');
+    // rail launcher must exist separately
+    assert.ok(src.includes('id="rail"'), 'launcher rail must exist');
   });
 
-  test('all 8 data layers present in left panel HTML', function () {
-    const panel = src.slice(src.indexOf('id="left-panel"'), src.indexOf('</nav>') + 6);
+  test('all 8 data layers present in drawer-layers HTML', function () {
+    const drawerStart = src.indexOf('id="drawer-layers"');
+    const drawerEnd   = src.indexOf('id="drawer-events"');
+    const panel = src.slice(drawerStart, drawerEnd);
     for (const key of ['liveFlights','militaryFlights','earthquakes','satellites','traffic','weather','cctvMesh','bikeshare']) {
-      assert.ok(panel.includes('data-layer="' + key + '"'), 'left panel must contain layer: ' + key);
+      assert.ok(panel.includes('data-layer="' + key + '"'), 'drawer-layers must contain layer: ' + key);
     }
   });
 
