@@ -518,16 +518,23 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 <script>
 (function () {
   'use strict';
-function togglePanel(name) {
-document.querySelectorAll('.panel').forEach((p) => {
-p.style.display = 'none';
-});
-
-const panel = document.getElementById(`panel-${name}`);
-if (panel) {
-panel.style.display = 'block';
-}
-}
+  function togglePanel(name) {
+    console.log('[togglePanel] switching to panel:', name);
+    var panels = document.querySelectorAll('.panel');
+    if (!panels.length) {
+      console.warn('[togglePanel] no .panel elements found in DOM');
+      return;
+    }
+    panels.forEach(function (p) {
+      p.style.display = 'none';
+    });
+    var panel = document.getElementById('panel-' + name);
+    if (panel) {
+      panel.style.display = 'block';
+    } else {
+      console.warn('[togglePanel] panel not found:', name);
+    }
+  }
   const canvas  = document.getElementById('world');
   const ctx     = canvas.getContext('2d');
   const cesiumContainer = document.getElementById('worldview');
