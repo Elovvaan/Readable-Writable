@@ -419,6 +419,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const GLOBE_PATH_MIN_Z = 0.01;
   const GLOBE_CONTINENT_MIN_Z = -1;
   const GLOBE_DISABLE_VISIBILITY_CULLING = true; // temporary: verify render path while debugging
+  const FORCE_RENDER_ALL_OPENSKY_FLIGHTS = true; // debug: render all fetched OpenSky flights globally
   const HIDE_GRID_REGIONS_ON_GLOBE = true;
 
   if (USE_CESIUM) {
@@ -989,6 +990,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     for (const a of allAgents) {
       const entityType = getEntityType(a);
+      const forceRender = shouldForceRenderOpenSkyFlight(a);
+      if (entityType === 'flight') flightsMerged++;
+      if (!(forceRender || (showAgents && isEntityTypeVisible(entityType)))) continue;
       if (!showAgents || !isEntityTypeVisible(entityType)) continue;
       if (entityType === 'flight') flightsVisibleAfterFilters++;
       const p = getEntityWorldPoint(a, nowMs);
@@ -1184,6 +1188,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         entities: entitiesVisible,
         satellites: satellitesRendered,
         regions: regionsVisible,
+        flightsFetched: openskyStatus.fetched,
+        flightsMerged,
+        flightsRendered: flightsDrawn,
+        googleTilesLoaded: !!cesiumGoogleTileset,
         flightsFetched: Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0,
         flightsMerged,
         flightsVisible: flightsVisibleAfterFilters,
@@ -1249,17 +1257,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const deferredSelectionDraws = [];
     const regions = Object.values(state.regions);
     const agents = Object.values(state.agents);
-    const visibleAgents = agents.filter(a => isEntityTypeVisible(getEntityType(a)));
+    const visibleAgents = agents.filter(function (a) {
+      return shouldForceRenderOpenSkyFlight(a) || isEntityTypeVisible(getEntityType(a));
+    });
     const flightsMerged = agents.filter(a => getEntityType(a) === 'flight').length;
-    const flightsVisibleAfterFilters = showAgents
-      ? visibleAgents.filter(a => getEntityType(a) === 'flight').length
-      : 0;
+    const flightsVisibleAfterFilters = visibleAgents.filter(a => getEntityType(a) === 'flight').length;
     const drawCounts = { flightsDrawn: 0 };
     latestRegionIntelligence = computeRegionIntelligence();
 
     globeRegionOverlaySuppressed = false;
     renderRegionOverlays(regions, width, height, now, globeDebug, deferredLabelDraws);
     renderTrailsAndArcs(visibleAgents, width, height, globeDebug);
+    renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts, showAgents);
+    lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: drawCounts.flightsDrawn };
+    console.info('[RW Flights][canvas]', {
+      flightsFetched: openskyStatus.fetched,
+      flightsMerged,
+      flightsRendered: drawCounts.flightsDrawn,
+    });
     renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts);
     lastFlightDebugCounts = { merged: flightsMerged, visible: flightsVisibleAfterFilters, drawn: drawCounts.flightsDrawn, errors: 0 };
 
@@ -1436,9 +1451,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
   }
 
-  function renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts) {
-    if (!showAgents) return;
+  function renderEntityMarkers(visibleAgents, width, height, now, globeDebug, deferredLabelDraws, deferredSelectionDraws, drawCounts, agentsLayerEnabled) {
     visibleAgents.forEach(function (a) {
+      const forceRender = shouldForceRenderOpenSkyFlight(a);
+      if (!agentsLayerEnabled && !forceRender) return;
       const agentPoint = getEntityWorldPoint(a, now);
       if (globeDebug) {
         if (Number.isFinite(agentPoint.lat) && Number.isFinite(agentPoint.lng)) globeDebug.entitiesUsingLatLng++;
@@ -1647,6 +1663,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function getEntityTypeStyle(agent) {
     return TYPE_STYLE[getEntityType(agent)] || TYPE_STYLE.other;
+  }
+
+  function shouldForceRenderOpenSkyFlight(agent) {
+    return !!(FORCE_RENDER_ALL_OPENSKY_FLIGHTS && isOpenSkyFlight(agent));
   }
 
   function isEntityTypeVisible(type) {
@@ -3408,6 +3428,18 @@ async function pollOpenSkyFlights() {
 
     openSkyLiveState.lastFetchedCount = states.length;
     openSkyLiveState.lastNormalizedCount = normalizedCount;
+    console.log(
+      '[RW Worldview] OpenSky visibility: fetched=' + states.length
+      + ' normalized=' + normalizedCount
+      + ' projection=' + visibilityStats.passProjection
+      + ' minZ=' + visibilityStats.passMinZ
+      + ' (threshold=' + OPENSKY_GLOBE_MIN_Z + ')'
+    );
+    console.info('[RW Flights][poll]', {
+      flightsFetched: states.length,
+      flightsMerged: normalizedCount,
+      flightsRendered: Object.keys(nextFlights).length,
+    });
     openSkyLiveState.lastVisibleCount = visibleCount;
     openSkyLiveState.lastDrawnCount = drawnCount;
 
