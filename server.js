@@ -1109,12 +1109,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.scene.sun.show = false;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
-    // Full orbital camera control: allow rotate, tilt, zoom; generous altitude range
+    // Full orbital camera control: allow rotate, tilt; zoom is disabled intentionally
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
     ssc.enableTilt   = true;
-    ssc.enableZoom   = true;
+    ssc.enableZoom   = false;
     ssc.enableLook   = false;
+    // Retained for reference / future programmatic zoom; has no effect while enableZoom is false.
     ssc.minimumZoomDistance = 150;
     ssc.maximumZoomDistance = 40000000;
     try {
@@ -2377,12 +2378,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function setViewportZoom(nextZoom) {
-    const previousZoom = viewport.zoom;
     viewport.zoom = Math.max(VIEWPORT_ZOOM_MIN, Math.min(VIEWPORT_ZOOM_MAX, nextZoom));
-    if (USE_CESIUM && cesiumViewer) {
-      const ratio = viewport.zoom >= previousZoom ? 0.8 : 1.2;
-      cesiumViewer.camera.zoomBy(cesiumViewer.camera.positionCartographic.height * (ratio - 1));
-    }
+    // Cesium camera zoom is disabled (ssc.enableZoom = false); canvas overlay
+    // zoom still updates viewport.zoom for 2-D rendering scale only.
     syncFollowTargetState();
     updateViewportReadout();
     draw();
