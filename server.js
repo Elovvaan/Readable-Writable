@@ -519,22 +519,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 (function () {
   'use strict';
   function togglePanel(name) {
-    console.log('[togglePanel] switching to panel:', name);
-    var panels = document.querySelectorAll('.panel');
-    if (!panels.length) {
-      console.warn('[togglePanel] no .panel elements found in DOM');
-      return;
-    }
-    panels.forEach(function (p) {
+    document.querySelectorAll('.panel').forEach((p) => {
       p.style.display = 'none';
     });
-    var panel = document.getElementById('panel-' + name);
+    const panel = document.getElementById('panel-' + name);
     if (panel) {
       panel.style.display = 'block';
-    } else {
-      console.warn('[togglePanel] panel not found:', name);
     }
   }
+  window.togglePanel = togglePanel;
   const canvas  = document.getElementById('world');
   const ctx     = canvas.getContext('2d');
   const cesiumContainer = document.getElementById('worldview');
@@ -1153,11 +1146,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastCesiumRenderCounts.tilesLoaded = true;
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
-        cesiumViewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
-          duration: 0,
-        });
       } else {
         console.error('Missing GOOGLE_MAPS_API_KEY');
         console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; using OpenStreetMap fallback imagery');
@@ -2199,78 +2187,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     };
   }
 
+  // Camera auto-motion is disabled. This stub resets any stale follow/lerp state
+  // on each draw tick and returns false so the render loop does not reschedule
+  // on its behalf.
   function updateCameraMotion(width, height) {
-    if (followTargetEnabled) {
-      const selectedFocusPoint = getSelectedFocusPoint();
-      if (!selectedFocusPoint) {
-        followTargetEnabled = false;
-        cameraLerpTarget = null;
-        followTargetToggleEl.checked = false;
-      } else {
-        cameraLerpTarget = selectedFocusPoint;
-      }
-    }
-    if (!cameraLerpTarget) return false;
-    if (USE_CESIUM && cesiumViewer) {
-      const ll = toLatLngWithFallback(cameraLerpTarget);
-      if (!ll) return false;
-      const currentCarto = Cesium.Cartographic.fromCartesian(cesiumViewer.camera.position);
-      const currentLng = Cesium.Math.toDegrees(currentCarto.longitude);
-      const currentLat = Cesium.Math.toDegrees(currentCarto.latitude);
-      const desiredHeight = followTargetEnabled ? 1400000 : 1800000;
-      if (!cesiumCameraLerpState) {
-        cesiumCameraLerpState = { lng: currentLng, lat: currentLat, height: currentCarto.height };
-      }
-      const lerp = followTargetEnabled ? CESIUM_FOLLOW_LERP : CESIUM_FOCUS_LERP;
-      cesiumCameraLerpState.lng = Cesium.Math.lerp(cesiumCameraLerpState.lng, ll.lng, lerp);
-      cesiumCameraLerpState.lat = Cesium.Math.lerp(cesiumCameraLerpState.lat, ll.lat, lerp);
-      cesiumCameraLerpState.height = Cesium.Math.lerp(cesiumCameraLerpState.height, desiredHeight, lerp);
-      cesiumCameraMoveInternal = true;
-      cesiumFollowDisengageMutedUntil = Date.now() + 120;
-      cesiumViewer.camera.setView({
-        destination: Cesium.Cartesian3.fromDegrees(
-          cesiumCameraLerpState.lng,
-          cesiumCameraLerpState.lat,
-          cesiumCameraLerpState.height
-        ),
-      });
-      cesiumCameraMoveInternal = false;
-      const closeEnough = Math.abs(cesiumCameraLerpState.lng - ll.lng) < 0.012
-        && Math.abs(cesiumCameraLerpState.lat - ll.lat) < 0.012
-        && Math.abs(cesiumCameraLerpState.height - desiredHeight) < 1500;
-      if (closeEnough && !followTargetEnabled) {
-        cameraLerpTarget = null;
-        cesiumCameraLerpState = null;
-        return false;
-      }
-      return true;
-    }
-    const targetOffset = getViewportOffsetToCenterWorld(
-      cameraLerpTarget.x,
-      cameraLerpTarget.y,
-      width,
-      height,
-      cameraLerpTarget.lat,
-      cameraLerpTarget.lng
-    );
-    const nextOffsetX = viewport.offsetX + ((targetOffset.x - viewport.offsetX) * CAMERA_LERP_FACTOR);
-    const nextOffsetY = viewport.offsetY + ((targetOffset.y - viewport.offsetY) * CAMERA_LERP_FACTOR);
-    const deltaX = Math.abs(nextOffsetX - viewport.offsetX);
-    const deltaY = Math.abs(nextOffsetY - viewport.offsetY);
-    viewport.offsetX = nextOffsetX;
-    viewport.offsetY = nextOffsetY;
-    updateViewportReadout();
-
-    const closeEnough = Math.abs(targetOffset.x - viewport.offsetX) <= CAMERA_EPSILON_PX
-      && Math.abs(targetOffset.y - viewport.offsetY) <= CAMERA_EPSILON_PX;
-    if (closeEnough && !followTargetEnabled) {
-      viewport.offsetX = targetOffset.x;
-      viewport.offsetY = targetOffset.y;
-      cameraLerpTarget = null;
-      updateViewportReadout();
-      return false;
-    }
-    return deltaX > 0.01 || deltaY > 0.01 || followTargetEnabled;
+    followTargetEnabled = false;
+    cameraLerpTarget = null;
+    cesiumCameraLerpState = null;
+    return false;
   }
 
   function syncFollowTargetState() {
