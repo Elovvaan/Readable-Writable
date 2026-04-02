@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tests/utils.test.js tests/flight-entity.test.js tests/websocket.test.js tests/event-log.test.js tests/router.test.js"
   }
 }
