@@ -1099,6 +1099,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
     });
+    cesiumViewer.camera.setView({
+  destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000)
+});
+const controller = cesiumViewer.scene.screenSpaceCameraController;
+
+controller.enableZoom = true;
+controller.enableTranslate = true;
+controller.enableTilt = true;
+controller.enableRotate = true;
     cesiumViewer.scene.skyBox.show = true;
     cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
@@ -1113,7 +1122,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
     ssc.enableTilt   = true;
-    ssc.enableZoom   = false;
+    ssc.enableZoom   = true;
+    ssc.enableTranslate = true;
     ssc.enableLook   = false;
     // Retained for reference / future programmatic zoom; has no effect while enableZoom is false.
     ssc.minimumZoomDistance = 150;
