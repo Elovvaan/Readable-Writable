@@ -1201,10 +1201,11 @@ controller.enableRotate = true;
     cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
     cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#080e1a');
-    cesiumViewer.scene.globe.depthTestAgainstTerrain = true;
+    cesiumViewer.scene.globe.depthTestAgainstTerrain = false;
+    cesiumViewer.scene.globe.enableLighting = false;
     cesiumViewer.scene.skyAtmosphere.show = true;
     cesiumViewer.scene.skyAtmosphere.atmosphereLightIntensity = 6.0;
-    cesiumViewer.scene.sun.show = false;
+    cesiumViewer.scene.sun.show = true;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
     // Full orbital camera control: allow rotate, tilt; zoom is disabled intentionally
@@ -1247,15 +1248,25 @@ controller.enableRotate = true;
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
       } else {
-        console.error('Missing GOOGLE_MAPS_API_KEY');
-        console.warn('[RW Cesium] GOOGLE_MAPS_API_KEY missing; using OpenStreetMap fallback imagery');
+        console.warn('[RW Cesium] No Google Maps API key — using built-in Natural Earth imagery');
         lastCesiumRenderCounts.tilesLoaded = false;
-        lastCesiumRenderCounts.tilesState = 'missing-key';
-        lastCesiumRenderCounts.tilesError = 'Missing GOOGLE_MAPS_API_KEY';
-        cesiumViewer.imageryLayers.removeAll();
-        cesiumViewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
-          url: 'https://tile.openstreetmap.org/',
-        }));
+        lastCesiumRenderCounts.tilesState = 'no-key';
+        lastCesiumRenderCounts.tilesError = null;
+        // Natural Earth II ships bundled with CesiumJS — no API key, no network required
+        try {
+          const naturalEarth = await Cesium.TileMapServiceImageryProvider.fromUrl(
+            Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII')
+          );
+          cesiumViewer.imageryLayers.removeAll();
+          cesiumViewer.imageryLayers.addImageryProvider(naturalEarth);
+        } catch (imgErr) {
+          console.warn('[RW Cesium] Natural Earth fallback failed, keeping default imagery', imgErr);
+        }
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
+          duration: 0,
+        });
       }
       lastCesiumRenderCounts.earthInitialized = true;
       lastCesiumRenderCounts.tilesLoaded = !!cesiumGoogleTileset;
