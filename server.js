@@ -82,104 +82,112 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <title>RW Worldview</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d0d0d; color: #e0e0e0; display: flex; flex-direction: column; height: 100vh; }
-    header { background: #111; border-bottom: 1px solid #222; padding: 10px 18px; display: flex; align-items: center; gap: 12px; }
-    header h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: .04em; color: #7cf; }
-    #status { font-size: .75rem; padding: 3px 8px; border-radius: 999px; background: #1e3a1e; color: #5f5; border: 1px solid #3a6a3a; }
-    #status.disconnected { background: #3a1e1e; color: #f55; border-color: #6a3a3a; }
-    #controls { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: .68rem; color: #aaa; flex-wrap: wrap; justify-content: flex-end; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #08090b; color: #8fa8bb; display: flex; flex-direction: column; height: 100vh; }
+    header { background: #09090d; border-bottom: 1px solid #141820; padding: 8px 16px; display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .06em; color: #2ab8a4; }
+    #status { font-size: .75rem; padding: 3px 8px; border-radius: 999px; background: #0d2218; color: #3ecb92; border: 1px solid #1a4a32; }
+    #status.disconnected { background: #1e0d0d; color: #c05050; border-color: #3d1a1a; }
+    #controls { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: .68rem; color: #607a8c; flex-wrap: wrap; justify-content: flex-end; }
     .ctrl-toggle { display: inline-flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap; cursor: pointer; }
-    .ctrl-toggle input { width: 13px; height: 13px; accent-color: #7cf; cursor: pointer; }
+    .ctrl-toggle input { width: 13px; height: 13px; accent-color: #2ab8a4; cursor: pointer; }
     .ctrl-inline { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-    .ctrl-compact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .62rem; color: #8ea4ba; }
-    .ctrl-compact input[type=range] { width: 58px; accent-color: #7cf; transition: filter 220ms ease, transform 220ms ease; }
-    .ctrl-compact input[type=range]:hover { filter: brightness(1.12); transform: translateY(-1px); }
-    .ctrl-compact select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .64rem; padding: 2px 4px; }
-    #style-indicator { border: 1px solid #324154; border-radius: 999px; font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; color: #9ec9f5; background: #101820; }
-    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .62rem; color: #8fb6d8; border: 1px solid #283849; border-radius: 6px; padding: 3px 7px; background: #0f161fcc; }
+    .ctrl-compact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .62rem; color: #607a8c; }
+    .ctrl-compact input[type=range] { width: 54px; accent-color: #2ab8a4; transition: filter 220ms ease, transform 220ms ease; }
+    .ctrl-compact input[type=range]:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .ctrl-compact select { border: 1px solid #1c2a36; background: #0e1520; color: #7fb8c8; border-radius: 4px; font-size: .64rem; padding: 2px 4px; }
+    #style-indicator { border: 1px solid #1c2e3a; border-radius: 999px; font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; color: #3ec9b8; background: #080e14; }
+    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .62rem; color: #4e7a8c; border: 1px solid #161e28; border-radius: 6px; padding: 3px 7px; background: #06080ccc; }
     .telemetry-item { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
-    .telemetry-label { color: #65839f; letter-spacing: .07em; }
-    .telemetry-value { color: #b9ddff; }
-    #telemetry-rec.live { color: #ff7878; text-shadow: 0 0 8px rgba(255,80,80,.4); animation: rec-pulse 1.4s ease-in-out infinite; }
+    .telemetry-label { color: #354e5e; letter-spacing: .07em; }
+    .telemetry-value { color: #6fa8bc; }
+    #telemetry-rec.live { color: #d05858; text-shadow: 0 0 8px rgba(200,60,60,.3); animation: rec-pulse 1.4s ease-in-out infinite; }
     @keyframes rec-pulse { 0%, 100% { opacity: .62; } 50% { opacity: 1; } }
     .preset-row { display: inline-flex; align-items: center; gap: 5px; }
-    .preset-btn { border: 1px solid #2b3c4d; background: #141c25; color: #9ec8e8; border-radius: 999px; font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; padding: 3px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; }
-    .preset-btn:hover { background: #1a2938; border-color: #3f658a; color: #d8efff; transform: translateY(-1px); }
-    .preset-btn.active { background: #213246; color: #d2e7ff; border-color: #4f80b0; }
-    #speed-select { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 3px 6px; }
-    #pause-btn { border: 1px solid #2e3a46; background: #151a22; color: #a9d6ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
-    #pause-btn.active { background: #2b1e1e; color: #ffc2c2; border-color: #5a3333; }
-    main { display: grid; grid-template-columns: 1fr 320px; flex: 1; overflow: hidden; }
-    #canvas-wrap { position: relative; overflow: hidden; background: #0a0a12; }
+    .preset-btn { border: 1px solid #182430; background: #0c1219; color: #4e8096; border-radius: 999px; font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; padding: 3px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; }
+    .preset-btn:hover { background: #111e2a; border-color: #254056; color: #8abccc; transform: translateY(-1px); }
+    .preset-btn.active { background: #0e1f2e; color: #3ec9b8; border-color: #1f5e5a; }
+    #speed-select { border: 1px solid #1c2a36; background: #0e1520; color: #7fb8c8; border-radius: 4px; font-size: .68rem; padding: 3px 6px; }
+    #pause-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
+    #pause-btn.active { background: #1a0f0f; color: #c28080; border-color: #3d2020; }
+    main { display: grid; grid-template-columns: 180px 1fr 300px; flex: 1; overflow: hidden; }
+    #canvas-wrap { position: relative; overflow: hidden; background: #04050a; }
     #cesium-world, canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
     #cesium-world { z-index: 1; }
-    canvas { z-index: 2; pointer-events: auto; }
-    #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .45; transition: opacity 320ms ease, background 320ms ease, filter 320ms ease; }
+    canvas { z-index: 2; pointer-events: none; }
+    #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .35; transition: opacity 320ms ease, background 320ms ease, filter 320ms ease; }
     #fx-overlay .scanlines, #fx-overlay .noise, #fx-overlay .vignette, #fx-overlay .pixel-grid { position: absolute; inset: 0; }
-    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(220,255,255,.07) 0, rgba(220,255,255,.07) 1px, transparent 1px, transparent 3px); opacity: .2; }
-    #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.09) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .12; }
-    #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px); background-size: 10px 10px; opacity: .06; }
-    #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 48%, rgba(0,0,0,.58) 100%); opacity: .55; }
-    body[data-style-mode="crt"] { --style-accent: #8fd7ff; --style-shell: #90caf2; }
-    body[data-style-mode="nvg"] { --style-accent: #9dff95; --style-shell: #a3ffae; }
-    body[data-style-mode="flir"] { --style-accent: #ffd47f; --style-shell: #ffc983; }
-    header h1, .event-entry.agent, .viewport-readout, #style-indicator { color: var(--style-accent, #7cf); border-color: color-mix(in srgb, var(--style-accent, #7cf) 30%, #2e3a46); }
-    .panel-title, .selected-label, .stat-label { color: color-mix(in srgb, var(--style-shell, #9cb4cb) 48%, #3b4652); }
-    aside { background: #111; border-left: 1px solid #222; display: flex; flex-direction: column; overflow: hidden; }
-    .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #555; padding: 10px 14px 6px; border-bottom: 1px solid #1c1c1c; }
-    #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #1a1a1a; display: grid; gap: 6px; }
-    #event-search { width: 100%; border: 1px solid #2e3a46; background: #151a22; color: #d2e7ff; border-radius: 4px; font-size: .68rem; padding: 4px 6px; }
+    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(180,255,240,.05) 0, rgba(180,255,240,.05) 1px, transparent 1px, transparent 3px); opacity: .18; }
+    #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.07) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .1; }
+    #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px); background-size: 10px 10px; opacity: .05; }
+    #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 42%, rgba(0,0,0,.72) 100%); opacity: .65; }
+    body[data-style-mode="crt"] { --style-accent: #3ec9b8; --style-shell: #4ab8ac; }
+    body[data-style-mode="nvg"] { --style-accent: #7fe874; --style-shell: #88f580; }
+    body[data-style-mode="flir"] { --style-accent: #d4a055; --style-shell: #c89850; }
+    header h1, .event-entry.agent, .viewport-readout, #style-indicator { color: var(--style-accent, #3ec9b8); border-color: color-mix(in srgb, var(--style-accent, #3ec9b8) 28%, #182430); }
+    .panel-title, .selected-label, .stat-label { color: color-mix(in srgb, var(--style-shell, #4ab8ac) 38%, #2a3840); }
+    #left-panel { background: #09090d; border-right: 1px solid #141820; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding-bottom: 12px; }
+    .lp-title { font-size: .62rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; padding: 10px 12px 5px; }
+    .lp-toggle { display: flex; align-items: center; gap: 7px; padding: 4px 12px; font-size: .68rem; color: #5a7888; cursor: pointer; user-select: none; white-space: nowrap; transition: color 160ms; }
+    .lp-toggle:hover { color: #8ab8c8; }
+    .lp-toggle input { width: 12px; height: 12px; accent-color: #2ab8a4; cursor: pointer; flex-shrink: 0; }
+    .lp-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .lp-divider { margin: 6px 12px; border-top: 1px solid #121820; }
+    aside { background: #09090d; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; }
+    .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #2a3e4a; padding: 10px 14px 6px; border-bottom: 1px solid #111820; }
+    #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #111820; display: grid; gap: 6px; }
+    #event-search { width: 100%; border: 1px solid #1c2a36; background: #0e1520; color: #8ab8cc; border-radius: 4px; font-size: .68rem; padding: 4px 6px; }
     #event-chip-row { display: flex; gap: 5px; flex-wrap: wrap; }
-    .event-chip { border: 1px solid #2a2f3a; border-radius: 999px; background: #12151d; color: #9cb4cb; padding: 2px 8px; font-size: .64rem; cursor: pointer; }
-    .event-chip.active { background: #213246; color: #d2e7ff; border-color: #3f658a; }
+    .event-chip { border: 1px solid #181e28; border-radius: 999px; background: #0b0e16; color: #4e7888; padding: 2px 8px; font-size: .64rem; cursor: pointer; }
+    .event-chip.active { background: #0d1a28; color: #3ec9b8; border-color: #1a4a44; }
     #event-log { flex: 1; overflow-y: auto; padding: 8px 0; font-size: .72rem; font-family: 'Cascadia Code', 'Fira Code', monospace; }
-    .event-entry { padding: 3px 14px; border-bottom: 1px solid #161616; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .event-entry .ts { color: #444; margin-right: 6px; }
-    .event-entry.agent { color: #7cf; }
-    .event-entry.region { color: #fc7; }
-    .event-entry.system { color: #a7f; }
-    .event-entry.related { background: #1a2330; box-shadow: inset 2px 0 0 #7cf; }
-    .event-entry.dimmed { opacity: 0.42; }
-    .event-empty { padding: 8px 14px; color: #666; font-style: italic; }
-    #selected-panel { border-top: 1px solid #1c1c1c; padding: 10px 14px; font-size: .72rem; }
-    #action-panel { border-top: 1px solid #1c1c1c; padding: 8px 14px 10px; font-size: .72rem; }
+    .event-entry { padding: 3px 14px; border-bottom: 1px solid #0e1218; color: #4e6878; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .event-entry .ts { color: #283038; margin-right: 6px; }
+    .event-entry.agent { color: #3ec9b8; }
+    .event-entry.region { color: #b89040; }
+    .event-entry.system { color: #8060b8; }
+    .event-entry.related { background: #0c1820; box-shadow: inset 2px 0 0 #2ab8a4; }
+    .event-entry.dimmed { opacity: 0.38; }
+    .event-empty { padding: 8px 14px; color: #38505e; font-style: italic; }
+    #selected-panel { border-top: 1px solid #111820; padding: 10px 14px; font-size: .72rem; }
+    #action-panel { border-top: 1px solid #111820; padding: 8px 14px 10px; font-size: .72rem; }
     .action-row { display: flex; gap: 6px; }
     .action-row.secondary { margin-top: 8px; }
-    .action-btn { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
-    .action-btn:disabled { cursor: not-allowed; opacity: .45; }
+    .action-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .68rem; padding: 4px 8px; cursor: pointer; }
+    .action-btn:disabled { cursor: not-allowed; opacity: .35; }
     .selected-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
-    .selected-label { color: #555; }
-    .selected-value { color: #ccc; font-family: monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .selected-empty { color: #666; font-style: italic; }
-    #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #1c1c1c; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
-    .stat-label { color: #555; }
-    .stat-value { color: #ccc; font-family: monospace; text-align: right; }
-    .pod-lab { border-top: 1px solid #1c1c1c; padding: 10px 14px 14px; display: grid; gap: 10px; background: #0f1118; }
+    .selected-label { color: #2e4050; }
+    .selected-value { color: #7098a8; font-family: monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .selected-empty { color: #2e4050; font-style: italic; }
+    #stats { padding: 10px 14px; font-size: .72rem; border-top: 1px solid #111820; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+    .stat-label { color: #2e4050; }
+    .stat-value { color: #7098a8; font-family: monospace; text-align: right; }
+    .pod-lab { border-top: 1px solid #111820; padding: 10px 14px 14px; display: grid; gap: 10px; background: #07080c; }
     .pod-stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-    .pod-step-chip { border: 1px solid #2e3a46; border-radius: 999px; font-size: .62rem; text-align: center; padding: 3px 0; color: #9ab5cf; background: #121926; }
-    .pod-step-chip.active { border-color: #4f80b0; color: #d2e7ff; background: #1e2f45; }
-    .pod-step-chip.done { border-color: #2d6f52; color: #b6ffd2; background: #183127; }
-    .pod-lock { border: 1px dashed #52424a; border-radius: 6px; padding: 7px 8px; font-size: .68rem; color: #d8a9b8; background: #21151b; }
-    .pod-lock.unlocked { border-style: solid; border-color: #2d6f52; color: #b8ffd6; background: #14261d; }
+    .pod-step-chip { border: 1px solid #1c2a36; border-radius: 999px; font-size: .62rem; text-align: center; padding: 3px 0; color: #4e7888; background: #0b1218; }
+    .pod-step-chip.active { border-color: #1f4e5a; color: #3ec9b8; background: #0c1e28; }
+    .pod-step-chip.done { border-color: #1a4a32; color: #60c88a; background: #0a1e16; }
+    .pod-lock { border: 1px dashed #2e2030; border-radius: 6px; padding: 7px 8px; font-size: .68rem; color: #9070a0; background: #100d18; }
+    .pod-lock.unlocked { border-style: solid; border-color: #1a4a32; color: #60c88a; background: #0a1e16; }
     .pod-lock.flash { animation: pod-unlock-flash 900ms ease; }
-    @keyframes pod-unlock-flash { 0% { box-shadow: 0 0 0 0 rgba(120,255,180,.65); } 100% { box-shadow: 0 0 0 14px rgba(120,255,180,0); } }
-    .pod-field { display: grid; gap: 4px; font-size: .66rem; color: #8ea4ba; }
-    .pod-field textarea { width: 100%; min-height: 52px; border: 1px solid #2e3a46; background: #151a22; color: #d7ebff; border-radius: 4px; padding: 6px; font-size: .68rem; resize: vertical; }
-    .pod-field textarea:disabled { opacity: .45; cursor: not-allowed; }
-    .pod-live-score { display: grid; gap: 4px; border: 1px solid #2e3a46; background: #121926; border-radius: 6px; padding: 7px 8px; }
-    .pod-live-score-row { display: flex; justify-content: space-between; font-size: .66rem; color: #a8c6e2; }
-    .pod-live-score strong { color: #ddf0ff; }
-    .pod-compare { border: 1px solid #3c4d63; border-radius: 6px; background: #131c28; padding: 7px 8px; font-size: .66rem; color: #b7d4ef; }
+    @keyframes pod-unlock-flash { 0% { box-shadow: 0 0 0 0 rgba(60,200,140,.5); } 100% { box-shadow: 0 0 0 14px rgba(60,200,140,0); } }
+    .pod-field { display: grid; gap: 4px; font-size: .66rem; color: #4e7888; }
+    .pod-field textarea { width: 100%; min-height: 52px; border: 1px solid #1c2a36; background: #0e1520; color: #8ab8cc; border-radius: 4px; padding: 6px; font-size: .68rem; resize: vertical; }
+    .pod-field textarea:disabled { opacity: .35; cursor: not-allowed; }
+    .pod-live-score { display: grid; gap: 4px; border: 1px solid #1c2a36; background: #0b1218; border-radius: 6px; padding: 7px 8px; }
+    .pod-live-score-row { display: flex; justify-content: space-between; font-size: .66rem; color: #4e7888; }
+    .pod-live-score strong { color: #7098a8; }
+    .pod-compare { border: 1px solid #1e3040; border-radius: 6px; background: #0a1220; padding: 7px 8px; font-size: .66rem; color: #5a8098; }
     .pod-actions { display: flex; gap: 6px; }
-    .pod-actions button { border: 1px solid #2e3a46; background: #151a22; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 8px; cursor: pointer; }
-    .pod-actions button:disabled { opacity: .45; cursor: not-allowed; }
-    .type-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #2a2f3a; border-radius: 999px; padding: 2px 7px; }
+    .pod-actions button { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 4px 8px; cursor: pointer; }
+    .pod-actions button:disabled { opacity: .35; cursor: not-allowed; }
+    .type-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #181e28; border-radius: 999px; padding: 2px 7px; }
     .type-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-    #viewport-controls { position: absolute; top: 10px; left: 10px; display: grid; gap: 6px; z-index: 2; }
+    #viewport-controls { position: absolute; bottom: 14px; left: 12px; display: grid; gap: 5px; z-index: 10; }
     .viewport-row { display: flex; gap: 4px; }
-    .viewport-btn { border: 1px solid #2e3a46; background: #151a22e0; color: #c8e5ff; border-radius: 4px; font-size: .66rem; padding: 4px 7px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, transform 180ms ease; }
-    .viewport-btn:hover { background: #1b2633f0; border-color: #44627f; transform: translateY(-1px); }
-    .viewport-readout { font-size: .62rem; color: #8ea4ba; background: #0d1219cc; border: 1px solid #253244; border-radius: 4px; padding: 2px 6px; width: fit-content; }
+    .viewport-btn { border: 1px solid #1c2e3a; background: #07101acc; color: #4e8898; border-radius: 4px; font-size: .66rem; padding: 5px 9px; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease; backdrop-filter: blur(4px); }
+    .viewport-btn:hover { background: #0e2030e0; border-color: #2a5060; color: #7abcc8; transform: translateY(-1px); }
+    .viewport-btn.reset { border-color: #1f4e5a; color: #3ec9b8; }
+    .viewport-readout { font-size: .6rem; color: #3a5868; background: #05090ecc; border: 1px solid #141e28; border-radius: 4px; padding: 2px 6px; width: fit-content; backdrop-filter: blur(4px); }
     #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
   </style>
 </head>
@@ -188,17 +196,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <h1>RW Worldview</h1>
   <span id="status" class="disconnected">disconnected</span>
   <div id="controls">
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-agents" checked>Show Agents</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-regions" checked>Show Regions</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-trails" checked>Show Trails</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-flights" checked>Live Flights</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-traffic" checked>Traffic</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-satellites" checked>Satellites</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-regions" checked>Regions Layer</label>
-    <label class="ctrl-toggle"><input type="checkbox" id="toggle-layer-weather">Weather</label>
-    <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#7cc4ff"></span><input type="checkbox" id="toggle-type-agent" checked>Agents</label>
-    <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#ffb77d"></span><input type="checkbox" id="toggle-type-flight" checked>Flights</label>
-    <label class="ctrl-toggle type-chip"><span class="type-dot" style="background:#d0a3ff"></span><input type="checkbox" id="toggle-type-satellite" checked>Satellites</label>
     <label class="ctrl-inline" for="speed-select">Speed
       <select id="speed-select" aria-label="Simulation speed">
         <option value="0.5">0.5x</option>
@@ -227,30 +224,48 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <button class="preset-btn" type="button" data-style-preset="cinematic">Cinematic</button>
       <button class="preset-btn" type="button" data-style-preset="minimal">Minimal</button>
     </div>
-    <label class="ctrl-compact" for="fx-bloom">Bloom<input id="fx-bloom" type="range" min="0" max="100" value="40"></label>
-    <label class="ctrl-compact" for="fx-sharpen">Sharp<input id="fx-sharpen" type="range" min="0" max="100" value="35"></label>
-    <label class="ctrl-compact" for="fx-noise">Noise<input id="fx-noise" type="range" min="0" max="100" value="28"></label>
-    <label class="ctrl-compact" for="fx-vignette">Vignette<input id="fx-vignette" type="range" min="0" max="100" value="40"></label>
-    <label class="ctrl-compact" for="fx-pixelation">Density<input id="fx-pixelation" type="range" min="0" max="100" value="22"></label>
-    <label class="ctrl-compact" for="fx-glow">Glow<input id="fx-glow" type="range" min="0" max="100" value="45"></label>
-    <button id="pause-btn" type="button" aria-pressed="false">Pause Simulation</button>
+    <label class="ctrl-compact" for="fx-bloom">Bloom<input id="fx-bloom" type="range" min="0" max="100" value="20"></label>
+    <label class="ctrl-compact" for="fx-sharpen">Sharp<input id="fx-sharpen" type="range" min="0" max="100" value="30"></label>
+    <label class="ctrl-compact" for="fx-noise">Noise<input id="fx-noise" type="range" min="0" max="100" value="18"></label>
+    <label class="ctrl-compact" for="fx-vignette">Vignette<input id="fx-vignette" type="range" min="0" max="100" value="50"></label>
+    <label class="ctrl-compact" for="fx-pixelation">Density<input id="fx-pixelation" type="range" min="0" max="100" value="14"></label>
+    <label class="ctrl-compact" for="fx-glow">Glow<input id="fx-glow" type="range" min="0" max="100" value="18"></label>
+    <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
   </div>
 </header>
 <main>
+  <nav id="left-panel" aria-label="Data source controls">
+    <div class="lp-title">Data Layers</div>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-flights" checked><span>Flights</span></label>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-traffic" checked><span>Traffic</span></label>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-satellites" checked><span>Satellites</span></label>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-weather"><span>Weather</span></label>
+    <div class="lp-divider"></div>
+    <div class="lp-title">Visibility</div>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-agents" checked><span>Agents</span></label>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-regions" checked><span>Regions</span></label>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-trails" checked><span>Trails</span></label>
+    <div class="lp-divider"></div>
+    <div class="lp-title">Entity Types</div>
+    <label class="lp-toggle"><span class="lp-dot" style="background:#3ec9b8"></span><input type="checkbox" id="toggle-type-agent" checked><span>Agents</span></label>
+    <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-flight" checked><span>Flights</span></label>
+    <label class="lp-toggle"><span class="lp-dot" style="background:#9a70d8"></span><input type="checkbox" id="toggle-type-satellite" checked><span>Sats</span></label>
+  </nav>
   <div id="canvas-wrap">
     <div id="viewport-controls">
       <div class="viewport-row">
-        <button id="zoom-out-btn" class="viewport-btn" type="button">−</button>
-        <button id="zoom-in-btn" class="viewport-btn" type="button">+</button>
-        <button id="reset-view-btn" class="viewport-btn" type="button">Reset View</button>
+        <button id="zoom-out-btn" class="viewport-btn" type="button" title="Zoom out">−</button>
+        <button id="zoom-in-btn" class="viewport-btn" type="button" title="Zoom in">+</button>
       </div>
       <div class="viewport-row">
-        <button id="pan-left-btn" class="viewport-btn" type="button">←</button>
-        <button id="pan-up-btn" class="viewport-btn" type="button">↑</button>
-        <button id="pan-down-btn" class="viewport-btn" type="button">↓</button>
-        <button id="pan-right-btn" class="viewport-btn" type="button">→</button>
+        <button id="pan-left-btn" class="viewport-btn" type="button" title="Pan left">←</button>
+        <button id="pan-up-btn" class="viewport-btn" type="button" title="Pan up">↑</button>
+        <button id="pan-down-btn" class="viewport-btn" type="button" title="Pan down">↓</button>
+        <button id="pan-right-btn" class="viewport-btn" type="button" title="Pan right">→</button>
       </div>
-      <div id="viewport-readout" class="viewport-readout">zoom 1.00x</div>
+      <button id="reset-view-btn" class="viewport-btn reset" type="button" title="Reset to default globe view">⌂ Reset</button>
+      <div id="viewport-readout" class="viewport-readout">orbit free</div>
     </div>
     <div id="cesium-world"></div>
     <canvas id="world"></canvas>
@@ -563,10 +578,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let activeEventFilter = 'all';
   let styleMode = 'crt';
   const STYLE_PRESETS = {
-    tactical: { bloom: 48, sharpen: 44, noise: 32, vignette: 50, pixelation: 28, glow: 54 },
-    surveillance: { bloom: 30, sharpen: 64, noise: 24, vignette: 62, pixelation: 34, glow: 36 },
-    cinematic: { bloom: 72, sharpen: 28, noise: 40, vignette: 70, pixelation: 18, glow: 66 },
-    minimal: { bloom: 18, sharpen: 40, noise: 8, vignette: 26, pixelation: 8, glow: 20 },
+    tactical:     { bloom: 20, sharpen: 30, noise: 18, vignette: 50, pixelation: 14, glow: 18 },
+    surveillance: { bloom: 14, sharpen: 52, noise: 12, vignette: 60, pixelation: 20, glow: 10 },
+    cinematic:    { bloom: 38, sharpen: 18, noise: 28, vignette: 68, pixelation: 10, glow: 32 },
+    minimal:      { bloom: 6,  sharpen: 32, noise: 4,  vignette: 30, pixelation: 4,  glow: 6  },
   };
   let activeStylePreset = 'tactical';
   let styleFx = { ...STYLE_PRESETS.tactical };
@@ -862,15 +877,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
     });
-    cesiumViewer.scene.skyBox.show = false;
-    cesiumViewer.scene.backgroundColor = Cesium.Color.BLACK;
+    cesiumViewer.scene.skyBox.show = true;
+    cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
-    cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0b1220');
+    cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#080e1a');
     cesiumViewer.scene.globe.depthTestAgainstTerrain = true;
     cesiumViewer.scene.skyAtmosphere.show = true;
+    cesiumViewer.scene.skyAtmosphere.atmosphereLightIntensity = 6.0;
     cesiumViewer.scene.sun.show = false;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
+    // Full orbital camera control: allow rotate, tilt, zoom; generous altitude range
+    const ssc = cesiumViewer.scene.screenSpaceCameraController;
+    ssc.enableRotate = true;
+    ssc.enableTilt   = true;
+    ssc.enableZoom   = true;
+    ssc.enableLook   = false;
+    ssc.minimumZoomDistance = 150;
+    ssc.maximumZoomDistance = 40000000;
     try {
       if (BOOTSTRAP.googleMapsApiKey) {
         console.info('[RW Cesium] Google Photorealistic 3D Tiles request started');
@@ -901,7 +925,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
         cesiumViewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(-95, 40, 20000000),
+          destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
+          duration: 0,
         });
       } else {
         console.error('Missing GOOGLE_MAPS_API_KEY');
@@ -1826,23 +1852,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!targetKey) return;
     const focusPoint = getSelectedFocusPoint();
     if (!focusPoint) return;
-    cameraLerpTarget = focusPoint;
-    if (USE_CESIUM && cesiumViewer) {
-      const ll = toLatLngWithFallback(focusPoint);
-      if (ll) {
-        cesiumCameraLerpState = {
-          lng: ll.lng,
-          lat: ll.lat,
-          height: 1800000,
-        };
-      }
-    }
     focusTargetKey = targetKey;
     focusEffectUntil = Date.now() + 2200;
     const targetId = selectedAgentId || selectedRegionId;
     const label = selectedAgentId ? targetId : ('region ' + targetId);
     lastOperatorActionByTarget[targetKey] = 'focus';
     pushOperatorEvent('operator focused ' + label);
+    if (USE_CESIUM && cesiumViewer) {
+      const ll = toLatLngWithFallback(focusPoint);
+      if (ll) {
+        cesiumCameraMoveInternal = true;
+        cesiumFollowDisengageMutedUntil = Date.now() + 2500;
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 1800000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+          duration: 1.8,
+          complete: function () { cesiumCameraMoveInternal = false; },
+          cancel:   function () { cesiumCameraMoveInternal = false; },
+        });
+        // One-shot focus — no continuous lerp; user can orbit freely after landing
+        cameraLerpTarget = null;
+        cesiumCameraLerpState = null;
+      }
+    } else {
+      cameraLerpTarget = focusPoint;
+    }
     renderSelectedPanel();
     draw();
   }
@@ -2147,11 +2181,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function updateViewportReadout() {
-    let text = 'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
+    let text;
     if (USE_CESIUM) {
-      text += ' · cesium e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions + ' s:' + lastCesiumRenderCounts.satellites;
-      text += ' · google tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'on' : 'off'));
-      if (layerState.traffic) text += ' · traffic:unavailable';
+      text = 'orbit free';
+      if (cesiumViewer) {
+        const h = cesiumViewer.camera.positionCartographic.height;
+        const altKm = (h / 1000).toFixed(0);
+        text += ' · alt ' + altKm + ' km';
+        const pitch = Cesium.Math.toDegrees(cesiumViewer.camera.pitch).toFixed(0);
+        text += ' · pitch ' + pitch + '°';
+      }
+      text += ' · e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions + ' s:' + lastCesiumRenderCounts.satellites;
+      text += ' · tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'on' : 'off'));
+    } else {
+      text = 'zoom ' + viewport.zoom.toFixed(2) + 'x · pan ' + Math.round(viewport.offsetX) + ', ' + Math.round(viewport.offsetY);
+    }
+    if (USE_CESIUM) {
       if (layerState.weather) text += ' · weather:not configured';
     } else if (isGlobeRenderMode() && globeOverlayDiagnostics) {
       text += ' · vis e:' + globeOverlayDiagnostics.entitiesVisible
@@ -2195,8 +2240,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     viewport.offsetX = 0;
     viewport.offsetY = 0;
     cameraLerpTarget = null;
+    cesiumCameraLerpState = null;
     followTargetEnabled = false;
     followTargetToggleEl.checked = false;
+    if (USE_CESIUM && cesiumViewer) {
+      cesiumCameraMoveInternal = true;
+      cesiumFollowDisengageMutedUntil = Date.now() + 2000;
+      cesiumViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
+        orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
+        duration: 1.5,
+        complete: function () { cesiumCameraMoveInternal = false; },
+        cancel:   function () { cesiumCameraMoveInternal = false; },
+      });
+    }
     updateViewportReadout();
     draw();
   }
