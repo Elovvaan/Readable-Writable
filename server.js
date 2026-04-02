@@ -132,7 +132,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .lp-toggle input { width: 12px; height: 12px; accent-color: #2ab8a4; cursor: pointer; flex-shrink: 0; }
     .lp-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .lp-divider { margin: 6px 12px; border-top: 1px solid #121820; }
-    aside { background: #09090d; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; }
+    /* ── Data Layer rows ─────────────────────────────────────────────────── */
+    .layer-row { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-bottom: 1px solid #0e1420; cursor: default; }
+    .layer-row.unavailable { opacity: 0.38; pointer-events: none; }
+    .layer-icon { font-size: .82rem; line-height: 1; width: 16px; text-align: center; flex-shrink: 0; color: #2e4252; transition: color 200ms; }
+    .layer-row.on .layer-icon { color: var(--style-accent, #3ec9b8); }
+    .layer-info { flex: 1; min-width: 0; display: grid; gap: 1px; }
+    .layer-name { font-size: .65rem; font-weight: 600; color: #4a6878; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 200ms; }
+    .layer-row.on .layer-name { color: #7ab8c8; }
+    .layer-provider { font-size: .56rem; color: #243040; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .layer-freshness { font-size: .55rem; color: #243040; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .layer-row.on .layer-freshness { color: #2e6858; }
+    .layer-toggle { border: 1px solid #161e2a; background: #0b1018; color: #263444; border-radius: 3px; font-size: .54rem; font-weight: 700; letter-spacing: .08em; padding: 3px 5px; cursor: pointer; flex-shrink: 0; min-width: 28px; text-align: center; transition: background 160ms, border-color 160ms, color 160ms; }
+    .layer-toggle:hover { border-color: #1e3a50; color: #4a7898; background: #0e1828; }
+    .layer-toggle.active { border-color: #1f5e5a; background: #0a2422; color: #3ec9b8; }
+    .layer-toggle:disabled { cursor: not-allowed; opacity: 0.5; }
+    /* ── Visibility + Entity type rows ───────────────────────────────────── */ border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; }
     .panel-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #2a3e4a; padding: 10px 14px 6px; border-bottom: 1px solid #111820; }
     #event-tools { padding: 8px 14px 6px; border-bottom: 1px solid #111820; display: grid; gap: 6px; }
     #event-search { width: 100%; border: 1px solid #1c2a36; background: #0e1520; color: #8ab8cc; border-radius: 4px; font-size: .68rem; padding: 4px 6px; }
@@ -234,23 +249,104 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
 </header>
 <main>
-  <nav id="left-panel" aria-label="Data source controls">
+  <nav id="left-panel" aria-label="Data layer controls">
     <div class="lp-title">Data Layers</div>
-    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-flights" checked><span>Flights</span></label>
-    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-traffic" checked><span>Traffic</span></label>
-    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-satellites" checked><span>Satellites</span></label>
-    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
-    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-weather"><span>Weather</span></label>
+
+    <div class="layer-row on" data-layer="liveFlights">
+      <div class="layer-icon">✈</div>
+      <div class="layer-info">
+        <div class="layer-name">Live Flights</div>
+        <div class="layer-provider">OpenSky Network</div>
+        <div class="layer-freshness" id="layer-status-liveFlights">—</div>
+      </div>
+      <button class="layer-toggle active" id="toggle-layer-flights" type="button" aria-pressed="true">ON</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="militaryFlights">
+      <div class="layer-icon">★</div>
+      <div class="layer-info">
+        <div class="layer-name">Military Flights</div>
+        <div class="layer-provider">ADS-B Exchange</div>
+        <div class="layer-freshness" id="layer-status-militaryFlights">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-militaryFlights" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="earthquakes">
+      <div class="layer-icon">◎</div>
+      <div class="layer-info">
+        <div class="layer-name">Earthquakes</div>
+        <div class="layer-provider">USGS NEIC</div>
+        <div class="layer-freshness" id="layer-status-earthquakes">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-earthquakes" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row on" data-layer="satellites">
+      <div class="layer-icon">●</div>
+      <div class="layer-info">
+        <div class="layer-name">Satellites</div>
+        <div class="layer-provider">Celestrak / TLE</div>
+        <div class="layer-freshness" id="layer-status-satellites">—</div>
+      </div>
+      <button class="layer-toggle active" id="toggle-layer-satellites" type="button" aria-pressed="true">ON</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="traffic">
+      <div class="layer-icon">≡</div>
+      <div class="layer-info">
+        <div class="layer-name">Street Traffic</div>
+        <div class="layer-provider">HERE / TomTom</div>
+        <div class="layer-freshness" id="layer-status-traffic">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-traffic" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="weather">
+      <div class="layer-icon">☁</div>
+      <div class="layer-info">
+        <div class="layer-name">Weather Radar</div>
+        <div class="layer-provider">NOAA / NWS</div>
+        <div class="layer-freshness" id="layer-status-weather">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-weather" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="cctvMesh">
+      <div class="layer-icon">□</div>
+      <div class="layer-info">
+        <div class="layer-name">CCTV Mesh</div>
+        <div class="layer-provider">City Feed</div>
+        <div class="layer-freshness" id="layer-status-cctvMesh">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-cctvMesh" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
+    <div class="layer-row unavailable" data-layer="bikeshare">
+      <div class="layer-icon">⊕</div>
+      <div class="layer-info">
+        <div class="layer-name">Bikeshare</div>
+        <div class="layer-provider">GBFS Network</div>
+        <div class="layer-freshness" id="layer-status-bikeshare">UNAVAILABLE</div>
+      </div>
+      <button class="layer-toggle" id="toggle-layer-bikeshare" type="button" aria-pressed="false" disabled>—</button>
+    </div>
+
     <div class="lp-divider"></div>
     <div class="lp-title">Visibility</div>
     <label class="lp-toggle"><input type="checkbox" id="toggle-agents" checked><span>Agents</span></label>
     <label class="lp-toggle"><input type="checkbox" id="toggle-regions" checked><span>Regions</span></label>
     <label class="lp-toggle"><input type="checkbox" id="toggle-trails" checked><span>Trails</span></label>
+
     <div class="lp-divider"></div>
     <div class="lp-title">Entity Types</div>
     <label class="lp-toggle"><span class="lp-dot" style="background:#3ec9b8"></span><input type="checkbox" id="toggle-type-agent" checked><span>Agents</span></label>
     <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-flight" checked><span>Flights</span></label>
     <label class="lp-toggle"><span class="lp-dot" style="background:#9a70d8"></span><input type="checkbox" id="toggle-type-satellite" checked><span>Sats</span></label>
+
+    <div class="lp-divider"></div>
+    <div class="lp-title">Region Layer</div>
+    <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
   </nav>
   <div id="canvas-wrap">
     <div id="viewport-controls">
@@ -396,11 +492,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleAgentsEl = document.getElementById('toggle-agents');
   const toggleRegionsEl = document.getElementById('toggle-regions');
   const toggleTrailsEl = document.getElementById('toggle-trails');
-  const toggleLayerFlightsEl = document.getElementById('toggle-layer-flights');
-  const toggleLayerTrafficEl = document.getElementById('toggle-layer-traffic');
-  const toggleLayerSatellitesEl = document.getElementById('toggle-layer-satellites');
-  const toggleLayerRegionsEl = document.getElementById('toggle-layer-regions');
-  const toggleLayerWeatherEl = document.getElementById('toggle-layer-weather');
+  // Layer toggle buttons (now <button> elements, not checkboxes)
+  const toggleLayerFlightsEl     = document.getElementById('toggle-layer-flights');
+  const toggleLayerSatellitesEl  = document.getElementById('toggle-layer-satellites');
+  const toggleLayerRegionsEl     = document.getElementById('toggle-layer-regions');
+  // kept for title-init compatibility; these are disabled buttons in unavailable state
+  const toggleLayerTrafficEl     = document.getElementById('toggle-layer-traffic');
+  const toggleLayerWeatherEl     = document.getElementById('toggle-layer-weather');
   const toggleTypeAgentEl = document.getElementById('toggle-type-agent');
   const toggleTypeFlightEl = document.getElementById('toggle-type-flight');
   const toggleTypeSatelliteEl = document.getElementById('toggle-type-satellite');
@@ -565,7 +663,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let showRegions = true;
   let showTrails = true;
   let visibleEntityTypes = { agent: true, flight: true, satellite: true, other: true };
-  const layerState = { liveFlights: true, traffic: true, satellites: true, regions: true, weather: false };
+  const layerState = {
+    liveFlights:     true,   // OpenSky API + file source
+    militaryFlights: false,  // UNAVAILABLE — no data source wired
+    earthquakes:     false,  // UNAVAILABLE — no data source wired
+    satellites:      true,   // Celestrak / TLE
+    traffic:         false,  // UNAVAILABLE — incompatible with Cesium 3D Tiles renderer
+    weather:         false,  // UNAVAILABLE — stub only, not configured
+    cctvMesh:        false,  // UNAVAILABLE — no data source wired
+    bikeshare:       false,  // UNAVAILABLE — no data source wired
+    regions:         true,   // region overlay
+  };
+  // Which layers have a real data pipeline (others show UNAVAILABLE and cannot be toggled)
+  const LAYER_AVAILABLE = {
+    liveFlights: true, militaryFlights: false, earthquakes: false,
+    satellites: true,  traffic: false, weather: false, cctvMesh: false, bikeshare: false,
+  };
   let paused = false;
   let simulationSpeed = 1;
   let snapshotQueue = [];
@@ -600,6 +713,41 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let openskyStatus = Object.assign({}, OPENSKY_STATUS_DEFAULTS);
   let lastFlightDebugCounts = { merged: 0, visible: 0, drawn: 0, errors: 0 };
   let lastLayerDiagnostics = {};
+  // per-layer last-update timestamps (ms since epoch, null = never fetched yet)
+  const layerLastUpdated = {
+    liveFlights: null,
+    satellites:  null,
+  };
+
+  // ── Layer UI helpers ──────────────────────────────────────────────────────
+  function timeSinceStr(tsMs) {
+    if (!tsMs) return '—';
+    const secs = Math.floor((Date.now() - tsMs) / 1000);
+    if (secs < 10) return 'just now';
+    if (secs < 60) return secs + 's ago';
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'm ago';
+    return Math.floor(mins / 60) + 'h ago';
+  }
+
+  function setLayerStatus(key, text) {
+    const el = document.getElementById('layer-status-' + key);
+    if (el) el.textContent = text;
+  }
+
+  function setLayerOn(key, on) {
+    if (key in LAYER_AVAILABLE && !LAYER_AVAILABLE[key]) return; // can't toggle unavailable
+    layerState[key] = on;
+    const btn = document.getElementById('toggle-layer-' + key);
+    if (btn) {
+      btn.textContent = on ? 'ON' : 'OFF';
+      btn.setAttribute('aria-pressed', String(on));
+      btn.classList.toggle('active', on);
+    }
+    const row = btn ? btn.closest('.layer-row') : null;
+    if (row) row.classList.toggle('on', on);
+    if (!on) setLayerStatus(key, 'paused');
+  }
 
   const TYPE_STYLE = {
     agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
@@ -1713,21 +1861,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const satellitesInState = allAgents.filter(a => getEntityType(a) === 'satellite').length;
     const regionsInState = Object.keys(state.regions || {}).length;
     return {
-      liveFlights: layerState.liveFlights
-        ? (flightsInState > 0 ? 'active' : 'no data')
-        : 'off',
-      traffic: layerState.traffic
-        ? 'unavailable in current renderer mode'
-        : 'off',
-      satellites: layerState.satellites
-        ? (satellitesInState > 0 ? 'active' : 'no data')
-        : 'off',
-      regions: layerState.regions
-        ? (regionsInState > 0 ? 'active' : 'no data')
-        : 'off',
-      weather: layerState.weather
-        ? 'not configured'
-        : 'off',
+      liveFlights:     layerState.liveFlights ? (flightsInState > 0 ? 'active' : 'no data') : 'off',
+      militaryFlights: 'unavailable',
+      earthquakes:     'unavailable',
+      satellites:      layerState.satellites ? (satellitesInState > 0 ? 'active' : 'no data') : 'off',
+      traffic:         'unavailable',
+      weather:         'unavailable',
+      cctvMesh:        'unavailable',
+      bikeshare:       'unavailable',
+      regions:         layerState.regions ? (regionsInState > 0 ? 'active' : 'no data') : 'off',
     };
   }
 
@@ -2927,6 +3069,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       document.getElementById('s-uptime').textContent =
         (h ? h+'h ' : '') + (m ? m+'m ' : '') + s+'s';
     }
+    // ── Layer freshness panel update ──────────────────────────────────────
+    if (layerState.liveFlights) {
+      const pollTs = openskyStatus && openskyStatus.lastPollAt
+        ? new Date(openskyStatus.lastPollAt).getTime() : null;
+      if (pollTs) layerLastUpdated.liveFlights = pollTs;
+      setLayerStatus('liveFlights', openskyStatus && openskyStatus.lastErrorAt
+        ? 'error · ' + timeSinceStr(layerLastUpdated.liveFlights)
+        : timeSinceStr(layerLastUpdated.liveFlights));
+    }
+    const satCount = Object.values(state.agents || {}).filter(a => getEntityType(a) === 'satellite').length;
+    if (layerState.satellites) {
+      if (satCount > 0 && !layerLastUpdated.satellites) layerLastUpdated.satellites = Date.now();
+      setLayerStatus('satellites', satCount > 0
+        ? satCount + ' tracked · ' + timeSinceStr(layerLastUpdated.satellites)
+        : 'no data');
+    }
   }
   setInterval(updateStats, 1000);
   renderEventLog();
@@ -2997,20 +3155,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     showTrails = !!toggleTrailsEl.checked;
     draw();
   });
-  toggleLayerFlightsEl.addEventListener('change', function () {
-    layerState.liveFlights = !!toggleLayerFlightsEl.checked;
+  // Layer toggle buttons — available layers use click to flip ON/OFF
+  toggleLayerFlightsEl.addEventListener('click', function () {
+    setLayerOn('liveFlights', !layerState.liveFlights);
     clearSelectionIfHidden();
     refreshEventVisibilityStyling();
     updateStats();
     draw();
   });
-  toggleLayerTrafficEl.addEventListener('change', function () {
-    layerState.traffic = !!toggleLayerTrafficEl.checked;
-    updateStats();
-    draw();
-  });
-  toggleLayerSatellitesEl.addEventListener('change', function () {
-    layerState.satellites = !!toggleLayerSatellitesEl.checked;
+  toggleLayerSatellitesEl.addEventListener('click', function () {
+    setLayerOn('satellites', !layerState.satellites);
     clearSelectionIfHidden();
     refreshEventVisibilityStyling();
     updateStats();
@@ -3021,10 +3175,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     clearSelectionIfHidden();
     updateStats();
     draw();
-  });
-  toggleLayerWeatherEl.addEventListener('change', function () {
-    layerState.weather = !!toggleLayerWeatherEl.checked;
-    updateStats();
   });
   function onTypeToggleChange() {
     visibleEntityTypes.agent = !!toggleTypeAgentEl.checked;
@@ -3097,15 +3247,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
   }
 
-  if (USE_CESIUM) {
-    toggleLayerTrafficEl.title = 'Traffic layer unavailable in current renderer mode (Cesium + Google 3D Tiles)';
-  }
-  toggleLayerWeatherEl.title = 'Weather layer is present as a stub and currently not configured';
-
   function applySnapshot(nextSnapshot) {
     const snapshotTsMs = Date.now();
     updateAgentTrails(state.agents, nextSnapshot.agents);
-    updateFlightTracking(state.agents, nextSnapshot.agents, snapshotTsMs);
+    // Gate flight tracking on live-flights layer — OFF layer must not process flight events
+    if (layerState.liveFlights) {
+      updateFlightTracking(state.agents, nextSnapshot.agents, snapshotTsMs);
+    }
     const receivedFlightCount = Object.values(nextSnapshot && nextSnapshot.agents ? nextSnapshot.agents : {}).filter(function (a) {
       return a && a.type === 'flight';
     }).length;
@@ -3213,7 +3361,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           return;
         }
         updateAgentTrails(state.agents, msg.data.agents);
-        updateFlightTracking(state.agents, msg.data.agents, Date.now());
+        if (layerState.liveFlights) {
+          updateFlightTracking(state.agents, msg.data.agents, Date.now());
+        }
         previousAgentsById = state.agents || {};
         state = msg.data;
         latestRegionIntelligence = computeRegionIntelligence();

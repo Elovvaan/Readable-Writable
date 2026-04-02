@@ -120,11 +120,55 @@ describe('style preset ordering invariants', function () {
     const controlsStart = src.indexOf('id="controls"');
     const leftPanelStart = src.indexOf('id="left-panel"');
     assert.ok(controlsStart !== -1 && leftPanelStart !== -1);
-    // toggle-layer-flights should appear after left-panel, not inside controls block
     const flightToggleIdx = src.indexOf('id="toggle-layer-flights"');
-    assert.ok(flightToggleIdx > leftPanelStart,
-      'toggle-layer-flights must be inside left panel');
-    assert.ok(flightToggleIdx > controlsStart,
-      'toggle-layer-flights appears after controls (i.e. in left panel below)');
+    assert.ok(flightToggleIdx > leftPanelStart, 'toggle-layer-flights must be inside left panel');
+    assert.ok(flightToggleIdx > controlsStart, 'toggle-layer-flights appears after controls div');
+  });
+
+  test('all 8 data layers present in left panel HTML', function () {
+    const panel = src.slice(src.indexOf('id="left-panel"'), src.indexOf('</nav>') + 6);
+    for (const key of ['liveFlights','militaryFlights','earthquakes','satellites','traffic','weather','cctvMesh','bikeshare']) {
+      assert.ok(panel.includes('data-layer="' + key + '"'), 'left panel must contain layer: ' + key);
+    }
+  });
+
+  test('unavailable layers are disabled in HTML', function () {
+    for (const key of ['militaryFlights','earthquakes','traffic','weather','cctvMesh','bikeshare']) {
+      const btn = 'id="toggle-layer-' + key + '"';
+      const btnIdx = src.indexOf(btn);
+      assert.ok(btnIdx !== -1, 'button for ' + key + ' must exist');
+      const snippet = src.slice(btnIdx, btnIdx + 80);
+      assert.ok(snippet.includes('disabled'), key + ' button must be disabled');
+    }
+  });
+
+  test('LAYER_AVAILABLE has true only for liveFlights and satellites', function () {
+    const laIdx = src.indexOf('const LAYER_AVAILABLE');
+    assert.ok(laIdx !== -1, 'LAYER_AVAILABLE must be defined');
+    const laBlock = src.slice(laIdx, laIdx + 300);
+    assert.ok(laBlock.includes('liveFlights: true'), 'liveFlights must be available');
+    assert.ok(laBlock.includes('satellites: true'), 'satellites must be available');
+    assert.ok(laBlock.includes('militaryFlights: false'), 'militaryFlights must be unavailable');
+    assert.ok(laBlock.includes('weather: false'), 'weather must be unavailable');
+  });
+
+  test('applySnapshot gates updateFlightTracking on layerState.liveFlights', function () {
+    const applyIdx = src.indexOf('function applySnapshot');
+    assert.ok(applyIdx !== -1, 'applySnapshot must exist');
+    const body = src.slice(applyIdx, applyIdx + 600);
+    assert.ok(body.includes('layerState.liveFlights'), 'applySnapshot must gate on liveFlights');
+    assert.ok(body.includes('updateFlightTracking'), 'applySnapshot must call updateFlightTracking');
+  });
+
+  test('setLayerOn helper exists and checks LAYER_AVAILABLE', function () {
+    assert.ok(src.includes('function setLayerOn'), 'setLayerOn must be defined');
+    const fnIdx = src.indexOf('function setLayerOn');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('LAYER_AVAILABLE'), 'setLayerOn must check LAYER_AVAILABLE before toggling');
+  });
+
+  test('setLayerStatus and timeSinceStr helpers exist', function () {
+    assert.ok(src.includes('function setLayerStatus'), 'setLayerStatus must exist');
+    assert.ok(src.includes('function timeSinceStr'), 'timeSinceStr must exist');
   });
 });
