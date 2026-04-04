@@ -66,6 +66,28 @@ const openSkyFileState = {
   anomalies: [],
 };
 
+// ─── Planner / Worker / Task Runtime Stores ───────────────────────────────────
+const taskRegistry = new Map();   // taskId → task
+const workerRuntime = new Map();  // workerId → worker
+const taskResults = new Map();    // resultId → result
+const evaluations = new Map();    // evalId → evaluation
+const plannerState = {
+  activeTaskIds: [],
+  backlogCount: 0,
+  notesByRegion: {},
+  lastAssignments: [],
+};
+
+// Compact debug counters
+const plannerStats = {
+  totalAssigned: 0,
+  completedTasks: 0,
+  failedTasks: 0,
+  evalAccepted: 0,
+  evalRetry: 0,
+  evalEscalated: 0,
+};
+
 // Credentials loaded from opensky.json — env vars always take priority.
 const fileCredentials = {
   username: '',
@@ -3704,11 +3726,49 @@ function snapshot() {
     ...openSkyFileState.flights,   // file-sourced flights (live API wins on icao collision)
     ...openSkyLiveState.flights,
   };
+
+  // Annotate agents with current task status where a worker is assigned
+  for (const worker of workerRuntime.values()) {
+    if (worker.status === 'busy' && worker.currentTaskId) {
+      const task = taskRegistry.get(worker.currentTaskId);
+      if (task && task.targetEntityId && mergedAgents[task.targetEntityId]) {
+        mergedAgents[task.targetEntityId] = {
+          ...mergedAgents[task.targetEntityId],
+          currentTaskId: task.id,
+          currentTaskType: task.type,
+          currentTaskStatus: task.status,
+        };
+      }
+    }
+  }
+
+  // Recent tasks (last 30, newest first)
+  const recentTasks = [...taskRegistry.values()]
+    .sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1))
+    .slice(0, 30);
+
+  // Recent evaluations (last 20)
+  const recentEvals = [...evaluations.values()]
+    .sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1))
+    .slice(0, 20);
+
   return {
     agents: mergedAgents,
     regions: worldview.regions,
     tick: worldview.tick,
     started: worldview.started,
+    tasks: recentTasks,
+    workers: [...workerRuntime.values()],
+    evaluations: recentEvals,
+    planner: {
+      backlogCount: plannerState.backlogCount,
+      activeTaskCount: plannerState.activeTaskIds.length,
+      lastAssignments: plannerState.lastAssignments.slice(-5),
+      stats: {
+        ...plannerStats,
+        queuedTasks: countBacklog(),
+      },
+    },
     opensky: {
       enabled: OPENSKY_ENABLED,
       authConfigured: openSkyLiveState.authConfigured,
@@ -3950,6 +4010,8 @@ async function pollOpenSkyFlights() {
     for (const flightId of Object.keys(nextFlights)) {
       if (!previous[flightId]) {
         emit('agent', '[flight] ' + flightId + ' appeared (OpenSky)', { id: flightId, source: 'opensky', event: 'appear' }, 'flight');
+        const regionId = nextFlights[flightId] ? nextFlights[flightId].region : null;
+        if (regionId) onFlightAppeared(flightId, regionId);
       } else {
         updatedCount++;
       }
@@ -4089,6 +4151,9 @@ function loadOpenSkyFile() {
   for (const id of Object.keys(nextFlights)) {
     if (!previous[id]) {
       emit('agent', '[file] ' + id + ' appeared', { id, source: 'file', event: 'appear' }, 'flight');
+      // create verify_event task for new flight entering a region
+      const regionId = nextFlights[id] ? nextFlights[id].region : null;
+      if (regionId) onFlightAppeared(id, regionId);
     }
   }
   for (const id of Object.keys(previous)) {
@@ -4302,6 +4367,466 @@ function simulationLoop() {
 
   if (worldview.tick % 20 === 0) {
     emit('system', 'tick ' + worldview.tick, { tick: worldview.tick });
+  }
+}
+
+// ─── Task Planner / Worker / Evaluation System ───────────────────────────────
+
+// Role → task type mapping
+const ROLE_TASK_MAP = {
+  region_scout:    ['monitor_region', 'summarize_region'],
+  flight_scout:    ['track_entity', 'verify_event'],
+  anomaly_verifier:['inspect_anomaly'],
+  summary_worker:  ['summarize_region'],
+};
+
+// Task type → preferred worker role
+const TASK_ROLE_MAP = {
+  monitor_region:  'region_scout',
+  track_entity:    'flight_scout',
+  verify_event:    'flight_scout',
+  summarize_region:'summary_worker',
+  inspect_anomaly: 'anomaly_verifier',
+};
+
+function createWorker(role) {
+  const id = uid('worker');
+  const worker = {
+    id,
+    role,
+    status: 'idle',       // idle | busy
+    currentTaskId: null,
+    currentRegionId: null,
+    lastStartedAt: null,
+    lastCompletedAt: null,
+    metrics: { completed: 0, failed: 0, avgLatencyMs: 0, avgScore: 0 },
+  };
+  workerRuntime.set(id, worker);
+  return worker;
+}
+
+function bootstrapWorkers() {
+  createWorker('region_scout');
+  createWorker('region_scout');
+  createWorker('flight_scout');
+  createWorker('flight_scout');
+  createWorker('anomaly_verifier');
+  createWorker('summary_worker');
+  console.log('[RW Planner] Bootstrapped ' + workerRuntime.size + ' workers');
+}
+
+function createTask(type, regionId, opts) {
+  opts = opts || {};
+  const id = uid('task');
+  const task = {
+    id,
+    type,
+    status: 'queued',         // queued | running | completed | failed
+    priority: opts.priority || 1,
+    createdAt: new Date().toISOString(),
+    assignedAt: null,
+    completedAt: null,
+    regionId: regionId || null,
+    targetEntityId: opts.targetEntityId || null,
+    sourceEventId: opts.sourceEventId || null,
+    input: opts.input || {},
+    assignedWorkerId: null,
+    plannerId: 'planner-1',
+    resultId: null,
+    evaluationId: null,
+    retryCount: opts.retryCount || 0,
+  };
+  taskRegistry.set(id, task);
+  emit('system', '[planner] task created: ' + type + ' / ' + (regionId || 'global') + ' (' + id + ')', { taskId: id, type, regionId });
+  return task;
+}
+
+function findIdleWorker(role) {
+  for (const w of workerRuntime.values()) {
+    if (w.role === role && w.status === 'idle') return w;
+  }
+  return null;
+}
+
+// Deterministic worker execution — uses current world state as context
+function runWorkerTask(worker, task) {
+  const allFlights = { ...openSkyFileState.flights, ...openSkyLiveState.flights };
+  const region = worldview.regions[task.regionId] || null;
+  const regionName = region ? region.name : (task.regionId || 'global');
+  const flightsInRegion = Object.values(allFlights).filter(f => f.region === task.regionId);
+  const anomalies = openSkyFileState.anomalies || [];
+
+  let output = {};
+  const startMs = Date.now();
+
+  if (task.type === 'verify_event') {
+    const target = allFlights[task.targetEntityId] || null;
+    const hasAnomaly = target && anomalies.some(a => a.id === target.id || a.icao24 === target.icao24);
+    const suspicious = target && Number.isFinite(target.velocity) && target.velocity > 400;
+    output = {
+      verdict: hasAnomaly ? 'anomalous' : (suspicious ? 'uncertain' : 'normal'),
+      explanation: target
+        ? 'Entity ' + (target.label || target.id) + ' at ' + regionName + '; speed=' + (target.velocity || '?') + ' m/s'
+        : 'Target entity not found in current world state',
+      confidence: target ? (hasAnomaly ? 0.9 : (suspicious ? 0.65 : 0.85)) : 0.3,
+    };
+  } else if (task.type === 'monitor_region') {
+    output = {
+      regionStatus: flightsInRegion.length > 0 ? 'active' : 'quiet',
+      activeEntities: flightsInRegion.length,
+      summary: regionName + ': ' + flightsInRegion.length + ' active entity/entities',
+      confidence: 0.8,
+    };
+  } else if (task.type === 'inspect_anomaly') {
+    const target = allFlights[task.targetEntityId] || null;
+    const anomaly = anomalies.find(a => a.id === task.targetEntityId || a.icao24 === (target && target.icao24));
+    output = {
+      anomalyStatus: anomaly ? 'confirmed' : 'unresolved',
+      severityGuess: anomaly && anomaly.type === 'impossible_speed' ? 'high' : 'medium',
+      explanation: anomaly ? anomaly.msg : ('No active anomaly found for ' + (task.targetEntityId || 'unknown')),
+      confidence: anomaly ? 0.88 : 0.4,
+    };
+  } else if (task.type === 'summarize_region') {
+    const notes = plannerState.notesByRegion[task.regionId] || [];
+    output = {
+      regionId: task.regionId,
+      regionName,
+      flightCount: flightsInRegion.length,
+      anomalyCount: anomalies.filter(a => {
+        const f = allFlights[a.id];
+        return f && f.region === task.regionId;
+      }).length,
+      notes: notes.slice(-5),
+      summary: regionName + ' summary: ' + flightsInRegion.length + ' flights',
+      confidence: 0.75,
+    };
+  } else if (task.type === 'track_entity') {
+    const target = allFlights[task.targetEntityId] || null;
+    output = {
+      entityId: task.targetEntityId,
+      found: !!target,
+      position: target ? { lat: target.lat, lng: target.lng } : null,
+      velocity: target ? target.velocity : null,
+      regionId: target ? target.region : null,
+      confidence: target ? 0.82 : 0.2,
+    };
+  }
+
+  const latencyMs = Date.now() - startMs;
+  const resultId = uid('result');
+  const result = {
+    id: resultId,
+    taskId: task.id,
+    workerId: worker.id,
+    createdAt: new Date().toISOString(),
+    output,
+    summary: output.summary || output.explanation || output.verdict || 'done',
+    confidence: output.confidence || 0.5,
+    status: 'ready',
+    latencyMs,
+  };
+  taskResults.set(resultId, result);
+  return result;
+}
+
+function evaluateResult(task, result) {
+  const evalId = uid('eval');
+  const outputKeys = Object.keys(result.output || {});
+  const completeness = Math.min(1, outputKeys.length / 4);
+  const confidence = result.confidence || 0;
+  const latencyMs = result.latencyMs || 0;
+  const timeliness = latencyMs < 200 ? 1.0 : latencyMs < 1000 ? 0.8 : 0.5;
+  const correctness = result.status === 'ready' ? 0.9 : 0.3;
+  const policyFit = TASK_ROLE_MAP[task.type] ? 1.0 : 0.5;
+  const usefulness = confidence > 0.7 ? 0.9 : confidence > 0.4 ? 0.7 : 0.4;
+
+  const score = (correctness * 0.3) + (completeness * 0.2) + (timeliness * 0.15) + (policyFit * 0.15) + (usefulness * 0.2);
+
+  let verdict;
+  if (score > 0.75) verdict = 'accepted';
+  else if (score > 0.5) verdict = 'retry';
+  else verdict = 'escalate';
+
+  const reasons = [];
+  if (correctness < 0.8) reasons.push('result_not_ready');
+  if (completeness < 0.5) reasons.push('output_incomplete');
+  if (timeliness < 0.8) reasons.push('slow_response');
+  if (usefulness < 0.7) reasons.push('low_confidence');
+  if (reasons.length === 0) reasons.push('ok');
+
+  const evaluation = {
+    id: evalId,
+    taskId: task.id,
+    workerId: task.assignedWorkerId,
+    resultId: result.id,
+    createdAt: new Date().toISOString(),
+    score: Math.round(score * 1000) / 1000,
+    verdict,
+    reasons,
+    dimensions: {
+      correctness: Math.round(correctness * 100) / 100,
+      completeness: Math.round(completeness * 100) / 100,
+      timeliness: Math.round(timeliness * 100) / 100,
+      policyFit: Math.round(policyFit * 100) / 100,
+      usefulness: Math.round(usefulness * 100) / 100,
+    },
+  };
+  evaluations.set(evalId, evaluation);
+  return evaluation;
+}
+
+function applyEvaluation(task, worker, evaluation) {
+  const scoreStr = evaluation.score.toFixed(3);
+  emit('system',
+    '[eval] ' + evaluation.verdict + ' score=' + scoreStr + ' task=' + task.id,
+    { taskId: task.id, verdict: evaluation.verdict, score: evaluation.score }
+  );
+
+  if (evaluation.verdict === 'accepted') {
+    task.status = 'completed';
+    task.completedAt = new Date().toISOString();
+    plannerStats.completedTasks++;
+    plannerStats.evalAccepted++;
+
+    // update worker metrics
+    worker.metrics.completed++;
+    const n = worker.metrics.completed;
+    worker.metrics.avgScore = ((worker.metrics.avgScore * (n - 1)) + evaluation.score) / n;
+    const result = taskResults.get(task.resultId);
+    if (result) {
+      worker.metrics.avgLatencyMs = ((worker.metrics.avgLatencyMs * (n - 1)) + result.latencyMs) / n;
+      // record region notes for monitor/summarize
+      if (task.regionId && (task.type === 'monitor_region' || task.type === 'summarize_region') &&
+          result.output && result.output.summary) {
+        if (!plannerState.notesByRegion[task.regionId]) plannerState.notesByRegion[task.regionId] = [];
+        plannerState.notesByRegion[task.regionId].push(result.output.summary);
+        if (plannerState.notesByRegion[task.regionId].length > 10) {
+          plannerState.notesByRegion[task.regionId].shift();
+        }
+      }
+    }
+
+  } else if (evaluation.verdict === 'retry') {
+    plannerStats.evalRetry++;
+    if (task.retryCount < 2) {
+      task.status = 'queued';
+      task.retryCount = (task.retryCount || 0) + 1;
+      task.assignedWorkerId = null;
+      task.assignedAt = null;
+    } else {
+      task.status = 'failed';
+      task.completedAt = new Date().toISOString();
+      plannerStats.failedTasks++;
+      worker.metrics.failed++;
+    }
+  } else {
+    // escalate
+    plannerStats.evalEscalated++;
+    task.status = 'failed';
+    task.completedAt = new Date().toISOString();
+    plannerStats.failedTasks++;
+    worker.metrics.failed++;
+
+    // create follow-up task
+    if (task.type === 'verify_event' || task.type === 'track_entity') {
+      createTask('inspect_anomaly', task.regionId, {
+        targetEntityId: task.targetEntityId,
+        sourceEventId: task.id,
+        priority: 2,
+      });
+    } else if (task.type === 'monitor_region') {
+      createTask('summarize_region', task.regionId, {
+        sourceEventId: task.id,
+        priority: 2,
+      });
+    }
+  }
+
+  // free worker
+  worker.status = 'idle';
+  worker.currentTaskId = null;
+  worker.lastCompletedAt = new Date().toISOString();
+
+  // update plannerState
+  plannerState.activeTaskIds = plannerState.activeTaskIds.filter(id => id !== task.id);
+  plannerState.backlogCount = countBacklog();
+}
+
+function countBacklog() {
+  let n = 0;
+  for (const t of taskRegistry.values()) {
+    if (t.status === 'queued') n++;
+  }
+  return n;
+}
+
+// Guard: only one active monitor_region task per region at a time
+function hasActiveMonitorForRegion(regionId) {
+  for (const t of taskRegistry.values()) {
+    if (t.type === 'monitor_region' && t.regionId === regionId &&
+        (t.status === 'queued' || t.status === 'running')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Guard: only one inspect_anomaly for a given entity at a time
+function hasActiveInspectForEntity(entityId) {
+  for (const t of taskRegistry.values()) {
+    if (t.type === 'inspect_anomaly' && t.targetEntityId === entityId &&
+        (t.status === 'queued' || t.status === 'running')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Guard: only one verify_event per (entity, source event)
+function hasActiveVerifyForEntity(entityId) {
+  for (const t of taskRegistry.values()) {
+    if (t.type === 'verify_event' && t.targetEntityId === entityId &&
+        (t.status === 'queued' || t.status === 'running')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createTasksFromWorldState() {
+  const allFlights = { ...openSkyFileState.flights, ...openSkyLiveState.flights };
+
+  // 1. verify_event when a flight is present in a region
+  for (const flight of Object.values(allFlights)) {
+    if (flight.region && !hasActiveVerifyForEntity(flight.id)) {
+      createTask('verify_event', flight.region, {
+        targetEntityId: flight.id,
+        input: { flightId: flight.id, regionId: flight.region },
+      });
+    }
+  }
+
+  // 2. monitor_region for each active region if no monitor exists
+  for (const regionId of Object.keys(worldview.regions)) {
+    if (!hasActiveMonitorForRegion(regionId)) {
+      createTask('monitor_region', regionId, {
+        input: { regionId },
+      });
+    }
+  }
+
+  // 3. inspect_anomaly for known anomalies
+  for (const anomaly of (openSkyFileState.anomalies || [])) {
+    const entityId = anomaly.id || null;
+    if (entityId && !hasActiveInspectForEntity(entityId)) {
+      const flight = allFlights[entityId];
+      createTask('inspect_anomaly', flight ? flight.region : null, {
+        targetEntityId: entityId,
+        input: { anomaly },
+        priority: 3,
+      });
+    }
+  }
+}
+
+// Called on flight appearance events — only create verify_event for newly seen flights
+function onFlightAppeared(flightId, regionId) {
+  if (!hasActiveVerifyForEntity(flightId)) {
+    createTask('verify_event', regionId, {
+      targetEntityId: flightId,
+      input: { flightId, event: 'appear' },
+    });
+  }
+}
+
+let _plannerTaskSeedDone = false;
+
+function plannerTick() {
+  // Seed tasks once after world is initialized
+  if (!_plannerTaskSeedDone && worldview.tick > 2) {
+    _plannerTaskSeedDone = true;
+    createTasksFromWorldState();
+  }
+
+  // Re-seed monitor_region for any region that currently has no queued/running monitor
+  if (_plannerTaskSeedDone) {
+    for (const regionId of Object.keys(worldview.regions)) {
+      if (!hasActiveMonitorForRegion(regionId)) {
+        createTask('monitor_region', regionId, { input: { regionId } });
+      }
+    }
+  }
+
+  // Assign queued tasks to idle workers
+  for (const task of taskRegistry.values()) {
+    if (task.status !== 'queued') continue;
+    const role = TASK_ROLE_MAP[task.type];
+    if (!role) continue;
+    const worker = findIdleWorker(role);
+    if (!worker) continue;
+
+    // assign
+    task.status = 'running';
+    task.assignedAt = new Date().toISOString();
+    task.assignedWorkerId = worker.id;
+    worker.status = 'busy';
+    worker.currentTaskId = task.id;
+    worker.currentRegionId = task.regionId;
+    worker.lastStartedAt = new Date().toISOString();
+    plannerStats.runningTasks++;
+    plannerState.activeTaskIds.push(task.id);
+    plannerState.lastAssignments.push({ taskId: task.id, workerId: worker.id, ts: new Date().toISOString() });
+    if (plannerState.lastAssignments.length > 20) plannerState.lastAssignments.shift();
+    plannerStats.totalAssigned++;
+
+    emit('system',
+      '[planner] task assigned: ' + task.type + ' → ' + worker.id + ' (' + task.id + ')',
+      { taskId: task.id, workerId: worker.id, type: task.type }
+    );
+
+    // run synchronously (deterministic, no I/O)
+    const result = runWorkerTask(worker, task);
+    task.resultId = result.id;
+
+    emit('system',
+      '[worker] task completed: ' + task.type + ' worker=' + worker.id,
+      { taskId: task.id, workerId: worker.id, resultId: result.id }
+    );
+
+    // evaluate
+    const evaluation = evaluateResult(task, result);
+    task.evaluationId = evaluation.id;
+    applyEvaluation(task, worker, evaluation);
+  }
+
+  plannerState.backlogCount = countBacklog();
+}
+
+// Keep task registry from growing unbounded — prune completed/failed tasks older than 5 minutes
+function pruneOldTasks() {
+  const cutoff = Date.now() - 5 * 60 * 1000;
+
+  // Collect task ids being pruned so we can also clean linked results/evals
+  const pruneTaskIds = new Set();
+  for (const [id, task] of taskRegistry.entries()) {
+    if ((task.status === 'completed' || task.status === 'failed') &&
+        task.completedAt && new Date(task.completedAt).getTime() < cutoff) {
+      pruneTaskIds.add(id);
+      taskRegistry.delete(id);
+    }
+  }
+
+  // Prune linked results and evaluations for deleted tasks, plus any orphans older than 10 min
+  const evalCutoff = Date.now() - 10 * 60 * 1000;
+  for (const [id, ev] of evaluations.entries()) {
+    if (pruneTaskIds.has(ev.taskId) || new Date(ev.createdAt).getTime() < evalCutoff) {
+      evaluations.delete(id);
+    }
+  }
+  for (const [id, res] of taskResults.entries()) {
+    if (pruneTaskIds.has(res.taskId) || new Date(res.createdAt).getTime() < evalCutoff) {
+      taskResults.delete(id);
+    }
   }
 }
 
@@ -4562,9 +5087,12 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 initWorld();
+bootstrapWorkers();
 
 if (require.main === module) {
   setInterval(simulationLoop, 800);
+  setInterval(plannerTick, 2000);
+  setInterval(pruneOldTasks, 60000);
   startOpenSkyPolling();
   startOpenSkyFileWatcher();
 
@@ -4600,4 +5128,19 @@ module.exports = {
   loadOpenSkyFile,
   normalizeStateBatch,
   errMsg,
+  // ── Planner / Worker / Task exports ────────────────────────────────────────
+  taskRegistry,
+  workerRuntime,
+  taskResults,
+  evaluations,
+  plannerState,
+  plannerStats,
+  createTask,
+  plannerTick,
+  evaluateResult,
+  applyEvaluation,
+  runWorkerTask,
+  createWorker,
+  bootstrapWorkers,
+  onFlightAppeared,
 };
