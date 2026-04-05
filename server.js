@@ -1970,7 +1970,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   const BOUNDARY_ALT_COUNTRY      = 3000000;   // 3 000 km — show only countries above this
   const BOUNDARY_ALT_STATE        = 300000;    // 300 km — show states below this
-  const BOUNDARY_ALT_CITY         = 80000;     // 80 km — show city-level hint below this
   const BOUNDARY_FLY_ALT_COUNTRY  = 3000000;   // fly altitude when zooming to a country
   const BOUNDARY_FLY_ALT_STATE    = 600000;    // fly altitude when zooming to a US state
 
@@ -1984,9 +1983,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   let globeBoundaryCountryDs  = null;
   let globeBoundaryStateDs    = null;
-  let globeBoundaryLodLevel   = -1;
-  let globeBoundaryHoveredId  = null;
-  let globeBoundaryHoverTimer = null;
 
   function boundaryFeatureName(props) {
     if (!props) return '';

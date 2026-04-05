@@ -1251,7 +1251,8 @@ describe('globe boundary navigation', function () {
   });
 
   test('.sl-state-btn class has been removed from the HTML', function () {
-    assert.ok(!src.includes('class="sl-state-btn"'), '.sl-state-btn buttons must not exist in HTML');
+    // Match class="sl-state-btn" with either quote style and optional extra classes
+    assert.ok(!/class=["']([^"']* )?sl-state-btn( [^"']*)?["']/.test(src), '.sl-state-btn buttons must not exist in HTML');
   });
 
   test('.sl-state-btn CSS rules have been removed', function () {
