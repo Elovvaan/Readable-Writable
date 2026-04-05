@@ -114,8 +114,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RW Worldview</title>
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #08090b; color: #8fa8bb; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
     /* ── Header ──────────────────────────────────────────────────────────── */
     header { background: #09090d; border-bottom: 1px solid #141820; padding: 5px 14px; display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-height: 40px; }
@@ -797,7 +799,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
 </div>
 
- rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
 <script id="rw-bootstrap" type="application/json">__RW_BOOTSTRAP__</script>
 <script>
