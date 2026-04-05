@@ -580,3 +580,86 @@ describe('street-level tab (dedicated mode switch)', function () {
     assert.ok(body.includes("classList.remove('active')"), 'closeStreetLevelTab must remove active class');
   });
 });
+
+// ── Globe viewport centering invariants ───────────────────────────────────────
+describe('globe viewport centering invariants', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  test('initCesium clears trackedEntity immediately after viewer creation', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    assert.ok(fnIdx !== -1, 'initCesium must be defined');
+    const viewerIdx = src.indexOf("new Cesium.Viewer('cesium-world'", fnIdx);
+    assert.ok(viewerIdx !== -1, 'Cesium.Viewer must be created inside initCesium');
+    // trackedEntity = undefined must appear between viewer creation and the first scene property
+    const afterViewer = src.slice(viewerIdx, viewerIdx + 800);
+    assert.ok(afterViewer.includes('trackedEntity = undefined'), 'trackedEntity must be unset right after viewer creation');
+  });
+
+  test('initCesium calls setView immediately after viewer creation to anchor the camera', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    assert.ok(fnIdx !== -1, 'initCesium must be defined');
+    const viewerIdx = src.indexOf("new Cesium.Viewer('cesium-world'", fnIdx);
+    assert.ok(viewerIdx !== -1, 'Cesium.Viewer must be created inside initCesium');
+    const afterViewer = src.slice(viewerIdx, viewerIdx + 800);
+    assert.ok(afterViewer.includes('camera.setView'), 'setView must be called right after viewer creation to anchor the camera');
+  });
+
+  test('initCesium initial setView uses a valid global altitude (>= 10 000 000 m)', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    const viewerIdx = src.indexOf("new Cesium.Viewer('cesium-world'", fnIdx);
+    const afterViewer = src.slice(viewerIdx, viewerIdx + 800);
+    const altMatch = afterViewer.match(/fromDegrees\([^)]+,\s*(\d+)\)/);
+    assert.ok(altMatch, 'setView destination must use Cartesian3.fromDegrees with an altitude');
+    assert.ok(Number(altMatch[1]) >= 10000000, 'initial altitude must be >= 10 000 000 m to show the full globe');
+  });
+
+  test('initCesium initial setView uses a pitch of -90 deg (straight down at Earth)', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    const viewerIdx = src.indexOf("new Cesium.Viewer('cesium-world'", fnIdx);
+    const afterViewer = src.slice(viewerIdx, viewerIdx + 800);
+    assert.ok(afterViewer.includes('toRadians(-90)'), 'initial camera pitch must be -90 deg (nadir) to guarantee Earth is in view');
+  });
+
+  test('initCesium calls cesiumViewer.resize() before first draw()', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    assert.ok(fnIdx !== -1, 'initCesium must be defined');
+    const body = src.slice(fnIdx, fnIdx + 6000);
+    const resizeIdx = body.lastIndexOf('cesiumViewer.resize()');
+    const drawIdx   = body.lastIndexOf('draw()');
+    assert.ok(resizeIdx !== -1, 'cesiumViewer.resize() must be called inside initCesium');
+    assert.ok(drawIdx   !== -1, 'draw() must be called inside initCesium');
+    assert.ok(resizeIdx < drawIdx, 'cesiumViewer.resize() must come before draw() inside initCesium');
+  });
+
+  test('initCesium logs camera position after initialization', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    assert.ok(fnIdx !== -1, 'initCesium must be defined');
+    const body = src.slice(fnIdx, fnIdx + 6000);
+    assert.ok(body.includes('positionCartographic'), 'initCesium must read positionCartographic to log camera position');
+    assert.ok(body.includes('camera init:'), 'initCesium must log a camera init message confirming position');
+  });
+
+  test('viewerCameraSafetyCheck includes orientation in its setView call', function () {
+    const fnIdx = src.indexOf('function viewerCameraSafetyCheck');
+    assert.ok(fnIdx !== -1, 'viewerCameraSafetyCheck must be defined');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('orientation'), 'viewerCameraSafetyCheck setView must include orientation to clamp pitch');
+    assert.ok(body.includes('toRadians(-90)'), 'safety-check pitch must be -90 deg to guarantee Earth is in view');
+  });
+
+  test('cesium-world container uses inset:0 for full-viewport anchoring', function () {
+    assert.ok(
+      src.includes('#cesium-world { position: absolute; inset: 0;'),
+      '#cesium-world CSS must use inset:0 to fill its parent without offsets'
+    );
+  });
+
+  test('canvas#world uses inset:0 with pointer-events:none', function () {
+    assert.ok(
+      src.includes('canvas#world { position: absolute; inset: 0;'),
+      'canvas#world must use inset:0 so it is anchored at top:0 left:0'
+    );
+    assert.ok(src.includes('pointer-events: none'), 'canvas overlay must not capture pointer events');
+  });
+});
