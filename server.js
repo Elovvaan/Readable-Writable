@@ -333,6 +333,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #street-view-close { position: absolute; top: 10px; right: 10px; z-index: 51; background: #09090dcc; color: #3ec9b8; border: 1px solid #1f5e5a; border-radius: 4px; font-size: .72rem; padding: 5px 12px; cursor: pointer; backdrop-filter: blur(4px); transition: background 160ms, color 160ms; }
     #street-view-close:hover { background: #0a2422; color: #7fe0d4; }
     #street-view-pano { width: 100%; height: 100%; }
+    /* ── Street-level tab — dedicated mode view ──────────────────────────── */
+    #street-level-view { position: relative; flex: 1; overflow: hidden; background: #04050a; min-height: 0; display: none; flex-direction: column; }
+    #street-level-view.active { display: flex; }
+    #street-level-header { display: flex; align-items: center; padding: 8px 14px; background: #09090d; border-bottom: 1px solid #141820; gap: 10px; flex-shrink: 0; }
+    #street-level-back-btn { border: 1px solid #1f5e5a; background: #0a2422; color: #3ec9b8; border-radius: 4px; font-size: .72rem; padding: 5px 12px; cursor: pointer; transition: background 160ms, color 160ms; }
+    #street-level-back-btn:hover { background: #0d2f2c; color: #7fe0d4; }
+    #street-level-target-label { font-size: .68rem; color: #4e7888; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    #street-level-no-target { display: flex; align-items: center; justify-content: center; flex: 1; color: #2e4050; font-size: .82rem; font-style: italic; }
+    #street-level-pano { flex: 1; width: 100%; display: none; }
+    #street-level-pano.visible { display: block; }
+    /* ── Header tab button ───────────────────────────────────────────────── */
+    .header-tab { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; transition: background 160ms, border-color 160ms, color 160ms; }
+    .header-tab:hover { background: #111e2a; border-color: #254056; color: #8abccc; }
+    .header-tab.active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
   </style>
 </head>
 <body>
@@ -347,6 +361,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
   <span id="style-indicator">mode: crt</span>
   <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
+  <button id="street-level-tab" class="header-tab" type="button" aria-pressed="false" title="Switch to Street Level view for the selected target">Street Level</button>
 </header>
 <div id="globe-shell">
 
@@ -609,7 +624,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
 
 </div>
-<link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
+
+<!-- Street-level tab view — dedicated ground-mode view (hidden until user clicks Street Level tab) -->
+<div id="street-level-view" role="region" aria-label="Street Level View">
+  <div id="street-level-header">
+    <button id="street-level-back-btn" type="button" title="Return to globe view">← Back to Globe</button>
+    <span id="street-level-target-label"></span>
+  </div>
+  <div id="street-level-no-target">Select a target on the globe first.</div>
+  <div id="street-level-pano"></div>
+</div>
+
+ rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
 <script id="rw-bootstrap" type="application/json">__RW_BOOTSTRAP__</script>
 <script>
@@ -641,6 +667,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let cesiumSafetyViewApplied = false;
   let streetViewPanorama = null;
   let streetViewVisible = false;
+  let streetLevelPanorama = null;
+  let streetLevelActive = false;
   let lastCesiumRenderCounts = {
     entities: 0,
     regions: 0,
@@ -830,6 +858,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let flightTrackingById = {};
   let selectedAgentId = null;
   let selectedRegionId = null;
+  let selectedTargetCoords = null;
   let latestSelectedEvent = null;
   let ws, wsRetryDelay = 1000;
   let showAgents = true;
@@ -1446,6 +1475,76 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       hideStreetView();
     });
   }
+
+  // ── Street-level tab — dedicated ground-mode view ─────────────────────────
+  function initStreetLevelPanorama(lat, lng) {
+    const panoEl = document.getElementById('street-level-pano');
+    if (!panoEl) return;
+    if (!streetLevelPanorama) {
+      streetLevelPanorama = new google.maps.StreetViewPanorama(panoEl, {
+        position: { lat: lat, lng: lng },
+        pov: { heading: 0, pitch: 0 },
+        zoom: 1,
+        addressControl: false,
+        fullscreenControl: false,
+        motionTracking: false,
+        motionTrackingControl: false,
+      });
+    } else {
+      streetLevelPanorama.setPosition({ lat: lat, lng: lng });
+      streetLevelPanorama.setPov({ heading: 0, pitch: 0 });
+      streetLevelPanorama.setZoom(1);
+    }
+  }
+
+  function openStreetLevelTab() {
+    const globeShell = document.getElementById('globe-shell');
+    const streetLevelView = document.getElementById('street-level-view');
+    const noTargetEl = document.getElementById('street-level-no-target');
+    const panoEl = document.getElementById('street-level-pano');
+    const targetLabelEl = document.getElementById('street-level-target-label');
+    const tabBtn = document.getElementById('street-level-tab');
+    if (!streetLevelView) return;
+    if (globeShell) globeShell.style.display = 'none';
+    streetLevelView.classList.add('active');
+    streetLevelActive = true;
+    if (tabBtn) { tabBtn.classList.add('active'); tabBtn.setAttribute('aria-pressed', 'true'); }
+    if (selectedTargetCoords && BOOTSTRAP.googleMapsApiKey) {
+      if (noTargetEl) noTargetEl.style.display = 'none';
+      if (panoEl) panoEl.classList.add('visible');
+      if (targetLabelEl) {
+        targetLabelEl.textContent = selectedTargetCoords.lat.toFixed(4) + ', ' + selectedTargetCoords.lng.toFixed(4);
+      }
+      loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, function () {
+        initStreetLevelPanorama(selectedTargetCoords.lat, selectedTargetCoords.lng);
+      });
+    } else {
+      if (noTargetEl) noTargetEl.style.display = 'flex';
+      if (panoEl) panoEl.classList.remove('visible');
+      if (targetLabelEl) targetLabelEl.textContent = '';
+    }
+  }
+
+  function closeStreetLevelTab() {
+    const globeShell = document.getElementById('globe-shell');
+    const streetLevelView = document.getElementById('street-level-view');
+    const tabBtn = document.getElementById('street-level-tab');
+    if (streetLevelView) streetLevelView.classList.remove('active');
+    if (globeShell) globeShell.style.display = '';
+    streetLevelActive = false;
+    if (tabBtn) { tabBtn.classList.remove('active'); tabBtn.setAttribute('aria-pressed', 'false'); }
+  }
+
+  const streetLevelTabBtn = document.getElementById('street-level-tab');
+  if (streetLevelTabBtn) {
+    streetLevelTabBtn.addEventListener('click', openStreetLevelTab);
+  }
+
+  const streetLevelBackBtn = document.getElementById('street-level-back-btn');
+  if (streetLevelBackBtn) {
+    streetLevelBackBtn.addEventListener('click', closeStreetLevelTab);
+  }
+
 
   function toLatLngWithFallback(entity) {
     if (!entity) return null;
@@ -2355,9 +2454,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const fp = getSelectedFocusPoint();
       if (fp) {
         jumpToTarget(fp);
-        if (Number.isFinite(fp.lat) && Number.isFinite(fp.lng)) showStreetView(fp.lat, fp.lng);
+        if (Number.isFinite(fp.lat) && Number.isFinite(fp.lng)) {
+          selectedTargetCoords = { lat: fp.lat, lng: fp.lng };
+          showStreetView(fp.lat, fp.lng);
+        }
       }
     } else {
+      selectedTargetCoords = null;
       hideStreetView();
     }
     draw();
@@ -2375,9 +2478,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const fp = getSelectedFocusPoint();
       if (fp) {
         jumpToTarget(fp);
-        if (Number.isFinite(fp.lat) && Number.isFinite(fp.lng)) showStreetView(fp.lat, fp.lng);
+        if (Number.isFinite(fp.lat) && Number.isFinite(fp.lng)) {
+          selectedTargetCoords = { lat: fp.lat, lng: fp.lng };
+          showStreetView(fp.lat, fp.lng);
+        }
       }
     } else {
+      selectedTargetCoords = null;
       hideStreetView();
     }
     draw();
