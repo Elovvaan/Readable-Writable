@@ -329,31 +329,37 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   padding: 12px;
   border-top: 1px solid #0ff;
 }
-    /* ── Street-view overlay ─────────────────────────────────────────────────── */
-    #street-view { position: absolute; inset: 0; z-index: 50; background: #000; display: none; opacity: 0; transition: opacity 300ms ease; pointer-events: none; }
+    /* ── Street-view overlay (transparent HUD over Cesium) ──────────────────── */
+    #street-view { position: absolute; inset: 0; z-index: 50; background: transparent; display: none; opacity: 0; transition: opacity 300ms ease; pointer-events: none; }
     #street-view.visible { display: block; opacity: 1; pointer-events: auto; }
     #street-view-close { position: absolute; top: 10px; right: 10px; z-index: 51; background: #09090dcc; color: #3ec9b8; border: 1px solid #1f5e5a; border-radius: 4px; font-size: .72rem; padding: 5px 12px; cursor: pointer; backdrop-filter: blur(4px); transition: background 160ms, color 160ms; }
     #street-view-close:hover { background: #0a2422; color: #7fe0d4; }
-    #street-view-pano { width: 100%; height: 100%; }
-    /* ── Street-level tab — dedicated mode view ──────────────────────────── */
-    #street-level-view { position: relative; flex: 1; overflow: hidden; background: #04050a; min-height: 0; display: none; flex-direction: row; }
+    #street-view-pano { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: auto; }
+    .sv-nav-row { display: flex; gap: 6px; justify-content: center; }
+    .sv-nav-btn { border: 1px solid #1f5e5a; background: #09090dcc; color: #3ec9b8; border-radius: 4px; font-size: .72rem; padding: 6px 12px; cursor: pointer; backdrop-filter: blur(4px); transition: background 160ms, color 160ms; user-select: none; }
+    .sv-nav-btn:hover { background: #0a2422; color: #7fe0d4; }
+    .sv-nav-btn:active { background: #0e3530; transform: scale(0.96); }
+    .sv-alt-text { font-size: .6rem; font-family: 'Cascadia Code', 'Fira Code', monospace; color: #4e9888; background: #09090dcc; border: 1px solid #141820; border-radius: 4px; padding: 3px 8px; backdrop-filter: blur(4px); white-space: nowrap; }
+    #sv-mode-hint { font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; color: #3ec9b8; background: #09090dcc; border: 1px solid #1f5e5a; border-radius: 4px; padding: 3px 8px; backdrop-filter: blur(4px); white-space: nowrap; }
+    /* ── Street-level tab — absolute overlay inside globe-shell ──────────────── */
+    #street-level-view { position: absolute; inset: 0; z-index: 9; background: transparent; display: none; flex-direction: row; overflow: hidden; }
     #street-level-view.active { display: flex; }
     #street-level-header { display: flex; align-items: center; padding: 8px 14px; background: #09090d; border-bottom: 1px solid #141820; gap: 10px; flex-shrink: 0; }
     #street-level-back-btn { border: 1px solid #1f5e5a; background: #0a2422; color: #3ec9b8; border-radius: 4px; font-size: .62rem; padding: 4px 6px; cursor: pointer; transition: background 160ms, color 160ms; width: 36px; text-align: center; }
     #street-level-back-btn:hover { background: #0d2f2c; color: #7fe0d4; }
     #street-level-target-label { font-size: .58rem; color: #4e7888; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 2px 0; text-align: center; word-break: break-all; }
-    #street-level-no-target { display: flex; align-items: center; justify-content: center; flex: 1; color: #2e4050; font-size: .82rem; font-style: italic; }
-    #street-level-pano { flex: 1; width: 100%; display: none; }
-    #street-level-pano.visible { display: block; }
+    #street-level-no-target { display: flex; align-items: center; justify-content: center; flex: 1; color: #2e4050; font-size: .82rem; font-style: italic; pointer-events: none; }
+    #street-level-pano { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); display: none; flex-direction: column; align-items: center; gap: 6px; pointer-events: auto; }
+    #street-level-pano.visible { display: flex; }
     /* ── Street-level redesigned left panel ──────────────────────────────── */
     #sl-left-panel { width: 52px; flex-shrink: 0; background: #07080cdd; border-right: 1px solid #141820; display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; overflow-y: auto; }
     .sl-world-btn { width: 36px; min-height: 36px; border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 5px; font-size: .52rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; text-align: center; line-height: 1.2; padding: 2px; transition: background 160ms, border-color 160ms, color 160ms; user-select: none; }
     .sl-world-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; }
     .sl-world-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
     /* ── Street-level center viewport ────────────────────────────────────── */
-    #sl-viewport { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+    #sl-viewport { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; min-width: 0; background: transparent; pointer-events: none; }
     /* ── Street-level bottom bar (locations/landmarks) ───────────────────── */
-    #sl-bottom-bar { flex-shrink: 0; background: #07080ccc; border-top: 1px solid #141820; padding: 4px 10px; display: flex; align-items: center; gap: 6px; backdrop-filter: blur(4px); }
+    #sl-bottom-bar { flex-shrink: 0; background: #07080ccc; border-top: 1px solid #141820; padding: 4px 10px; display: flex; align-items: center; gap: 6px; backdrop-filter: blur(4px); pointer-events: auto; }
     .sl-bottom-label { font-size: .52rem; letter-spacing: .1em; text-transform: uppercase; color: #2a3e4a; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     #sl-landmarks { display: flex; gap: 4px; overflow-x: auto; flex: 1; scrollbar-width: none; }
     #sl-landmarks::-webkit-scrollbar { display: none; }
@@ -361,7 +367,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .sl-landmark-btn:hover { background: #0e1e2e; border-color: #1e3a50; color: #7abcc8; }
     .sl-landmark-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
     /* ── States pop-up drawer (bottom, inside #sl-viewport) ─────────────── */
-    #sl-states-drawer { position: absolute; left: 0; right: 0; bottom: 0; background: #09090dee; border-top: 1px solid #1f5e5a; transform: translateY(100%); transition: transform 260ms cubic-bezier(.4,0,.2,1); z-index: 10; display: flex; flex-direction: column; max-height: 60%; }
+    #sl-states-drawer { position: absolute; left: 0; right: 0; bottom: 0; background: #09090dee; border-top: 1px solid #1f5e5a; transform: translateY(100%); transition: transform 260ms cubic-bezier(.4,0,.2,1); z-index: 10; display: flex; flex-direction: column; max-height: 60%; pointer-events: auto; }
     #sl-states-drawer.open { transform: translateY(0); }
     #sl-states-hdr { display: flex; align-items: center; padding: 6px 12px; border-bottom: 1px solid #141820; flex-shrink: 0; gap: 8px; }
     .sl-states-title { font-size: .58rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; }
@@ -665,13 +671,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <!-- Street-view overlay panel (hidden until an entity is selected) -->
   <div id="street-view" role="region" aria-label="Street View">
     <button id="street-view-close" type="button" title="Close Street View and return to globe">✕ Globe</button>
-    <div id="street-view-pano"></div>
+    <div id="street-view-pano">
+      <span id="sv-mode-hint">STREET LEVEL · WASD move · R/F altitude</span>
+      <div class="sv-nav-row">
+        <button id="sv-fwd-btn" class="sv-nav-btn" type="button" title="Forward (W)">↑ FWD</button>
+      </div>
+      <div class="sv-nav-row">
+        <button id="sv-left-btn" class="sv-nav-btn" type="button" title="Strafe left (A)">← LEFT</button>
+        <button id="sv-back-btn" class="sv-nav-btn" type="button" title="Backward (S)">↓ BACK</button>
+        <button id="sv-right-btn" class="sv-nav-btn" type="button" title="Strafe right (D)">RIGHT →</button>
+      </div>
+      <div class="sv-nav-row">
+        <button id="sv-asc-btn" class="sv-nav-btn" type="button" title="Ascend (R)">▲ ASC</button>
+        <span id="sv-alt-readout" class="sv-alt-text">—m</span>
+        <button id="sv-desc-btn" class="sv-nav-btn" type="button" title="Descend (F)">▼ DES</button>
+      </div>
+    </div>
   </div>
 
-</div>
-
-<!-- Street-level tab view — dedicated ground-mode view (hidden until user clicks Street Level tab) -->
-<div id="street-level-view" role="region" aria-label="Street Level View">
+  <!-- Street-level tab view — absolute overlay inside globe-shell for seamless Cesium transitions -->
+  <div id="street-level-view" role="region" aria-label="Street Level View">
 
   <!-- Left panel: world controls -->
   <div id="sl-left-panel">
@@ -690,7 +709,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <!-- Center: panorama viewport -->
   <div id="sl-viewport">
     <div id="street-level-no-target">Select a target first.</div>
-    <div id="street-level-pano"></div>
+    <div id="street-level-pano">
+      <span class="sv-alt-text" id="sl-alt-readout">—m</span>
+      <div class="sv-nav-row">
+        <button id="sl-fwd-btn" class="sv-nav-btn" type="button" title="Forward (W)">↑ FWD</button>
+      </div>
+      <div class="sv-nav-row">
+        <button id="sl-left-btn" class="sv-nav-btn" type="button" title="Left (A)">← LEFT</button>
+        <button id="sl-back-btn" class="sv-nav-btn" type="button" title="Back (S)">↓ BACK</button>
+        <button id="sl-right-btn" class="sv-nav-btn" type="button" title="Right (D)">RIGHT →</button>
+      </div>
+      <div class="sv-nav-row">
+        <button id="sl-asc-btn" class="sv-nav-btn" type="button" title="Ascend (R)">▲ ASC</button>
+        <button id="sl-desc-btn" class="sv-nav-btn" type="button" title="Descend (F)">▼ DES</button>
+      </div>
+    </div>
 
     <!-- States pop-up drawer (slides up from bottom inside viewport) -->
     <div id="sl-states-drawer" role="dialog" aria-label="States navigator" aria-hidden="true">
@@ -797,6 +830,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  </div>
+
 </div>
 
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
@@ -832,6 +867,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let streetViewVisible = false;
   let streetLevelPanorama = null;
   let streetLevelActive = false;
+  let cesiumStreetLevelMode = false;
+  let cesiumPreStreetLevelPos = null;
+  let cesiumFocusModeActive = false;
+  const cesiumDroneKeys = {};
+  let droneMoveFrameId = null;
   let lastCesiumRenderCounts = {
     entities: 0,
     regions: 0,
@@ -1009,6 +1049,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const CESIUM_PICK_RADIUS_PX = 18;
   const CESIUM_FOLLOW_LERP = 0.16;
   const CESIUM_FOCUS_LERP = 0.24;
+  const STREET_LEVEL_ALTITUDE_M = 60;
+  const STREET_LEVEL_PITCH_DEG = -10;
+  const STREET_LEVEL_AUTO_TILT_ALT = 250;
   const REGION_ACTIVITY_WINDOW_TICKS = 24;
   const REGION_ACTIVE_EVENT_THRESHOLD = 2;
   const REGION_HOT_EVENT_THRESHOLD = 5;
@@ -1425,10 +1468,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   async function initCesium() {
     if (!USE_CESIUM || typeof Cesium === 'undefined') return;
     if (BOOTSTRAP.cesiumAccessToken) Cesium.Ion.defaultAccessToken = BOOTSTRAP.cesiumAccessToken;
+    // Build terrain provider: use Cesium World Terrain when Ion token available for realistic elevation
+    let terrainProvider;
+    if (BOOTSTRAP.cesiumAccessToken) {
+      try {
+        terrainProvider = await Cesium.createWorldTerrainAsync({ requestVertexNormals: true, requestWaterMask: false });
+        console.info('[RW Cesium] World Terrain loaded');
+      } catch (terrainErr) {
+        console.warn('[RW Cesium] World Terrain unavailable, using ellipsoid', terrainErr);
+      }
+    }
     cesiumViewer = new Cesium.Viewer('cesium-world', {
       animation: false, timeline: false, baseLayerPicker: false, geocoder: false, homeButton: false,
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
+      terrainProvider: terrainProvider || new Cesium.EllipsoidTerrainProvider(),
     });
     // Immediately anchor the camera to a valid global view so the Earth fills the viewport
     // before any async tile loading; this prevents the camera from starting off-screen.
@@ -1441,21 +1495,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
     cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#080e1a');
-    cesiumViewer.scene.globe.depthTestAgainstTerrain = false;
+    cesiumViewer.scene.globe.depthTestAgainstTerrain = true;
     cesiumViewer.scene.globe.enableLighting = false;
     cesiumViewer.scene.skyAtmosphere.show = true;
     cesiumViewer.scene.skyAtmosphere.atmosphereLightIntensity = 6.0;
     cesiumViewer.scene.sun.show = true;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
-    // Full orbital camera: rotate, tilt, and scroll/pinch zoom all enabled natively
+    // Camera controls: full orbit, tilt, zoom, and first-person look for street-level navigation
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
     ssc.enableTilt   = true;
     ssc.enableZoom   = true;
     ssc.enableTranslate = true;
-    ssc.enableLook   = false;
-    ssc.minimumZoomDistance = 150;
+    ssc.enableLook   = true;
+    ssc.minimumZoomDistance = 10;
     ssc.maximumZoomDistance = 40000000;
     try {
       if (BOOTSTRAP.googleMapsApiKey) {
@@ -1521,6 +1575,37 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       lastCesiumRenderCounts.tilesState = 'failed';
       lastCesiumRenderCounts.tilesError = (err && err.message) ? err.message : String(err || 'unknown');
     }
+    // OSM Buildings: adds 3D building geometry when Cesium Ion token available
+    if (BOOTSTRAP.cesiumAccessToken) {
+      try {
+        const osmBuildings = await Cesium.createOsmBuildingsAsync();
+        cesiumViewer.scene.primitives.add(osmBuildings);
+        console.info('[RW Cesium] OSM Buildings loaded');
+      } catch (osmErr) {
+        console.warn('[RW Cesium] OSM Buildings unavailable', osmErr);
+      }
+    }
+    // Auto-tilt: when user finishes zooming below STREET_LEVEL_AUTO_TILT_ALT and camera
+    // is pointing near-nadir, smoothly pitch forward for a human-perspective ground view
+    cesiumViewer.camera.moveEnd.addEventListener(function () {
+      if (cesiumCameraMoveInternal || cesiumStreetLevelMode) return;
+      const alt = cesiumViewer.camera.positionCartographic.height;
+      if (alt < STREET_LEVEL_AUTO_TILT_ALT && cesiumViewer.camera.pitch < Cesium.Math.toRadians(-60)) {
+        cesiumCameraMoveInternal = true;
+        cesiumFollowDisengageMutedUntil = Date.now() + 1500;
+        cesiumViewer.camera.flyTo({
+          destination: cesiumViewer.camera.position,
+          orientation: {
+            heading: cesiumViewer.camera.heading,
+            pitch: Cesium.Math.toRadians(STREET_LEVEL_PITCH_DEG),
+            roll: 0,
+          },
+          duration: 0.8,
+          complete: function () { cesiumCameraMoveInternal = false; },
+          cancel:   function () { cesiumCameraMoveInternal = false; },
+        });
+      }
+    });
     bindCesiumSelection();
     cesiumViewer.resize();
     draw();
@@ -1577,64 +1662,42 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return nearestDistSq <= (CESIUM_PICK_RADIUS_PX * CESIUM_PICK_RADIUS_PX) ? nearest : null;
   }
 
-  // ── Street-view helpers ───────────────────────────────────────────────────
+  // ── Cesium street-level navigation helpers ──────────────────────────────────
+  // loadGoogleMapsApi — replaced by Cesium street-level; kept as a compat stub
+  // so existing callers (openStreetLevelTab, slNavigateTo) continue to work.
   function loadGoogleMapsApi(apiKey, callback) {
-    if (typeof google !== 'undefined' && google.maps && google.maps.StreetViewPanorama) {
-      callback();
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(apiKey) + '&callback=__rwGmapsReady';
-    script.async = true;
-    script.defer = true;
-    window.__rwGmapsReady = function () {
-      delete window.__rwGmapsReady;
-      callback();
-    };
-    document.head.appendChild(script);
+    // Google Maps Street View replaced by Cesium street-level navigation.
+    // Invoke callback immediately so callers proceed with Cesium-based init.
+    if (typeof callback === 'function') callback();
   }
 
+  // initStreetView — fly Cesium camera to street-level at the given coordinates
   function initStreetView(lat, lng) {
-    const panoEl = document.getElementById('street-view-pano');
-    if (!panoEl) return;
-    if (!streetViewPanorama) {
-      streetViewPanorama = new google.maps.StreetViewPanorama(panoEl, {
-        position: { lat: lat, lng: lng },
-        pov: { heading: 0, pitch: 0 },
-        zoom: 1,
-        addressControl: false,
-        fullscreenControl: false,
-        motionTracking: false,
-        motionTrackingControl: false,
-      });
-    } else {
-      streetViewPanorama.setPosition({ lat: lat, lng: lng });
-      streetViewPanorama.setPov({ heading: 0, pitch: 0 });
-      streetViewPanorama.setZoom(1);
-    }
+    if (!cesiumViewer) return;
+    enterCesiumStreetLevel(lat, lng);
   }
 
+  // showStreetView — enter Cesium street-level mode and show the HUD overlay
   function showStreetView(lat, lng) {
-    if (!BOOTSTRAP.googleMapsApiKey) return;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    if (!cesiumViewer) return;
     const streetViewEl = document.getElementById('street-view');
     if (!streetViewEl) return;
-    function onReady() {
-      initStreetView(lat, lng);
-      streetViewEl.style.display = 'block';
-      requestAnimationFrame(function () {
-        streetViewEl.classList.add('visible');
-      });
-      streetViewVisible = true;
-    }
-    loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, onReady);
+    initStreetView(lat, lng);
+    streetViewEl.style.display = 'block';
+    requestAnimationFrame(function () {
+      streetViewEl.classList.add('visible');
+    });
+    streetViewVisible = true;
   }
 
+  // hideStreetView — exit Cesium street-level mode and hide the HUD overlay
   function hideStreetView() {
     const streetViewEl = document.getElementById('street-view');
     if (!streetViewEl) return;
     streetViewEl.classList.remove('visible');
     streetViewVisible = false;
+    exitCesiumStreetLevel();
     streetViewEl.addEventListener('transitionend', function () {
       if (!streetViewVisible) streetViewEl.style.display = 'none';
     }, { once: true });
@@ -1647,25 +1710,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
   }
 
-  // ── Street-level tab — dedicated ground-mode view ─────────────────────────
+  // ── Street-level tab — Cesium-powered ground-mode view ───────────────────────
+  // initStreetLevelPanorama — fly Cesium to street-level at the given coords
   function initStreetLevelPanorama(lat, lng) {
-    const panoEl = document.getElementById('street-level-pano');
-    if (!panoEl) return;
-    if (!streetLevelPanorama) {
-      streetLevelPanorama = new google.maps.StreetViewPanorama(panoEl, {
-        position: { lat: lat, lng: lng },
-        pov: { heading: 0, pitch: 0 },
-        zoom: 1,
-        addressControl: false,
-        fullscreenControl: false,
-        motionTracking: false,
-        motionTrackingControl: false,
-      });
-    } else {
-      streetLevelPanorama.setPosition({ lat: lat, lng: lng });
-      streetLevelPanorama.setPov({ heading: 0, pitch: 0 });
-      streetLevelPanorama.setZoom(1);
-    }
+    if (!cesiumViewer) return;
+    enterCesiumStreetLevel(lat, lng);
   }
 
   function openStreetLevelTab() {
@@ -1677,13 +1726,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const tabBtn = document.getElementById('street-level-tab');
     const railBtn = document.getElementById('rail-btn-street-level');
     if (!streetLevelView) return;
-    if (globeShell) globeShell.style.display = 'none';
+    // Keep globe-shell visible so Cesium renders through the transparent overlay
+    if (globeShell) globeShell.style.display = '';
     streetLevelView.classList.add('active');
     streetLevelActive = true;
     if (tabBtn) { tabBtn.classList.add('active'); tabBtn.setAttribute('aria-pressed', 'true'); }
     if (railBtn) { railBtn.classList.add('active'); railBtn.setAttribute('aria-pressed', 'true'); }
     startSlMonitor();
-    if (selectedTargetCoords && BOOTSTRAP.googleMapsApiKey) {
+    if (selectedTargetCoords) {
       if (noTargetEl) noTargetEl.style.display = 'none';
       if (panoEl) panoEl.classList.add('visible');
       if (targetLabelEl) {
@@ -1707,6 +1757,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (streetLevelView) streetLevelView.classList.remove('active');
     if (globeShell) globeShell.style.display = '';
     streetLevelActive = false;
+    exitCesiumStreetLevel();
     stopSlMonitor();
     if (tabBtn) { tabBtn.classList.remove('active'); tabBtn.setAttribute('aria-pressed', 'false'); }
     if (railBtn) { railBtn.classList.remove('active'); railBtn.setAttribute('aria-pressed', 'false'); }
@@ -1749,13 +1800,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const monitorStatus = document.getElementById('sl-monitor-status');
     if (targetLabelEl) targetLabelEl.textContent = label || (lat.toFixed(4) + ', ' + lng.toFixed(4));
     if (monitorStatus) monitorStatus.textContent = label ? label.toUpperCase() : 'LIVE';
-    if (BOOTSTRAP.googleMapsApiKey) {
-      if (noTargetEl) noTargetEl.style.display = 'none';
-      if (panoEl) panoEl.classList.add('visible');
-      loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, function () {
-        initStreetLevelPanorama(lat, lng);
-      });
-    }
+    if (noTargetEl) noTargetEl.style.display = 'none';
+    if (panoEl) panoEl.classList.add('visible');
+    loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, function () {
+      initStreetLevelPanorama(lat, lng);
+    });
     closeStatesDrawer();
     document.querySelectorAll('.sl-state-btn, .sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
   }
@@ -1807,6 +1856,178 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (status) status.textContent = 'STANDBY';
   }
 
+  // ── Cesium street-level: enter / exit / focus / drone controls ────────────────
+
+  // enterCesiumStreetLevel — fly Cesium camera to street-level altitude at lat/lng
+  // with a forward-facing pitch for a human-perspective ground view.
+  function enterCesiumStreetLevel(lat, lng) {
+    if (!cesiumViewer) return;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    // Save current orbit position so we can return to it on exit
+    const cPos = cesiumViewer.camera.positionCartographic;
+    cesiumPreStreetLevelPos = {
+      lng: Cesium.Math.toDegrees(cPos.longitude),
+      lat: Cesium.Math.toDegrees(cPos.latitude),
+      height: cPos.height,
+      heading: cesiumViewer.camera.heading,
+      pitch: cesiumViewer.camera.pitch,
+    };
+    cesiumStreetLevelMode = true;
+    cesiumCameraMoveInternal = true;
+    cesiumFollowDisengageMutedUntil = Date.now() + 3000;
+    cesiumViewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lng, lat, STREET_LEVEL_ALTITUDE_M),
+      orientation: {
+        heading: cesiumViewer.camera.heading,
+        pitch: Cesium.Math.toRadians(STREET_LEVEL_PITCH_DEG),
+        roll: 0,
+      },
+      duration: 2.0,
+      complete: function () { cesiumCameraMoveInternal = false; },
+      cancel:   function () { cesiumCameraMoveInternal = false; },
+    });
+  }
+
+  // exitCesiumStreetLevel — return camera to the pre-street-level orbit position
+  function exitCesiumStreetLevel() {
+    if (!cesiumViewer) return;
+    cesiumStreetLevelMode = false;
+    // Release lookAt constraint if focus mode was active
+    if (cesiumFocusModeActive) {
+      cesiumFocusModeActive = false;
+      cesiumViewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+    }
+    if (cesiumPreStreetLevelPos) {
+      const pos = cesiumPreStreetLevelPos;
+      cesiumCameraMoveInternal = true;
+      cesiumFollowDisengageMutedUntil = Date.now() + 2500;
+      cesiumViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(pos.lng, pos.lat, pos.height),
+        orientation: {
+          heading: pos.heading,
+          pitch: Cesium.Math.clamp(pos.pitch, Cesium.Math.toRadians(-90), Cesium.Math.toRadians(-20)),
+          roll: 0,
+        },
+        duration: 2.0,
+        complete: function () { cesiumCameraMoveInternal = false; },
+        cancel:   function () { cesiumCameraMoveInternal = false; },
+      });
+      cesiumPreStreetLevelPos = null;
+    }
+  }
+
+  // activateFocusMode — lock camera onto target for orbit/tilt/approach navigation
+  function activateFocusMode(target) {
+    if (!cesiumViewer) return;
+    const ll = resolveTargetLatLng(target);
+    if (!ll) return;
+    const dist = getTargetOrbitDistance(target);
+    cesiumFocusModeActive = true;
+    cesiumViewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, dist),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+      duration: 1.8,
+      complete: function () {
+        if (!cesiumFocusModeActive) return;
+        // Lock lookAt so orbit/tilt revolves around the target
+        const center = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 0);
+        cesiumViewer.camera.lookAt(
+          center,
+          new Cesium.HeadingPitchRange(cesiumViewer.camera.heading, Cesium.Math.toRadians(-45), dist)
+        );
+      },
+      cancel: function () {},
+    });
+  }
+
+  // deactivateFocusMode — release lookAt constraint and restore free-orbit
+  function deactivateFocusMode() {
+    if (!cesiumViewer || !cesiumFocusModeActive) return;
+    cesiumFocusModeActive = false;
+    cesiumViewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+  }
+
+  // ── Drone keyboard navigation (WASD + R/F keys) ────────────────────────────
+  // Movement speed scales with current altitude for smooth low/high navigation
+  var DRONE_MOVE_PER_FRAME = 1.5;
+
+  function droneMoveLoop() {
+    if (!cesiumViewer || !cesiumStreetLevelMode) {
+      droneMoveFrameId = null;
+      return;
+    }
+    const anyKey = Object.values(cesiumDroneKeys).some(Boolean);
+    if (!anyKey) {
+      droneMoveFrameId = null;
+      return;
+    }
+    const alt = cesiumViewer.camera.positionCartographic.height;
+    const speed = DRONE_MOVE_PER_FRAME * (alt < 50 ? 1 : alt < 200 ? 3 : 8);
+    if (cesiumDroneKeys['w']) cesiumViewer.camera.moveForward(speed);
+    if (cesiumDroneKeys['s']) cesiumViewer.camera.moveBackward(speed);
+    if (cesiumDroneKeys['a']) cesiumViewer.camera.moveLeft(speed);
+    if (cesiumDroneKeys['d']) cesiumViewer.camera.moveRight(speed);
+    if (cesiumDroneKeys['r']) cesiumViewer.camera.moveUp(speed * 0.5);
+    if (cesiumDroneKeys['f']) cesiumViewer.camera.moveDown(speed * 0.5);
+    droneMoveFrameId = requestAnimationFrame(droneMoveLoop);
+  }
+
+  // Wire drone button press/release to key state for button-based control
+  function bindDroneButton(btnId, key) {
+    var btn = document.getElementById(btnId);
+    if (!btn) return;
+    function startMove(e) {
+      e.preventDefault();
+      cesiumDroneKeys[key] = true;
+      if (!droneMoveFrameId) droneMoveFrameId = requestAnimationFrame(droneMoveLoop);
+    }
+    function stopMove() { cesiumDroneKeys[key] = false; }
+    btn.addEventListener('mousedown',  startMove);
+    btn.addEventListener('touchstart', startMove, { passive: false });
+    btn.addEventListener('mouseup',    stopMove);
+    btn.addEventListener('mouseleave', stopMove);
+    btn.addEventListener('touchend',   stopMove);
+  }
+
+  bindDroneButton('sv-fwd-btn',  'w');
+  bindDroneButton('sv-back-btn', 's');
+  bindDroneButton('sv-left-btn', 'a');
+  bindDroneButton('sv-right-btn','d');
+  bindDroneButton('sv-asc-btn',  'r');
+  bindDroneButton('sv-desc-btn', 'f');
+  bindDroneButton('sl-fwd-btn',  'w');
+  bindDroneButton('sl-back-btn', 's');
+  bindDroneButton('sl-left-btn', 'a');
+  bindDroneButton('sl-right-btn','d');
+  bindDroneButton('sl-asc-btn',  'r');
+  bindDroneButton('sl-desc-btn', 'f');
+
+  document.addEventListener('keydown', function (e) {
+    if (!cesiumStreetLevelMode) return;
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
+    const k = e.key.toLowerCase();
+    if (['w', 'a', 's', 'd', 'r', 'f'].includes(k)) {
+      e.preventDefault();
+      cesiumDroneKeys[k] = true;
+      if (!droneMoveFrameId) droneMoveFrameId = requestAnimationFrame(droneMoveLoop);
+    }
+  });
+
+  document.addEventListener('keyup', function (e) {
+    const k = e.key.toLowerCase();
+    if (['w', 'a', 's', 'd', 'r', 'f'].includes(k)) cesiumDroneKeys[k] = false;
+  });
+
+  // ── Altitude readout: update sv-alt-readout and sl-alt-readout every second ──
+  setInterval(function () {
+    if (!cesiumViewer || !cesiumStreetLevelMode) return;
+    const alt = cesiumViewer.camera.positionCartographic.height;
+    const text = Math.round(alt) + 'm';
+    var svEl = document.getElementById('sv-alt-readout');
+    if (svEl) svEl.textContent = text;
+    var slEl = document.getElementById('sl-alt-readout');
+    if (slEl) slEl.textContent = text;
+  }, 500);
 
   function toLatLngWithFallback(entity) {
     if (!entity) return null;
@@ -2676,6 +2897,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     lastOperatorActionByTarget[targetKey] = 'focus';
     pushOperatorEvent('operator focused ' + label);
     jumpToTarget(focusPoint);
+    activateFocusMode(focusPoint);
     renderSelectedPanel();
     draw();
   }
@@ -2946,13 +3168,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function updateViewportReadout() {
     let text;
     if (USE_CESIUM) {
-      text = 'orbit free';
+      text = cesiumStreetLevelMode ? 'drone' : 'orbit free';
       if (cesiumViewer) {
         const h = cesiumViewer.camera.positionCartographic.height;
-        const altKm = (h / 1000).toFixed(0);
-        text += ' · alt ' + altKm + ' km';
+        const altKm = h >= 1000 ? (h / 1000).toFixed(0) + ' km' : Math.round(h) + ' m';
+        text += ' · alt ' + altKm;
         const pitch = Cesium.Math.toDegrees(cesiumViewer.camera.pitch).toFixed(0);
         text += ' · pitch ' + pitch + '°';
+        if (cesiumFocusModeActive) text += ' · focus lock';
       }
       text += ' · e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions + ' s:' + lastCesiumRenderCounts.satellites;
       text += ' · tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'on' : 'off'));
@@ -3052,7 +3275,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function zoomBy(factor) {
     if (!USE_CESIUM || !cesiumViewer) return;
     const h = cesiumViewer.camera.positionCartographic.height;
-    const next = Math.max(150, Math.min(40000000, h * factor));
+    const next = Math.max(10, Math.min(40000000, h * factor));
     const cart = cesiumViewer.camera.positionCartographic.clone();
     cart.height = next;
     cesiumViewer.camera.position = Cesium.Ellipsoid.WGS84.cartographicToCartesian(cart);
