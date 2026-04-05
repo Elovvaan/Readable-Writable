@@ -41,6 +41,7 @@ const wsClients = new Set();
 const eventLog = [];       // rolling last-100 events
 const openSkyLiveState = {
   flights: {},
+  rawStates: [],            // last raw states array from OpenSky, served by /api/flights
   token: null,
   tokenExpiresAtMs: 0,
   lastPollAt: null,
@@ -860,6 +861,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let openskyStatus = Object.assign({}, OPENSKY_STATUS_DEFAULTS);
   let lastFlightDebugCounts = { merged: 0, visible: 0, drawn: 0, errors: 0 };
   let lastLayerDiagnostics = {};
+  let apiFetchedFlights = {};   // normalized flights keyed by id, populated by fetchFlights()
+  let lastApiFetchedCount = 0;  // raw states.length from last /api/flights call
   // per-layer last-update timestamps (ms since epoch, null = never fetched yet)
   const layerLastUpdated = {
     liveFlights: null,
@@ -1583,14 +1586,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         entities: entitiesVisible,
         satellites: satellitesRendered,
         regions: regionsVisible,
-        flightsFetched: openskyStatus.fetched,
-        flightsMerged,
-        flightsRendered: flightsDrawn,
-        googleTilesLoaded: !!cesiumGoogleTileset,
-        flightsFetched: Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0,
+        flightsFetched: lastApiFetchedCount > 0 ? lastApiFetchedCount : (Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0),
         flightsMerged,
         flightsVisible: flightsVisibleAfterFilters,
-        flightsRendered: flightsDrawn,
+        flightsDrawn: flightsDrawn,
         flightsErrors: flightsErrored,
         layers: {
           liveFlights: layerState.liveFlights,
@@ -3247,36 +3246,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function updateStats() {
     const allAgents = Object.values(state.agents || {});
     const visibleAgents = allAgents.filter(a => isEntityTypeVisible(getEntityType(a)));
-    const fetched = Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0;
-    const merged = Number.isFinite(Number(lastFlightDebugCounts.merged))
-      ? Number(lastFlightDebugCounts.merged)
-      : (Number.isFinite(Number(openskyStatus.merged)) ? Number(openskyStatus.merged) : 0);
+    // Prefer API-polled count; fall back to WS-pushed count from server
+    const fetched = lastApiFetchedCount > 0
+      ? lastApiFetchedCount
+      : (Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0);
     const visibleFlights = Number.isFinite(Number(lastFlightDebugCounts.visible)) ? Number(lastFlightDebugCounts.visible) : 0;
     const drawnFlights = Number.isFinite(Number(lastFlightDebugCounts.drawn)) ? Number(lastFlightDebugCounts.drawn) : 0;
-    const erroredFlights = Number.isFinite(Number(lastFlightDebugCounts.errors)) ? Number(lastFlightDebugCounts.errors) : 0;
-    const openskyError = openskyStatus && openskyStatus.lastErrorAt ? ' ERR' : '';
-    // Compact UTC timestamp: "HH:MM:SS" or "none"
+    // Compact UTC timestamp: "HH:MM:SS" or "—"
     const fetchAtStr = (function () {
-      const raw = openskyStatus && openskyStatus.lastPollAt;
-      if (!raw || raw === 'none') return 'none';
+      const raw = (layerLastUpdated.liveFlights && new Date(layerLastUpdated.liveFlights).toISOString())
+        || (openskyStatus && openskyStatus.lastPollAt);
+      if (!raw || raw === 'none') return '—';
       try { return new Date(raw).toISOString().slice(11, 19); } catch (e) { return raw; }
     }());
-    // Truncate error string so it fits on one line
-    const fetchErrRaw = (openskyStatus && openskyStatus.lastFetchError) || 'none';
-    const fetchErrStr = fetchErrRaw.length > 60 ? fetchErrRaw.slice(0, 57) + '…' : fetchErrRaw;
     const flightDebugText =
       'fetched:' + fetched +
-      ' merged:' + merged +
       ' visible:' + visibleFlights +
       ' drawn:' + drawnFlights +
-      ' errors:' + erroredFlights +
-      ' | auth:' + ((openskyStatus && openskyStatus.authMode) || 'none') +
-      ' cid:' + ((openskyStatus && openskyStatus.hasClientId) ? 'yes' : 'no') +
-      ' csec:' + ((openskyStatus && openskyStatus.hasClientSecret) ? 'yes' : 'no') +
-      ' | status:' + ((openskyStatus && openskyStatus.lastFetchStatus !== undefined) ? openskyStatus.lastFetchStatus : 'none') +
-      ' err:' + fetchErrStr +
-      ' at:' + fetchAtStr +
-      openskyError;
+      ' | at:' + fetchAtStr;
     const layerDiagnostics = buildLayerDiagnostics();
     lastLayerDiagnostics = layerDiagnostics;
     const layerDebugText = 'L:' + layerDiagnostics.liveFlights
@@ -3501,6 +3488,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function applySnapshot(nextSnapshot) {
+    mergeApiFlightsIntoSnapshot(nextSnapshot);
     const snapshotTsMs = Date.now();
     updateAgentTrails(state.agents, nextSnapshot.agents);
     // Gate flight tracking on live-flights layer — OFF layer must not process flight events
@@ -3600,6 +3588,99 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   initCesium();
 
+  // ── Flight API polling ──
+  // Polls /api/flights every 12 seconds, normalizes OpenSky states, and merges
+  // into state.agents so real flights are visible even if WebSocket lags.
+  const FLIGHT_POLL_INTERVAL_MS = 12000;
+
+  function latLngToGridFE(lat, lng) {
+    return {
+      x: ((Math.max(-180, Math.min(180, lng)) + 180) / 360) * 100,
+      y: ((90 - Math.max(-90, Math.min(90, lat))) / 180) * 100,
+    };
+  }
+
+  function mergeEntities(entities) {
+    // Accept any size dataset — no trimming.
+    // Entities is a flat object { id → entity }. Merge into live state.agents.
+    if (!state || !state.agents) return;
+    Object.assign(state.agents, entities);
+  }
+
+  async function fetchFlights() {
+    if (!layerState.liveFlights) return;   // respect layer toggle
+    try {
+      const res = await fetch('/api/flights');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (data.error) { console.warn('[flights] /api/flights error:', data.error); return; }
+
+      const states = Array.isArray(data.states) ? data.states : [];
+      console.log('[flights] states.length:', states.length);
+
+      const now = Date.now();
+      const normalized = {};
+
+      for (const row of states) {
+        if (!Array.isArray(row)) continue;
+        const icao24 = String(row[0] || '').trim().toLowerCase();
+        const callsign = String(row[1] || '').trim();
+        const lon = parseFloat(row[5]);
+        const lat = parseFloat(row[6]);
+        if (!icao24 || !isFinite(lat) || !isFinite(lon)) continue;
+
+        const altitude = parseFloat(
+          row[7] !== null && row[7] !== undefined ? row[7] : (row[13] !== null ? row[13] : 0)
+        ) || 0;
+        const velocity  = parseFloat(row[9])  || 0;
+        const heading   = parseFloat(row[10]) || 0;
+        const onGround  = Boolean(row[8]);
+        const id = 'flight-' + icao24;
+        const grid = latLngToGridFE(lat, lon);
+
+        normalized[id] = {
+          id,
+          type: 'flight',
+          label: callsign || icao24,
+          callsign,
+          icao24,
+          lat,
+          lng: lon,
+          x: grid.x,
+          y: grid.y,
+          altitude,
+          velocity,
+          heading,
+          onGround,
+          source: 'api',
+          lastUpdateMs: now,
+        };
+      }
+
+      apiFetchedFlights = normalized;
+      lastApiFetchedCount = states.length;
+      layerLastUpdated.liveFlights = now;
+      mergeEntities(normalized);
+
+    } catch (err) {
+      console.warn('[flights] fetchFlights failed:', err.message);
+    }
+  }
+
+  // Merge API flights into every incoming snapshot so they survive WS refreshes
+  function mergeApiFlightsIntoSnapshot(snapshot) {
+    if (!snapshot || !snapshot.agents || Object.keys(apiFetchedFlights).length === 0) return;
+    // Only inject entities the server snapshot doesn't already have fresher data for
+    for (const [id, entity] of Object.entries(apiFetchedFlights)) {
+      if (!snapshot.agents[id]) {
+        snapshot.agents[id] = entity;
+      }
+    }
+  }
+
+  fetchFlights();
+  setInterval(fetchFlights, FLIGHT_POLL_INTERVAL_MS);
+
   // ── WebSocket ──
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -3618,6 +3699,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'snapshot') {
+        mergeApiFlightsIntoSnapshot(msg.data);
         if (paused) {
           pendingSnapshot = msg.data;
           return;
@@ -3981,6 +4063,7 @@ async function pollOpenSkyFlights() {
     }
 
     const previous = openSkyLiveState.flights;
+    openSkyLiveState.rawStates = states;   // cache for /api/flights
     const { flights: nextFlights, count: normalizedCount } = normalizeStateBatch(states, previous, null);
 
     const visibilityStats = countVisibleOpenSkyFlights(nextFlights, OPENSKY_GLOBE_MIN_Z);
@@ -4257,12 +4340,12 @@ function initWorld() {
     spatialIndex[r.id] = worldview.regions[r.id];
   }
 
-  // seed agents
+  // seed agents (no mock flights — real flights come from OpenSky via /api/flights)
   for (let i = 0; i < 8; i++) {
     const id = uid('agent');
     const keys = Object.keys(worldview.regions);
     const region = keys[Math.floor(Math.random() * keys.length)];
-    const entityType = i < 4 ? 'agent' : (i < 6 ? 'flight' : 'satellite');
+    const entityType = i < 6 ? 'agent' : 'satellite';  // agents only + 2 satellites, no fake flights
     const lat = (Math.random() * 180) - 90;
     const lng = (Math.random() * 360) - 180;
     const gridPos = latLngToGrid(lat, lng);
@@ -4278,13 +4361,7 @@ function initWorld() {
       state: 'idle',
       memory: [],
     };
-    if (entityType === 'flight') {
-      agent.motion = {
-        heading: (Math.random() * 360) - 180,
-        speed: 1.8 + (Math.random() * 1.2),
-        climb: (Math.random() * 0.5) - 0.25,
-      };
-    } else if (entityType === 'satellite') {
+    if (entityType === 'satellite') {
       agent.motion = {
         orbitAngle: Math.random() * Math.PI * 2,
         inclination: 8 + (Math.random() * 30),
@@ -5065,6 +5142,37 @@ function router(req, res) {
   if (req.method === 'GET' && url === '/rw/spatial') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ regions: worldview.regions }));
+    return;
+  }
+
+  // ── GET /api/flights  → server-side OpenSky proxy (raw states pass-through)
+  if (req.method === 'GET' && url === '/api/flights') {
+    const states = openSkyLiveState.rawStates;
+    if (!Array.isArray(states) || states.length === 0) {
+      // No cached data yet — do a live fetch so the first request always returns data
+      const effectiveUser = OPENSKY_USERNAME || fileCredentials.username;
+      const effectivePass = OPENSKY_PASSWORD || fileCredentials.password;
+      const authHeader = (effectiveUser && effectivePass)
+        ? 'Basic ' + Buffer.from(effectiveUser + ':' + effectivePass).toString('base64')
+        : null;
+      const fetchUrl = authHeader ? OPENSKY_STATES_URL : OPENSKY_PUBLIC_STATES_URL;
+      fetch(fetchUrl, { headers: authHeader ? { Authorization: authHeader } : undefined })
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+        .then(payload => {
+          const s = Array.isArray(payload && payload.states) ? payload.states : [];
+          openSkyLiveState.rawStates = s;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ states: s, count: s.length, time: Date.now() }));
+        })
+        .catch(err => {
+          console.warn('[RW /api/flights] fetch failed:', err.message);
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'flight fetch failed' }));
+        });
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ states, count: states.length, time: openSkyLiveState.lastPollAt || Date.now() }));
     return;
   }
 
