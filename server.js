@@ -334,15 +334,58 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #street-view-close:hover { background: #0a2422; color: #7fe0d4; }
     #street-view-pano { width: 100%; height: 100%; }
     /* ── Street-level tab — dedicated mode view ──────────────────────────── */
-    #street-level-view { position: relative; flex: 1; overflow: hidden; background: #04050a; min-height: 0; display: none; flex-direction: column; }
+    #street-level-view { position: relative; flex: 1; overflow: hidden; background: #04050a; min-height: 0; display: none; flex-direction: row; }
     #street-level-view.active { display: flex; }
     #street-level-header { display: flex; align-items: center; padding: 8px 14px; background: #09090d; border-bottom: 1px solid #141820; gap: 10px; flex-shrink: 0; }
-    #street-level-back-btn { border: 1px solid #1f5e5a; background: #0a2422; color: #3ec9b8; border-radius: 4px; font-size: .72rem; padding: 5px 12px; cursor: pointer; transition: background 160ms, color 160ms; }
+    #street-level-back-btn { border: 1px solid #1f5e5a; background: #0a2422; color: #3ec9b8; border-radius: 4px; font-size: .62rem; padding: 4px 6px; cursor: pointer; transition: background 160ms, color 160ms; width: 36px; text-align: center; }
     #street-level-back-btn:hover { background: #0d2f2c; color: #7fe0d4; }
-    #street-level-target-label { font-size: .68rem; color: #4e7888; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    #street-level-target-label { font-size: .58rem; color: #4e7888; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 2px 0; text-align: center; word-break: break-all; }
     #street-level-no-target { display: flex; align-items: center; justify-content: center; flex: 1; color: #2e4050; font-size: .82rem; font-style: italic; }
     #street-level-pano { flex: 1; width: 100%; display: none; }
     #street-level-pano.visible { display: block; }
+    /* ── Street-level redesigned left panel ──────────────────────────────── */
+    #sl-left-panel { width: 52px; flex-shrink: 0; background: #07080cdd; border-right: 1px solid #141820; display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; overflow-y: auto; }
+    .sl-world-btn { width: 36px; min-height: 36px; border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 5px; font-size: .52rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; text-align: center; line-height: 1.2; padding: 2px; transition: background 160ms, border-color 160ms, color 160ms; user-select: none; }
+    .sl-world-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; }
+    .sl-world-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+    /* ── Street-level center viewport ────────────────────────────────────── */
+    #sl-viewport { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+    /* ── Street-level bottom bar (locations/landmarks) ───────────────────── */
+    #sl-bottom-bar { flex-shrink: 0; background: #07080ccc; border-top: 1px solid #141820; padding: 4px 10px; display: flex; align-items: center; gap: 6px; backdrop-filter: blur(4px); }
+    .sl-bottom-label { font-size: .52rem; letter-spacing: .1em; text-transform: uppercase; color: #2a3e4a; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    #sl-landmarks { display: flex; gap: 4px; overflow-x: auto; flex: 1; scrollbar-width: none; }
+    #sl-landmarks::-webkit-scrollbar { display: none; }
+    .sl-landmark-btn { border: 1px solid #161e2a; background: #0a1018; color: #4e7888; border-radius: 999px; font-size: .58rem; padding: 2px 8px; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: background 160ms, border-color 160ms, color 160ms; }
+    .sl-landmark-btn:hover { background: #0e1e2e; border-color: #1e3a50; color: #7abcc8; }
+    .sl-landmark-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+    /* ── States pop-up drawer (bottom, inside #sl-viewport) ─────────────── */
+    #sl-states-drawer { position: absolute; left: 0; right: 0; bottom: 0; background: #09090dee; border-top: 1px solid #1f5e5a; transform: translateY(100%); transition: transform 260ms cubic-bezier(.4,0,.2,1); z-index: 10; display: flex; flex-direction: column; max-height: 60%; }
+    #sl-states-drawer.open { transform: translateY(0); }
+    #sl-states-hdr { display: flex; align-items: center; padding: 6px 12px; border-bottom: 1px solid #141820; flex-shrink: 0; gap: 8px; }
+    .sl-states-title { font-size: .58rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; }
+    #sl-states-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; line-height: 1; transition: color 160ms; flex-shrink: 0; }
+    #sl-states-close:hover { color: #6898aa; }
+    #sl-states-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 4px; padding: 8px 12px; overflow-y: auto; flex: 1; }
+    .sl-state-btn { border: 1px solid #161e2a; background: #0b1018; color: #4e7888; border-radius: 4px; font-size: .6rem; padding: 4px 6px; cursor: pointer; text-align: left; transition: background 160ms, border-color 160ms, color 160ms; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sl-state-btn:hover { background: #0e1e2e; border-color: #1e3a50; color: #7abcc8; }
+    .sl-state-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+    /* ── Street-level right tactical panel (dark CRT console) ───────────── */
+    #sl-right-panel { width: 118px; flex-shrink: 0; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow-y: auto; }
+    .sl-mono { font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    /* Monitor module */
+    #sl-monitor { border-bottom: 1px solid #1a2030; padding: 7px 8px; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+    #sl-monitor-hdr { display: flex; align-items: center; gap: 4px; font-size: .55rem; }
+    #sl-rec-dot { color: #c05050; font-size: .66rem; animation: rec-pulse 1.4s ease-in-out infinite; }
+    #sl-monitor-hdr .sl-mono { font-size: .55rem; letter-spacing: .1em; color: #3ec9b8; }
+    #sl-timestamp { color: #4e9888; font-size: .5rem; margin-left: auto; }
+    #sl-monitor-status { font-size: .5rem; letter-spacing: .08em; text-transform: uppercase; color: #b89040; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    #sl-monitor-window { width: 100%; aspect-ratio: 16/9; background: #030408; border: 1px solid #141e2a; border-radius: 2px; overflow: hidden; position: relative; }
+    #sl-monitor-window::after { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(to bottom, rgba(180,255,240,.04) 0, rgba(180,255,240,.04) 1px, transparent 1px, transparent 3px); pointer-events: none; }
+    /* Tactical controls */
+    #sl-tac-panel { display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; flex: 1; }
+    .sl-tac-btn { border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 3px; font-size: .54rem; font-weight: 700; letter-spacing: .09em; padding: 6px 4px; cursor: pointer; text-align: center; transition: background 160ms, border-color 160ms, color 160ms; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .sl-tac-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; }
+    .sl-tac-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
     /* ── Header tab button ───────────────────────────────────────────────── */
     .header-tab { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; transition: background 160ms, border-color 160ms, color 160ms; }
     .header-tab:hover { background: #111e2a; border-color: #254056; color: #8abccc; }
@@ -361,7 +404,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
   <span id="style-indicator">mode: crt</span>
   <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
-  <button id="street-level-tab" class="header-tab" type="button" aria-pressed="false" title="Switch to Street Level view for the selected target">Street Level</button>
 </header>
 <div id="globe-shell">
 
@@ -628,12 +670,131 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
 <!-- Street-level tab view — dedicated ground-mode view (hidden until user clicks Street Level tab) -->
 <div id="street-level-view" role="region" aria-label="Street Level View">
-  <div id="street-level-header">
-    <button id="street-level-back-btn" type="button" title="Return to globe view">← Back to Globe</button>
+
+  <!-- Left panel: world controls -->
+  <div id="sl-left-panel">
+    <button id="street-level-back-btn" type="button" title="Return to globe view">←</button>
+    <div class="rail-sep"></div>
+    <button class="sl-world-btn active" id="street-level-tab" type="button" aria-pressed="false" title="Street Level mode active">⊞<br>Street Level</button>
+    <button class="sl-world-btn" data-sl-world="citymesh" type="button" title="City Mesh">⬡<br>City Mesh</button>
+    <button class="sl-world-btn" data-sl-world="layers" type="button" title="Data Layers">☰<br>Layers</button>
+    <button class="sl-world-btn" data-sl-world="scenes" type="button" title="Scenes">◈<br>Scenes</button>
+    <div class="rail-sep"></div>
+    <button class="sl-world-btn" id="sl-states-toggle" type="button" title="Open States drawer">▤<br>States</button>
+    <div class="rail-sep"></div>
     <span id="street-level-target-label"></span>
   </div>
-  <div id="street-level-no-target">Select a target first.</div>
-  <div id="street-level-pano"></div>
+
+  <!-- Center: panorama viewport -->
+  <div id="sl-viewport">
+    <div id="street-level-no-target">Select a target first.</div>
+    <div id="street-level-pano"></div>
+
+    <!-- States pop-up drawer (slides up from bottom inside viewport) -->
+    <div id="sl-states-drawer" role="dialog" aria-label="States navigator" aria-hidden="true">
+      <div id="sl-states-hdr">
+        <span class="sl-states-title">STATES</span>
+        <button id="sl-states-close" type="button" title="Close States drawer">✕</button>
+      </div>
+      <div id="sl-states-grid">
+        <button class="sl-state-btn" data-lat="32.3617" data-lng="-86.2792">Alabama</button>
+        <button class="sl-state-btn" data-lat="64.2008" data-lng="-153.4937">Alaska</button>
+        <button class="sl-state-btn" data-lat="34.0489" data-lng="-111.0937">Arizona</button>
+        <button class="sl-state-btn" data-lat="34.7999" data-lng="-92.1996">Arkansas</button>
+        <button class="sl-state-btn" data-lat="36.7783" data-lng="-119.4179">California</button>
+        <button class="sl-state-btn" data-lat="39.5501" data-lng="-105.7821">Colorado</button>
+        <button class="sl-state-btn" data-lat="41.6032" data-lng="-73.0877">Connecticut</button>
+        <button class="sl-state-btn" data-lat="38.9108" data-lng="-75.5277">Delaware</button>
+        <button class="sl-state-btn" data-lat="27.9944" data-lng="-81.7603">Florida</button>
+        <button class="sl-state-btn" data-lat="32.1656" data-lng="-82.9001">Georgia</button>
+        <button class="sl-state-btn" data-lat="19.8968" data-lng="-155.5828">Hawaii</button>
+        <button class="sl-state-btn" data-lat="44.0682" data-lng="-114.7421">Idaho</button>
+        <button class="sl-state-btn" data-lat="40.6331" data-lng="-89.3985">Illinois</button>
+        <button class="sl-state-btn" data-lat="40.2672" data-lng="-86.1349">Indiana</button>
+        <button class="sl-state-btn" data-lat="41.8780" data-lng="-93.0977">Iowa</button>
+        <button class="sl-state-btn" data-lat="39.0119" data-lng="-98.4842">Kansas</button>
+        <button class="sl-state-btn" data-lat="37.8393" data-lng="-84.2700">Kentucky</button>
+        <button class="sl-state-btn" data-lat="31.2448" data-lng="-92.1451">Louisiana</button>
+        <button class="sl-state-btn" data-lat="45.2538" data-lng="-69.4455">Maine</button>
+        <button class="sl-state-btn" data-lat="39.0458" data-lng="-76.6413">Maryland</button>
+        <button class="sl-state-btn" data-lat="42.4072" data-lng="-71.3824">Massachusetts</button>
+        <button class="sl-state-btn" data-lat="44.3148" data-lng="-85.6024">Michigan</button>
+        <button class="sl-state-btn" data-lat="46.7296" data-lng="-94.6859">Minnesota</button>
+        <button class="sl-state-btn" data-lat="32.3547" data-lng="-89.3985">Mississippi</button>
+        <button class="sl-state-btn" data-lat="37.9643" data-lng="-91.8318">Missouri</button>
+        <button class="sl-state-btn" data-lat="46.8797" data-lng="-110.3626">Montana</button>
+        <button class="sl-state-btn" data-lat="41.4925" data-lng="-99.9018">Nebraska</button>
+        <button class="sl-state-btn" data-lat="38.8026" data-lng="-116.4194">Nevada</button>
+        <button class="sl-state-btn" data-lat="43.1939" data-lng="-71.5724">New Hampshire</button>
+        <button class="sl-state-btn" data-lat="40.0583" data-lng="-74.4057">New Jersey</button>
+        <button class="sl-state-btn" data-lat="34.5199" data-lng="-105.8701">New Mexico</button>
+        <button class="sl-state-btn" data-lat="42.1657" data-lng="-74.9481">New York</button>
+        <button class="sl-state-btn" data-lat="35.7596" data-lng="-79.0193">North Carolina</button>
+        <button class="sl-state-btn" data-lat="47.5515" data-lng="-101.002">North Dakota</button>
+        <button class="sl-state-btn" data-lat="40.4173" data-lng="-82.9071">Ohio</button>
+        <button class="sl-state-btn" data-lat="35.4676" data-lng="-97.5164">Oklahoma</button>
+        <button class="sl-state-btn" data-lat="43.8041" data-lng="-120.5542">Oregon</button>
+        <button class="sl-state-btn" data-lat="41.2033" data-lng="-77.1945">Pennsylvania</button>
+        <button class="sl-state-btn" data-lat="41.5801" data-lng="-71.4774">Rhode Island</button>
+        <button class="sl-state-btn" data-lat="33.8361" data-lng="-81.1637">South Carolina</button>
+        <button class="sl-state-btn" data-lat="44.2998" data-lng="-99.4388">South Dakota</button>
+        <button class="sl-state-btn" data-lat="35.5175" data-lng="-86.5804">Tennessee</button>
+        <button class="sl-state-btn" data-lat="31.9686" data-lng="-99.9018">Texas</button>
+        <button class="sl-state-btn" data-lat="39.3210" data-lng="-111.0937">Utah</button>
+        <button class="sl-state-btn" data-lat="44.5588" data-lng="-72.5778">Vermont</button>
+        <button class="sl-state-btn" data-lat="37.4316" data-lng="-78.6569">Virginia</button>
+        <button class="sl-state-btn" data-lat="47.7511" data-lng="-120.7401">Washington</button>
+        <button class="sl-state-btn" data-lat="38.5976" data-lng="-80.4549">West Virginia</button>
+        <button class="sl-state-btn" data-lat="43.7844" data-lng="-88.7879">Wisconsin</button>
+        <button class="sl-state-btn" data-lat="43.0760" data-lng="-107.2903">Wyoming</button>
+      </div>
+    </div>
+
+    <!-- Bottom bar: locations/landmarks navigator -->
+    <div id="sl-bottom-bar" aria-label="Locations navigator">
+      <span class="sl-bottom-label">LOCATIONS</span>
+      <div id="sl-landmarks">
+        <button class="sl-landmark-btn" data-lat="40.7128" data-lng="-74.006">New York</button>
+        <button class="sl-landmark-btn" data-lat="34.0522" data-lng="-118.2437">Los Angeles</button>
+        <button class="sl-landmark-btn" data-lat="41.8781" data-lng="-87.6298">Chicago</button>
+        <button class="sl-landmark-btn" data-lat="29.7604" data-lng="-95.3698">Houston</button>
+        <button class="sl-landmark-btn" data-lat="33.4484" data-lng="-112.074">Phoenix</button>
+        <button class="sl-landmark-btn" data-lat="39.9526" data-lng="-75.1652">Philadelphia</button>
+        <button class="sl-landmark-btn" data-lat="29.4241" data-lng="-98.4936">San Antonio</button>
+        <button class="sl-landmark-btn" data-lat="32.7767" data-lng="-96.797">Dallas</button>
+        <button class="sl-landmark-btn" data-lat="37.7749" data-lng="-122.4194">San Francisco</button>
+        <button class="sl-landmark-btn" data-lat="47.6062" data-lng="-122.3321">Seattle</button>
+        <button class="sl-landmark-btn" data-lat="42.3601" data-lng="-71.0589">Boston</button>
+        <button class="sl-landmark-btn" data-lat="25.7617" data-lng="-80.1918">Miami</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right panel: tactical controls + monitor -->
+  <div id="sl-right-panel">
+    <!-- Record / Monitor module -->
+    <div id="sl-monitor">
+      <div id="sl-monitor-hdr">
+        <span id="sl-rec-dot" aria-label="REC indicator">●</span>
+        <span class="sl-mono">REC</span>
+        <span id="sl-timestamp" class="sl-mono">00:00:00Z</span>
+      </div>
+      <div id="sl-monitor-status" class="sl-mono">STANDBY</div>
+      <div id="sl-monitor-window" aria-label="Monitor preview"></div>
+    </div>
+    <!-- Tactical controls -->
+    <div id="sl-tac-panel">
+      <button class="sl-tac-btn" data-tac="move">MOVE</button>
+      <button class="sl-tac-btn" data-tac="bloom">BLOOM</button>
+      <button class="sl-tac-btn" data-tac="sharpen">SHARPEN</button>
+      <button class="sl-tac-btn" data-tac="hud">HUD</button>
+      <button class="sl-tac-btn" data-tac="layout">LAYOUT</button>
+      <button class="sl-tac-btn" data-tac="panoptic">PANOPTIC</button>
+      <button class="sl-tac-btn" data-tac="density">DENSITY</button>
+      <button class="sl-tac-btn" data-tac="cleanui">CLEAN UI</button>
+    </div>
+  </div>
+
 </div>
 
  rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
@@ -1512,6 +1673,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     streetLevelActive = true;
     if (tabBtn) { tabBtn.classList.add('active'); tabBtn.setAttribute('aria-pressed', 'true'); }
     if (railBtn) { railBtn.classList.add('active'); railBtn.setAttribute('aria-pressed', 'true'); }
+    startSlMonitor();
     if (selectedTargetCoords && BOOTSTRAP.googleMapsApiKey) {
       if (noTargetEl) noTargetEl.style.display = 'none';
       if (panoEl) panoEl.classList.add('visible');
@@ -1536,6 +1698,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (streetLevelView) streetLevelView.classList.remove('active');
     if (globeShell) globeShell.style.display = '';
     streetLevelActive = false;
+    stopSlMonitor();
     if (tabBtn) { tabBtn.classList.remove('active'); tabBtn.setAttribute('aria-pressed', 'false'); }
     if (railBtn) { railBtn.classList.remove('active'); railBtn.setAttribute('aria-pressed', 'false'); }
   }
@@ -1553,6 +1716,86 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const streetLevelBackBtn = document.getElementById('street-level-back-btn');
   if (streetLevelBackBtn) {
     streetLevelBackBtn.addEventListener('click', closeStreetLevelTab);
+  }
+
+  // ── Street-level: States drawer ────────────────────────────────────────
+  function openStatesDrawer() {
+    const drawer = document.getElementById('sl-states-drawer');
+    if (drawer) { drawer.classList.add('open'); drawer.setAttribute('aria-hidden', 'false'); }
+  }
+  function closeStatesDrawer() {
+    const drawer = document.getElementById('sl-states-drawer');
+    if (drawer) { drawer.classList.remove('open'); drawer.setAttribute('aria-hidden', 'true'); }
+  }
+  const slStatesToggle = document.getElementById('sl-states-toggle');
+  if (slStatesToggle) { slStatesToggle.addEventListener('click', openStatesDrawer); }
+  const slStatesClose = document.getElementById('sl-states-close');
+  if (slStatesClose) { slStatesClose.addEventListener('click', closeStatesDrawer); }
+
+  // ── Street-level: state/landmark navigation ────────────────────────────
+  function slNavigateTo(lat, lng, label) {
+    const panoEl = document.getElementById('street-level-pano');
+    const noTargetEl = document.getElementById('street-level-no-target');
+    const targetLabelEl = document.getElementById('street-level-target-label');
+    const monitorStatus = document.getElementById('sl-monitor-status');
+    if (targetLabelEl) targetLabelEl.textContent = label || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+    if (monitorStatus) monitorStatus.textContent = label ? label.toUpperCase() : 'LIVE';
+    if (BOOTSTRAP.googleMapsApiKey) {
+      if (noTargetEl) noTargetEl.style.display = 'none';
+      if (panoEl) panoEl.classList.add('visible');
+      loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, function () {
+        initStreetLevelPanorama(lat, lng);
+      });
+    }
+    closeStatesDrawer();
+    document.querySelectorAll('.sl-state-btn, .sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
+  }
+
+  document.querySelectorAll('.sl-state-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const lat = parseFloat(btn.dataset.lat);
+      const lng = parseFloat(btn.dataset.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      btn.classList.add('active');
+      slNavigateTo(lat, lng, btn.textContent);
+    });
+  });
+
+  document.querySelectorAll('.sl-landmark-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const lat = parseFloat(btn.dataset.lat);
+      const lng = parseFloat(btn.dataset.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      btn.classList.add('active');
+      slNavigateTo(lat, lng, btn.textContent);
+    });
+  });
+
+  // ── Street-level: tactical button toggles ─────────────────────────────
+  document.querySelectorAll('.sl-tac-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      btn.classList.toggle('active');
+    });
+  });
+
+  // ── Street-level: monitor timestamp ───────────────────────────────────
+  var slTimestampInterval = null;
+  function updateSlTimestamp() {
+    var el = document.getElementById('sl-timestamp');
+    if (!el) return;
+    var now = new Date();
+    el.textContent = now.toUTCString().slice(17, 25) + 'Z';
+  }
+  function startSlMonitor() {
+    updateSlTimestamp();
+    if (!slTimestampInterval) { slTimestampInterval = setInterval(updateSlTimestamp, 1000); }
+    var status = document.getElementById('sl-monitor-status');
+    if (status && status.textContent === 'STANDBY') status.textContent = 'LIVE';
+  }
+  function stopSlMonitor() {
+    if (slTimestampInterval) { clearInterval(slTimestampInterval); slTimestampInterval = null; }
+    var status = document.getElementById('sl-monitor-status');
+    if (status) status.textContent = 'STANDBY';
   }
 
 
