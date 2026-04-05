@@ -665,7 +665,8 @@ describe('Cesium street-level navigation', function () {
   test('enterCesiumStreetLevel is defined and uses flyTo for smooth transition', function () {
     assert.ok(src.includes('function enterCesiumStreetLevel'), 'enterCesiumStreetLevel must be defined');
     const fnIdx = src.indexOf('function enterCesiumStreetLevel');
-    const body = src.slice(fnIdx, fnIdx + 1000);
+    // Use 1300 chars to accommodate the LOD adjustment line added above the flyTo call
+    const body = src.slice(fnIdx, fnIdx + 1300);
     assert.ok(body.includes('flyTo'), 'must use flyTo for smooth street-level transition');
     assert.ok(body.includes('STREET_LEVEL_ALTITUDE_M'), 'must use STREET_LEVEL_ALTITUDE_M constant for altitude');
     assert.ok(body.includes('STREET_LEVEL_PITCH_DEG'), 'must use STREET_LEVEL_PITCH_DEG constant for forward pitch');
@@ -736,8 +737,15 @@ describe('Cesium street-level navigation', function () {
   test('drone keyboard listener is registered for WASD+QE movement in all Cesium modes', function () {
     assert.ok(src.includes("'keydown'"), 'keydown listener must be registered for drone movement');
     assert.ok(src.includes("'keyup'"), 'keyup listener must be registered for drone key release');
-    const kdIdx = src.indexOf("addEventListener('keydown'");
-    const body = src.slice(kdIdx, kdIdx + 600);
+    // Find the keydown listener that includes DRONE_FLIGHT_KEYS (not the FP-mode Escape listener)
+    let kdIdx = src.indexOf("addEventListener('keydown'");
+    let body = '';
+    while (kdIdx !== -1) {
+      body = src.slice(kdIdx, kdIdx + 600);
+      if (body.includes('DRONE_FLIGHT_KEYS')) { break; }
+      kdIdx = src.indexOf("addEventListener('keydown'", kdIdx + 1);
+    }
+    assert.ok(kdIdx !== -1, 'drone keydown listener must exist');
     assert.ok(body.includes('USE_CESIUM') && body.includes('cesiumViewer'), 'keyboard handler must guard on USE_CESIUM and cesiumViewer (global, not street-level only)');
     assert.ok(body.includes('DRONE_FLIGHT_KEYS'), 'keyboard handler must use DRONE_FLIGHT_KEYS for unified key list');
     assert.ok(body.includes('droneMoveLoop'), 'keyboard handler must start droneMoveLoop');
@@ -889,7 +897,9 @@ describe('location search: Google Places Autocomplete and Go flow', function () 
   test('sl-search-form exists in the mode drawer HTML', function () {
     const drawerIdx = src.indexOf('id="mode-drawer-street"');
     assert.ok(drawerIdx !== -1, 'mode-drawer-street must exist in HTML');
-    const drawerSnippet = src.slice(drawerIdx, drawerIdx + 1800);
+    // Window is 2500 chars to accommodate the FP-mode button and traffic indicator
+    // that were added to the navigation section above sl-search-form.
+    const drawerSnippet = src.slice(drawerIdx, drawerIdx + 2500);
     assert.ok(drawerSnippet.includes('id="sl-search-form"'), 'sl-search-form must be inside mode-drawer-street');
   });
 
@@ -994,5 +1004,234 @@ describe('location search: Google Places Autocomplete and Go flow', function () 
     assert.ok(src.includes('#sl-search-form {'), '#sl-search-form CSS rule must exist');
     assert.ok(src.includes('#sl-location-input {'), '#sl-location-input CSS rule must exist');
     assert.ok(src.includes('#sl-go-btn {'), '#sl-go-btn CSS rule must exist');
+  });
+});
+
+// ── Street-level mode enhancements: FP look, traffic simulation, terrain clamp ──
+describe('street-level mode enhancements', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  // ── Constants ──────────────────────────────────────────────────────────────
+  test('SL_FP_MOUSE_SENSITIVITY constant is declared', function () {
+    assert.ok(src.includes('SL_FP_MOUSE_SENSITIVITY'), 'SL_FP_MOUSE_SENSITIVITY must be defined');
+  });
+
+  test('SL_MIN_ABOVE_GROUND constant is declared', function () {
+    assert.ok(src.includes('SL_MIN_ABOVE_GROUND'), 'SL_MIN_ABOVE_GROUND must be defined');
+  });
+
+  test('SL_MAX_TRAFFIC_CARS constant is declared', function () {
+    assert.ok(src.includes('SL_MAX_TRAFFIC_CARS'), 'SL_MAX_TRAFFIC_CARS must be defined');
+  });
+
+  test('SL_TRAFFIC_DENSITY constant is declared and is between 0 and 1', function () {
+    assert.ok(src.includes('SL_TRAFFIC_DENSITY'), 'SL_TRAFFIC_DENSITY must be defined');
+    const m = src.match(/SL_TRAFFIC_DENSITY\s*=\s*([\d.]+)/);
+    assert.ok(m, 'SL_TRAFFIC_DENSITY must have a numeric value');
+    const v = Number(m[1]);
+    assert.ok(v >= 0 && v <= 1, 'SL_TRAFFIC_DENSITY must be in [0, 1] (got ' + v + ')');
+  });
+
+  test('SL_TRAFFIC_SPEED_MPS constant is declared', function () {
+    assert.ok(src.includes('SL_TRAFFIC_SPEED_MPS'), 'SL_TRAFFIC_SPEED_MPS must be defined');
+  });
+
+  test('SL_TRAFFIC_RADIUS_M constant is declared', function () {
+    assert.ok(src.includes('SL_TRAFFIC_RADIUS_M'), 'SL_TRAFFIC_RADIUS_M must be defined');
+  });
+
+  test('SL_TRAFFIC_ALTITUDE_MAX constant is declared', function () {
+    assert.ok(src.includes('SL_TRAFFIC_ALTITUDE_MAX'), 'SL_TRAFFIC_ALTITUDE_MAX must be defined');
+  });
+
+  // ── State variables ────────────────────────────────────────────────────────
+  test('cesiumFpMode state variable is declared', function () {
+    assert.ok(src.includes('let cesiumFpMode'), 'cesiumFpMode state variable must be declared');
+  });
+
+  test('slTrafficEntities array is declared', function () {
+    assert.ok(src.includes('slTrafficEntities'), 'slTrafficEntities must be declared');
+  });
+
+  test('slTrafficLoopId is declared for rAF tracking', function () {
+    assert.ok(src.includes('slTrafficLoopId'), 'slTrafficLoopId must be declared');
+  });
+
+  // ── First-person mode functions ────────────────────────────────────────────
+  test('enterCesiumFpMode function is defined', function () {
+    assert.ok(src.includes('function enterCesiumFpMode'), 'enterCesiumFpMode must be defined');
+  });
+
+  test('enterCesiumFpMode uses requestPointerLock', function () {
+    const fnIdx = src.indexOf('function enterCesiumFpMode');
+    assert.ok(fnIdx !== -1, 'enterCesiumFpMode must exist');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('requestPointerLock'), 'enterCesiumFpMode must call requestPointerLock');
+  });
+
+  test('enterCesiumFpMode guards on cesiumStreetLevelMode', function () {
+    const fnIdx = src.indexOf('function enterCesiumFpMode');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('cesiumStreetLevelMode'), 'enterCesiumFpMode must guard on cesiumStreetLevelMode');
+  });
+
+  test('exitCesiumFpMode function is defined', function () {
+    assert.ok(src.includes('function exitCesiumFpMode'), 'exitCesiumFpMode must be defined');
+  });
+
+  test('exitCesiumFpMode calls exitPointerLock', function () {
+    const fnIdx = src.indexOf('function exitCesiumFpMode');
+    assert.ok(fnIdx !== -1, 'exitCesiumFpMode must exist');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('exitPointerLock'), 'exitCesiumFpMode must call document.exitPointerLock');
+  });
+
+  test('updateFpModeUi function is defined', function () {
+    assert.ok(src.includes('function updateFpModeUi'), 'updateFpModeUi must be defined');
+  });
+
+  test('updateFpModeUi toggles cesium-world fp-mode class', function () {
+    const fnIdx = src.indexOf('function updateFpModeUi');
+    assert.ok(fnIdx !== -1, 'updateFpModeUi must exist');
+    const body = src.slice(fnIdx, fnIdx + 500);
+    assert.ok(body.includes('fp-mode'), 'updateFpModeUi must toggle the fp-mode CSS class');
+  });
+
+  test('updateFpModeUi disables screenSpaceCameraController inputs in FP mode', function () {
+    const fnIdx = src.indexOf('function updateFpModeUi');
+    const body = src.slice(fnIdx, fnIdx + 700);
+    assert.ok(body.includes('enableInputs'), 'updateFpModeUi must toggle ssc.enableInputs');
+  });
+
+  test('pointerlockchange listener is registered to sync cesiumFpMode', function () {
+    assert.ok(src.includes("'pointerlockchange'"), 'pointerlockchange event listener must be registered');
+    const idx = src.indexOf("'pointerlockchange'");
+    const context = src.slice(idx - 30, idx + 300);
+    assert.ok(context.includes('cesiumFpMode'), 'pointerlockchange handler must update cesiumFpMode');
+  });
+
+  test('mousemove listener applies yaw and pitch from movementX/Y in FP mode', function () {
+    const idx = src.indexOf('e.movementX * SL_FP_MOUSE_SENSITIVITY');
+    assert.ok(idx !== -1, 'FP mouse look must use movementX scaled by SL_FP_MOUSE_SENSITIVITY');
+    const context = src.slice(idx - 100, idx + 300);
+    assert.ok(context.includes('movementY'), 'FP mouse look must use movementY for pitch');
+    assert.ok(context.includes('cam.look'), 'FP mouse look must use camera.look for rotation');
+  });
+
+  // ── FP mode UI ─────────────────────────────────────────────────────────────
+  test('#sl-fp-btn button exists in mode-drawer-street', function () {
+    assert.ok(src.includes('id="sl-fp-btn"'), '#sl-fp-btn button must exist in the HTML');
+  });
+
+  test('#sl-fp-crosshair element exists in street-level-view overlay', function () {
+    assert.ok(src.includes('id="sl-fp-crosshair"'), '#sl-fp-crosshair must exist in HTML');
+    const svIdx  = src.indexOf('id="street-level-view"');
+    const modeIdx = src.indexOf('id="mode-drawer"');
+    const fpIdx  = src.indexOf('id="sl-fp-crosshair"');
+    assert.ok(fpIdx > svIdx && fpIdx < modeIdx,
+      '#sl-fp-crosshair must be inside #street-level-view, before #mode-drawer');
+  });
+
+  test('#sl-fp-btn and crosshair CSS rules are present', function () {
+    assert.ok(src.includes('#sl-fp-btn {'), '#sl-fp-btn CSS rule must exist');
+    assert.ok(src.includes('#sl-fp-crosshair {'), '#sl-fp-crosshair CSS rule must exist');
+  });
+
+  test('#cesium-world.fp-mode CSS rule sets cursor to none', function () {
+    assert.ok(src.includes('#cesium-world.fp-mode'), '#cesium-world.fp-mode CSS rule must exist');
+    const idx = src.indexOf('#cesium-world.fp-mode');
+    const snippet = src.slice(idx, idx + 80);
+    assert.ok(snippet.includes('cursor:none') || snippet.includes('cursor: none'),
+      '#cesium-world.fp-mode must set cursor:none');
+  });
+
+  // ── Terrain clamp ──────────────────────────────────────────────────────────
+  test('registerTerrainClamp function is defined', function () {
+    assert.ok(src.includes('function registerTerrainClamp'), 'registerTerrainClamp must be defined');
+  });
+
+  test('registerTerrainClamp uses postRender to clamp altitude', function () {
+    const fnIdx = src.indexOf('function registerTerrainClamp');
+    assert.ok(fnIdx !== -1, 'registerTerrainClamp must exist');
+    const body = src.slice(fnIdx, fnIdx + 500);
+    assert.ok(body.includes('postRender'), 'registerTerrainClamp must register a postRender listener');
+    assert.ok(body.includes('SL_MIN_ABOVE_GROUND'), 'registerTerrainClamp must clamp to SL_MIN_ABOVE_GROUND');
+  });
+
+  test('registerTerrainClamp is called at the end of initCesium', function () {
+    assert.ok(src.includes('registerTerrainClamp()'), 'registerTerrainClamp() must be called at init');
+  });
+
+  // ── Traffic simulation ──────────────────────────────────────────────────────
+  test('spawnSlTraffic function is defined', function () {
+    assert.ok(src.includes('function spawnSlTraffic'), 'spawnSlTraffic must be defined');
+  });
+
+  test('spawnSlTraffic uses CallbackProperty for car positions', function () {
+    const fnIdx = src.indexOf('function spawnSlTraffic');
+    assert.ok(fnIdx !== -1, 'spawnSlTraffic must exist');
+    const body = src.slice(fnIdx, fnIdx + 2200);
+    assert.ok(body.includes('CallbackProperty'), 'spawnSlTraffic must use Cesium.CallbackProperty for live position updates');
+  });
+
+  test('spawnSlTraffic uses CLAMP_TO_GROUND for car height reference', function () {
+    const fnIdx = src.indexOf('function spawnSlTraffic');
+    const body = src.slice(fnIdx, fnIdx + 2200);
+    assert.ok(body.includes('CLAMP_TO_GROUND'), 'car entities must use HeightReference.CLAMP_TO_GROUND');
+  });
+
+  test('clearSlTraffic function is defined', function () {
+    assert.ok(src.includes('function clearSlTraffic'), 'clearSlTraffic must be defined');
+  });
+
+  test('slTrafficMoveLoop function is defined', function () {
+    assert.ok(src.includes('function slTrafficMoveLoop'), 'slTrafficMoveLoop must be defined');
+  });
+
+  test('slTrafficMoveLoop respawns cars that exit the visible radius', function () {
+    const fnIdx = src.indexOf('function slTrafficMoveLoop');
+    assert.ok(fnIdx !== -1, 'slTrafficMoveLoop must exist');
+    const body = src.slice(fnIdx, fnIdx + 1800);
+    assert.ok(body.includes('SL_TRAFFIC_RADIUS_M'), 'slTrafficMoveLoop must check SL_TRAFFIC_RADIUS_M for respawn');
+  });
+
+  test('slTrafficMoveLoop hides entities above SL_TRAFFIC_ALTITUDE_MAX', function () {
+    const fnIdx = src.indexOf('function slTrafficMoveLoop');
+    const body = src.slice(fnIdx, fnIdx + 1800);
+    assert.ok(body.includes('SL_TRAFFIC_ALTITUDE_MAX'), 'slTrafficMoveLoop must hide traffic above SL_TRAFFIC_ALTITUDE_MAX');
+  });
+
+  // ── Integration: enterCesiumStreetLevel spawns traffic ─────────────────────
+  test('enterCesiumStreetLevel calls spawnSlTraffic in the flyTo complete callback', function () {
+    const fnIdx = src.indexOf('function enterCesiumStreetLevel');
+    assert.ok(fnIdx !== -1, 'enterCesiumStreetLevel must exist');
+    const body = src.slice(fnIdx, fnIdx + 1500);
+    assert.ok(body.includes('spawnSlTraffic'), 'enterCesiumStreetLevel must call spawnSlTraffic on flyTo complete');
+  });
+
+  test('enterCesiumStreetLevel tightens tileset LOD on enter', function () {
+    const fnIdx = src.indexOf('function enterCesiumStreetLevel');
+    const body = src.slice(fnIdx, fnIdx + 900);
+    assert.ok(body.includes('maximumScreenSpaceError'), 'enterCesiumStreetLevel must adjust maximumScreenSpaceError for LOD');
+  });
+
+  test('exitCesiumStreetLevel calls exitCesiumFpMode', function () {
+    const fnIdx = src.indexOf('function exitCesiumStreetLevel');
+    assert.ok(fnIdx !== -1, 'exitCesiumStreetLevel must exist');
+    const body = src.slice(fnIdx, fnIdx + 700);
+    assert.ok(body.includes('exitCesiumFpMode'), 'exitCesiumStreetLevel must call exitCesiumFpMode');
+  });
+
+  test('exitCesiumStreetLevel calls clearSlTraffic', function () {
+    const fnIdx = src.indexOf('function exitCesiumStreetLevel');
+    const body = src.slice(fnIdx, fnIdx + 700);
+    assert.ok(body.includes('clearSlTraffic'), 'exitCesiumStreetLevel must call clearSlTraffic');
+  });
+
+  test('exitCesiumStreetLevel restores tileset LOD on exit', function () {
+    const fnIdx = src.indexOf('function exitCesiumStreetLevel');
+    const body = src.slice(fnIdx, fnIdx + 700);
+    assert.ok(body.includes('maximumScreenSpaceError'), 'exitCesiumStreetLevel must restore maximumScreenSpaceError on exit');
   });
 });
