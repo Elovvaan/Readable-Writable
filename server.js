@@ -1965,8 +1965,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   //   < 300 km    → states layer still shown; street-level is handled by Cesium terrain
   //
   // GeoJSON sources:
-  //   Countries: https://raw.githubusercontent.com/nvkelso/natural-earth-vector/.../ne_110m_admin_0_countries.geojson
-  //   US States: https://raw.githubusercontent.com/PublicaMundi/MappingAPI/.../us-states.json
+  //   Countries: https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_110m_admin_0_countries.geojson
+  //   US States: https://cdn.jsdelivr.net/gh/PublicaMundi/MappingAPI@a4c1b2e/data/geojson/us-states.json
 
   const BOUNDARY_ALT_COUNTRY      = 3000000;   // 3 000 km — show only countries above this
   const BOUNDARY_ALT_STATE        = 300000;    // 300 km — show states below this
@@ -2099,8 +2099,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   async function initGlobeBoundaries() {
     if (!cesiumViewer || typeof Cesium === 'undefined') return;
 
-    const COUNTRY_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson';
-    const STATE_URL   = 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json';
+    const COUNTRY_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_110m_admin_0_countries.geojson';
+    const STATE_URL   = 'https://cdn.jsdelivr.net/gh/PublicaMundi/MappingAPI@a4c1b2e/data/geojson/us-states.json';
 
     try {
       const [countryDs, stateDs] = await Promise.all([
