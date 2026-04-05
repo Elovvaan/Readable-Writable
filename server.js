@@ -38,6 +38,38 @@ const worldview = {
   started: new Date().toISOString(),
 };
 
+// ─── Live Entity Layer State ──────────────────────────────────────────────────
+// Structured data model: every entity carries source, ts, confidence, eventHistory
+const liveEntityState = {
+  vehicles: {},   // ground vehicles (cars, trucks, emergency)
+  vessels:  {},   // maritime vessels
+  sensors:  {},   // fixed sensor nodes (CCTV, weather station, acoustic)
+  weather:  {},   // weather cells (storm, rain, fog)
+};
+
+// ─── Traffic Layer State ──────────────────────────────────────────────────────
+const trafficState = {
+  segments:   [],    // road segments with speed/congestion data
+  incidents:  [],    // traffic incidents
+  closures:   [],    // road closures
+  zoneAlerts: [],    // congestion zone alerts
+  lastUpdateAt: null,
+};
+
+// ─── Timeline Engine State ────────────────────────────────────────────────────
+const timelineState = {
+  mode: 'live',           // 'live' | 'replay'
+  replayTs: null,         // current replay timestamp (ms epoch)
+  replayStart: null,      // replay window start
+  replayEnd: null,        // replay window end
+  snapshots: [],          // rolling event snapshots for replay (max 300)
+  lastSnapshotAt: null,
+};
+
+// ─── Entity Event History Store ───────────────────────────────────────────────
+// entityEventHistory[entityId] = [ { ts, kind, msg } ] (max 50 per entity)
+const entityEventHistory = {};
+
 const spatialIndex = {};   // key: regionId, value: { id, x, y, agents: [] }
 const wsClients = new Set();
 const eventLog = [];       // rolling last-100 events
@@ -398,6 +430,37 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .header-tab { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; transition: background 160ms, border-color 160ms, color 160ms; }
     .header-tab:hover { background: #111e2a; border-color: #254056; color: #8abccc; }
     .header-tab.active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
+    /* ── Timeline Engine bar ─────────────────────────────────────────────── */
+    #timeline-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 44px; background: #07080cee; border-top: 1px solid #141820; z-index: 25; display: flex; align-items: center; padding: 0 10px; gap: 10px; backdrop-filter: blur(6px); }
+    #timeline-controls { display: flex; gap: 4px; flex-shrink: 0; }
+    .tl-btn { border: 1px solid #1c2a36; background: #0e1520; color: #4e7888; border-radius: 3px; font-size: .62rem; font-weight: 700; letter-spacing: .08em; padding: 4px 8px; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; }
+    .tl-btn:hover { background: #111e2a; border-color: #254056; color: #7abcc8; }
+    .tl-btn.tl-btn-active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
+    .tl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #timeline-scrub-area { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .tl-time-label { font-size: .55rem; color: #3a5060; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; flex-shrink: 0; }
+    .tl-scrubber { flex: 1; height: 4px; cursor: pointer; accent-color: #3ec9b8; }
+    .tl-scrubber:disabled { opacity: 0.3; cursor: not-allowed; }
+    #timeline-info { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+    .tl-mode { font-size: .6rem; font-weight: 700; letter-spacing: .12em; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .tl-ts { font-size: .54rem; color: #3a5060; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; }
+    .tl-snap { font-size: .52rem; color: #2a3a48; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; }
+    /* ── Entity Profile panel (inside right drawer) ──────────────────────── */
+    .entity-profile { margin-top: 10px; border: 1px solid #141820; border-radius: 4px; background: #07080c; overflow: hidden; }
+    .entity-profile.hidden { display: none; }
+    .profile-header { display: flex; align-items: center; padding: 6px 10px; border-bottom: 1px solid #141820; gap: 6px; background: #09090f; }
+    .profile-title { font-size: .64rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .profile-close { border: none; background: none; color: #2e4050; font-size: .9rem; cursor: pointer; padding: 0; line-height: 1; transition: color 160ms; flex-shrink: 0; }
+    .profile-close:hover { color: #6898aa; }
+    #profile-meta { padding: 6px 10px; font-size: .58rem; color: #4e7888; font-family: 'Cascadia Code', 'Fira Code', monospace; line-height: 1.6; }
+    .profile-section-title { padding: 4px 10px; font-size: .55rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3a48; border-top: 1px solid #141820; border-bottom: 1px solid #141820; background: #08090d; }
+    .profile-history { max-height: 160px; overflow-y: auto; padding: 4px 0; }
+    .profile-history-entry { padding: 3px 10px; font-size: .56rem; color: #3a5060; font-family: 'Cascadia Code', 'Fira Code', monospace; border-bottom: 1px solid #0e1420; line-height: 1.4; }
+    .profile-history-entry:last-child { border-bottom: none; }
+    .profile-history-entry .phe-ts { color: #2a3840; margin-right: 5px; }
+    .profile-history-entry .phe-kind { color: #3ec9b8; margin-right: 5px; }
+    /* ── Adjust globe shell bottom to make room for timeline ─────────────── */
+    #globe-shell { bottom: 44px; }
   </style>
 </head>
 <body>
@@ -465,10 +528,55 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         </div>
         <button class="layer-toggle active" id="toggle-layer-satellites" type="button" aria-pressed="true">ON</button>
       </div>
+      <div class="layer-row on" data-layer="vehicles">
+        <div class="layer-icon">🚗</div>
+        <div class="layer-info">
+          <div class="layer-name">Ground Vehicles</div>
+          <div class="layer-provider">Simulated · AIS Fusion</div>
+          <div class="layer-freshness" id="layer-status-vehicles">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-vehicles" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="vessels">
+        <div class="layer-icon">⛵</div>
+        <div class="layer-info">
+          <div class="layer-name">Maritime Vessels</div>
+          <div class="layer-provider">AIS Network</div>
+          <div class="layer-freshness" id="layer-status-vessels">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-vessels" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="sensors">
+        <div class="layer-icon">📡</div>
+        <div class="layer-info">
+          <div class="layer-name">Sensor Nodes</div>
+          <div class="layer-provider">Infra · NOAA</div>
+          <div class="layer-freshness" id="layer-status-sensors">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-sensors" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="weatherCells">
+        <div class="layer-icon">⛈</div>
+        <div class="layer-info">
+          <div class="layer-name">Weather Cells</div>
+          <div class="layer-provider">NOAA / NWS</div>
+          <div class="layer-freshness" id="layer-status-weatherCells">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-weatherCells" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="trafficSim">
+        <div class="layer-icon">≡</div>
+        <div class="layer-info">
+          <div class="layer-name">Traffic Layer</div>
+          <div class="layer-provider">Simulated · HERE</div>
+          <div class="layer-freshness" id="layer-status-trafficSim">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-trafficSim" type="button" aria-pressed="true">ON</button>
+      </div>
       <div class="layer-row unavailable" data-layer="traffic">
         <div class="layer-icon">≡</div>
         <div class="layer-info">
-          <div class="layer-name">Street Traffic</div>
+          <div class="layer-name">Street Traffic (Live)</div>
           <div class="layer-provider">HERE / TomTom</div>
           <div class="layer-freshness" id="layer-status-traffic">UNAVAILABLE</div>
         </div>
@@ -477,7 +585,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <div class="layer-row unavailable" data-layer="weather">
         <div class="layer-icon">☁</div>
         <div class="layer-info">
-          <div class="layer-name">Weather Radar</div>
+          <div class="layer-name">Weather Radar (Live)</div>
           <div class="layer-provider">NOAA / NWS</div>
           <div class="layer-freshness" id="layer-status-weather">UNAVAILABLE</div>
         </div>
@@ -511,6 +619,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <label class="lp-toggle"><span class="lp-dot" style="background:#3ec9b8"></span><input type="checkbox" id="toggle-type-agent" checked><span>Agents</span></label>
       <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-flight" checked><span>Flights</span></label>
       <label class="lp-toggle"><span class="lp-dot" style="background:#9a70d8"></span><input type="checkbox" id="toggle-type-satellite" checked><span>Sats</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#f0c040"></span><input type="checkbox" id="toggle-type-vehicle" checked><span>Vehicles</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#40c8f0"></span><input type="checkbox" id="toggle-type-vessel" checked><span>Vessels</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#ff8888"></span><input type="checkbox" id="toggle-type-sensor" checked><span>Sensors</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#aaddff"></span><input type="checkbox" id="toggle-type-weather" checked><span>Weather</span></label>
       <div class="lp-divider"></div>
       <div class="lp-title">Region Layer</div>
       <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
@@ -550,9 +662,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           <button id="action-ping" class="action-btn" type="button">Ping</button>
           <button id="action-flag" class="action-btn" type="button">Flag</button>
         </div>
+        <div class="action-row">
+          <button id="action-jump" class="action-btn" type="button" title="Jump camera to target">Jump</button>
+          <button id="action-inspect" class="action-btn" type="button" title="Inspect entity details">Inspect</button>
+          <button id="action-profile" class="action-btn" type="button" title="Open entity profile with history">Profile</button>
+        </div>
         <div class="action-row secondary">
           <label class="ctrl-toggle"><input type="checkbox" id="toggle-follow-target">Follow Target</label>
         </div>
+      </div>
+      <!-- Entity profile panel (shown when "Profile" is clicked) -->
+      <div id="entity-profile-panel" class="entity-profile hidden" role="region" aria-label="Entity Profile">
+        <div class="profile-header">
+          <span class="profile-title" id="profile-entity-id">—</span>
+          <button id="profile-close-btn" class="profile-close" type="button" aria-label="Close profile">✕</button>
+        </div>
+        <div id="profile-meta"></div>
+        <div class="profile-section-title">Event History</div>
+        <div id="profile-history" class="profile-history"></div>
       </div>
     </div>
     <div id="rtab-stats" class="rtab-content hidden">
@@ -666,6 +793,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div class="noise"></div>
     <div class="pixel-grid"></div>
     <div class="vignette"></div>
+  </div>
+
+  <!-- Timeline Engine bar -->
+  <div id="timeline-bar" role="region" aria-label="Timeline Engine">
+    <div id="timeline-controls">
+      <button id="tl-live-btn" class="tl-btn tl-btn-active" type="button" title="Switch to live mode" aria-pressed="true">⬤ LIVE</button>
+      <button id="tl-replay-btn" class="tl-btn" type="button" title="Switch to replay mode" aria-pressed="false">⏪ REPLAY</button>
+      <button id="tl-play-btn" class="tl-btn" type="button" title="Play / pause replay" aria-label="Play replay" disabled>▶</button>
+    </div>
+    <div id="timeline-scrub-area">
+      <span id="tl-start-label" class="tl-time-label">—</span>
+      <input id="tl-scrubber" type="range" min="0" max="100" value="100"
+             class="tl-scrubber" title="Scrub timeline" aria-label="Timeline scrubber" disabled>
+      <span id="tl-end-label" class="tl-time-label">LIVE</span>
+    </div>
+    <div id="timeline-info">
+      <span id="tl-mode-label" class="tl-mode">LIVE</span>
+      <span id="tl-ts-label" class="tl-ts">—</span>
+      <span id="tl-snap-count" class="tl-snap"></span>
+    </div>
   </div>
 
   <!-- Street-view overlay panel (hidden until an entity is selected) -->
@@ -890,7 +1037,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const focusActionBtn = document.getElementById('action-focus');
   const pingActionBtn = document.getElementById('action-ping');
   const flagActionBtn = document.getElementById('action-flag');
+  const jumpActionBtn = document.getElementById('action-jump');
+  const inspectActionBtn = document.getElementById('action-inspect');
+  const profileActionBtn = document.getElementById('action-profile');
   const followTargetToggleEl = document.getElementById('toggle-follow-target');
+  const entityProfilePanelEl = document.getElementById('entity-profile-panel');
+  const profileEntityIdEl = document.getElementById('profile-entity-id');
+  const profileMetaEl = document.getElementById('profile-meta');
+  const profileHistoryEl = document.getElementById('profile-history');
+  const profileCloseBtnEl = document.getElementById('profile-close-btn');
   const statusEl = document.getElementById('status');
   const toggleAgentsEl = document.getElementById('toggle-agents');
   const toggleRegionsEl = document.getElementById('toggle-regions');
@@ -899,12 +1054,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleLayerFlightsEl     = document.getElementById('toggle-layer-flights');
   const toggleLayerSatellitesEl  = document.getElementById('toggle-layer-satellites');
   const toggleLayerRegionsEl     = document.getElementById('toggle-layer-regions');
+  const toggleLayerVehiclesEl    = document.getElementById('toggle-layer-vehicles');
+  const toggleLayerVesselsEl     = document.getElementById('toggle-layer-vessels');
+  const toggleLayerSensorsEl     = document.getElementById('toggle-layer-sensors');
+  const toggleLayerWeatherCellsEl= document.getElementById('toggle-layer-weatherCells');
+  const toggleLayerTrafficSimEl  = document.getElementById('toggle-layer-trafficSim');
   // kept for title-init compatibility; these are disabled buttons in unavailable state
   const toggleLayerTrafficEl     = document.getElementById('toggle-layer-traffic');
   const toggleLayerWeatherEl     = document.getElementById('toggle-layer-weather');
   const toggleTypeAgentEl = document.getElementById('toggle-type-agent');
   const toggleTypeFlightEl = document.getElementById('toggle-type-flight');
   const toggleTypeSatelliteEl = document.getElementById('toggle-type-satellite');
+  const toggleTypeVehicleEl = document.getElementById('toggle-type-vehicle');
+  const toggleTypeVesselEl  = document.getElementById('toggle-type-vessel');
+  const toggleTypeSensorEl  = document.getElementById('toggle-type-sensor');
+  const toggleTypeWeatherEl = document.getElementById('toggle-type-weather');
+  // Timeline elements
+  const timelineLiveBtnEl    = document.getElementById('tl-live-btn');
+  const timelineReplayBtnEl  = document.getElementById('tl-replay-btn');
+  const timelinePlayBtnEl    = document.getElementById('tl-play-btn');
+  const timelineScrubberEl   = document.getElementById('tl-scrubber');
+  const timelineStartLabelEl = document.getElementById('tl-start-label');
+  const timelineEndLabelEl   = document.getElementById('tl-end-label');
+  const timelineModeLabelEl  = document.getElementById('tl-mode-label');
+  const timelineTsLabelEl    = document.getElementById('tl-ts-label');
+  const timelineSnapCountEl  = document.getElementById('tl-snap-count');
   const pauseBtnEl = document.getElementById('pause-btn');
   const speedSelectEl = document.getElementById('speed-select');
   const zoomOutBtnEl = document.getElementById('zoom-out-btn');
@@ -1070,14 +1244,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let showAgents = true;
   let showRegions = true;
   let showTrails = true;
-  let visibleEntityTypes = { agent: true, flight: true, satellite: true, other: true };
+  let visibleEntityTypes = { agent: true, flight: true, satellite: true, vehicle: true, vessel: true, sensor: true, weather: true, other: true };
   const layerState = {
     liveFlights:     true,   // OpenSky API + file source
     militaryFlights: false,  // UNAVAILABLE — no data source wired
     earthquakes:     false,  // UNAVAILABLE — no data source wired
     satellites:      true,   // Celestrak / TLE
-    traffic:         false,  // UNAVAILABLE — incompatible with Cesium 3D Tiles renderer
-    weather:         false,  // UNAVAILABLE — stub only, not configured
+    vehicles:        true,   // Ground vehicles (simulated)
+    vessels:         true,   // Maritime vessels (simulated AIS)
+    sensors:         true,   // Sensor nodes (fixed infrastructure)
+    weatherCells:    true,   // Weather cells (simulated NOAA)
+    trafficSim:      true,   // Traffic layer (simulated)
+    traffic:         false,  // UNAVAILABLE — live feed not configured
+    weather:         false,  // UNAVAILABLE — live radar not configured
     cctvMesh:        false,  // UNAVAILABLE — no data source wired
     bikeshare:       false,  // UNAVAILABLE — no data source wired
     regions:         true,   // region overlay
@@ -1085,7 +1264,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   // Which layers have a real data pipeline (others show UNAVAILABLE and cannot be toggled)
   const LAYER_AVAILABLE = {
     liveFlights: true, militaryFlights: false, earthquakes: false,
-    satellites: true,  traffic: false, weather: false, cctvMesh: false, bikeshare: false,
+    satellites: true,
+    vehicles: true, vessels: true, sensors: true, weatherCells: true, trafficSim: true,
+    traffic: false, weather: false, cctvMesh: false, bikeshare: false,
+  };
+  // Timeline engine client state
+  const timelineEngine = {
+    mode: 'live',          // 'live' | 'replay'
+    replayTs: null,
+    replayStart: null,
+    replayEnd: null,
+    snapshotCount: 0,
+    playing: false,
+    playIntervalId: null,
+    snapshots: [],          // received from server
   };
   let paused = false;
   let simulationSpeed = 1;
@@ -1198,29 +1390,45 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   const TYPE_STYLE = {
-    agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
-    flight: { fill: '#ffb77d', stroke: '#ffd2ad', trail: '#ffb77d55', trailSelected: '#ffe0c4cc' },
-    satellite: { fill: '#d0a3ff', stroke: '#e2c7ff', trail: '#d0a3ff55', trailSelected: '#ecdfffcc' },
-    other: { fill: '#8ea0b4', stroke: '#bac7d6', trail: '#8ea0b455', trailSelected: '#d6deebcc' },
+    agent:    { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
+    flight:   { fill: '#ffb77d', stroke: '#ffd2ad', trail: '#ffb77d55', trailSelected: '#ffe0c4cc' },
+    satellite:{ fill: '#d0a3ff', stroke: '#e2c7ff', trail: '#d0a3ff55', trailSelected: '#ecdfffcc' },
+    vehicle:  { fill: '#f0c040', stroke: '#ffe080', trail: '#f0c04055', trailSelected: '#ffeea0cc' },
+    vessel:   { fill: '#40c8f0', stroke: '#80e4ff', trail: '#40c8f055', trailSelected: '#a0eeffcc' },
+    sensor:   { fill: '#ff8888', stroke: '#ffbbbb', trail: '#ff888855', trailSelected: '#ffcccccc' },
+    weather:  { fill: '#aaddff', stroke: '#ccf0ff', trail: '#aaddff55', trailSelected: '#ddf5ffcc' },
+    other:    { fill: '#8ea0b4', stroke: '#bac7d6', trail: '#8ea0b455', trailSelected: '#d6deebcc' },
   };
   const TYPE_STYLE_BY_MODE = {
     crt: {
-      agent: { fill: '#8fd6ff', stroke: '#c5e9ff', trail: '#8fd6ff57', trailSelected: '#d4efffcc' },
-      flight: { fill: '#ffc38f', stroke: '#ffe2bd', trail: '#ffc38f57', trailSelected: '#ffedd6cc' },
-      satellite: { fill: '#d6b2ff', stroke: '#ead7ff', trail: '#d6b2ff57', trailSelected: '#f0e6ffcc' },
-      other: { fill: '#93a6b8', stroke: '#c2cfdb', trail: '#93a6b857', trailSelected: '#dde4ebcc' },
+      agent:    { fill: '#8fd6ff', stroke: '#c5e9ff', trail: '#8fd6ff57', trailSelected: '#d4efffcc' },
+      flight:   { fill: '#ffc38f', stroke: '#ffe2bd', trail: '#ffc38f57', trailSelected: '#ffedd6cc' },
+      satellite:{ fill: '#d6b2ff', stroke: '#ead7ff', trail: '#d6b2ff57', trailSelected: '#f0e6ffcc' },
+      vehicle:  { fill: '#f5cc48', stroke: '#ffe88a', trail: '#f5cc4857', trailSelected: '#fff2b0cc' },
+      vessel:   { fill: '#48d0f5', stroke: '#8aeaff', trail: '#48d0f557', trailSelected: '#aaf2ffcc' },
+      sensor:   { fill: '#ff9090', stroke: '#ffc5c5', trail: '#ff909057', trailSelected: '#ffd8d8cc' },
+      weather:  { fill: '#b8e8ff', stroke: '#d8f4ff', trail: '#b8e8ff57', trailSelected: '#e8f8ffcc' },
+      other:    { fill: '#93a6b8', stroke: '#c2cfdb', trail: '#93a6b857', trailSelected: '#dde4ebcc' },
     },
     nvg: {
-      agent: { fill: '#93ff79', stroke: '#d5ffc5', trail: '#93ff7958', trailSelected: '#e7ffd9d9' },
-      flight: { fill: '#bcff70', stroke: '#e2ffc7', trail: '#bcff7052', trailSelected: '#f0ffd9d2' },
-      satellite: { fill: '#75ff95', stroke: '#c7ffd7', trail: '#75ff954c', trailSelected: '#e1ffe8d0' },
-      other: { fill: '#6cb484', stroke: '#bde6c8', trail: '#6cb4844f', trailSelected: '#d9efe0c6' },
+      agent:    { fill: '#93ff79', stroke: '#d5ffc5', trail: '#93ff7958', trailSelected: '#e7ffd9d9' },
+      flight:   { fill: '#bcff70', stroke: '#e2ffc7', trail: '#bcff7052', trailSelected: '#f0ffd9d2' },
+      satellite:{ fill: '#75ff95', stroke: '#c7ffd7', trail: '#75ff954c', trailSelected: '#e1ffe8d0' },
+      vehicle:  { fill: '#d4ff60', stroke: '#eeffa8', trail: '#d4ff6052', trailSelected: '#f4ffd0d2' },
+      vessel:   { fill: '#60f8d4', stroke: '#a8fff0', trail: '#60f8d452', trailSelected: '#d0ffecd2' },
+      sensor:   { fill: '#ff9a70', stroke: '#ffcca8', trail: '#ff9a7052', trailSelected: '#ffd8c0d2' },
+      weather:  { fill: '#a8d8ff', stroke: '#d0ecff', trail: '#a8d8ff52', trailSelected: '#dff0ffd2' },
+      other:    { fill: '#6cb484', stroke: '#bde6c8', trail: '#6cb4844f', trailSelected: '#d9efe0c6' },
     },
     flir: {
-      agent: { fill: '#ffe88f', stroke: '#fff5c5', trail: '#ffe88f66', trailSelected: '#fff9dddb' },
-      flight: { fill: '#ff9348', stroke: '#ffbb8d', trail: '#ff934866', trailSelected: '#ffd4b8db' },
-      satellite: { fill: '#ff5f62', stroke: '#ff9b9d', trail: '#ff5f6266', trailSelected: '#ffc5c7db' },
-      other: { fill: '#5c5474', stroke: '#9f94c8', trail: '#5c54745a', trailSelected: '#c8c0e2c9' },
+      agent:    { fill: '#ffe88f', stroke: '#fff5c5', trail: '#ffe88f66', trailSelected: '#fff9dddb' },
+      flight:   { fill: '#ff9348', stroke: '#ffbb8d', trail: '#ff934866', trailSelected: '#ffd4b8db' },
+      satellite:{ fill: '#ff5f62', stroke: '#ff9b9d', trail: '#ff5f6266', trailSelected: '#ffc5c7db' },
+      vehicle:  { fill: '#ffcc40', stroke: '#ffee90', trail: '#ffcc4066', trailSelected: '#fff4c0db' },
+      vessel:   { fill: '#40d0ee', stroke: '#88e8f8', trail: '#40d0ee66', trailSelected: '#b0f0f8db' },
+      sensor:   { fill: '#ff7070', stroke: '#ffaabb', trail: '#ff707066', trailSelected: '#ffccccdb' },
+      weather:  { fill: '#c0e8ff', stroke: '#e0f4ff', trail: '#c0e8ff66', trailSelected: '#f0fbffdb' },
+      other:    { fill: '#5c5474', stroke: '#9f94c8', trail: '#5c54745a', trailSelected: '#c8c0e2c9' },
     },
   };
 
@@ -2268,6 +2476,110 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       regionsVisible++;
     }
+
+    // ── Live Entity Layers: vehicles, vessels, sensors, weather cells ─────────
+    const liveEntities = (state && state.liveEntities) || { vehicles: [], vessels: [], sensors: [], weather: [] };
+
+    // Helper to add a live entity point to Cesium
+    function addLiveEntityPoint(entity, color, pixelSize, altitude) {
+      if (!entity || !Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) return;
+      const isSelected = selectedAgentId === entity.id;
+      try {
+        cesiumViewer.entities.add({
+          id: 'live-' + entity.id,
+          rwMeta: { kind: 'agent', id: entity.id },
+          position: Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, altitude || 0),
+          point: {
+            pixelSize: isSelected ? (pixelSize + 5) : pixelSize,
+            color: Cesium.Color.fromCssColorString(isSelected ? '#ffffff' : color),
+            outlineColor: Cesium.Color.fromCssColorString(color),
+            outlineWidth: isSelected ? 3 : 1,
+          },
+        });
+        entitiesVisible++;
+      } catch (_) { /* ignore single entity errors */ }
+    }
+
+    if (layerState.vehicles && visibleEntityTypes.vehicle) {
+      for (const v of liveEntities.vehicles) {
+        addLiveEntityPoint(v, TYPE_STYLE.vehicle.fill, 9, 5);
+      }
+    }
+    if (layerState.vessels && visibleEntityTypes.vessel) {
+      for (const v of liveEntities.vessels) {
+        addLiveEntityPoint(v, TYPE_STYLE.vessel.fill, 10, 0);
+      }
+    }
+    if (layerState.sensors && visibleEntityTypes.sensor) {
+      for (const s of liveEntities.sensors) {
+        addLiveEntityPoint(s, TYPE_STYLE.sensor.fill, 7, s.altitude || 10);
+      }
+    }
+    if (layerState.weatherCells && visibleEntityTypes.weather) {
+      for (const w of liveEntities.weather) {
+        if (!Number.isFinite(w.lat) || !Number.isFinite(w.lng)) continue;
+        try {
+          const wColor = w.subtype === 'storm' ? '#aaddff' : (w.subtype === 'fog' ? '#ccddee' : '#88ccff');
+          const wRadius = (w.radiusKm || 50) * 1000;
+          cesiumViewer.entities.add({
+            id: 'live-' + w.id,
+            rwMeta: { kind: 'agent', id: w.id },
+            position: Cesium.Cartesian3.fromDegrees(w.lng, w.lat, 5000),
+            ellipse: {
+              semiMajorAxis: wRadius,
+              semiMinorAxis: wRadius,
+              material: Cesium.Color.fromCssColorString(wColor).withAlpha((w.intensity || 0.5) * 0.22),
+              outline: true,
+              outlineColor: Cesium.Color.fromCssColorString(wColor).withAlpha(0.55),
+              outlineWidth: 1.5,
+              height: 5000,
+            },
+          });
+          entitiesVisible++;
+        } catch (_) { /* ignore */ }
+      }
+    }
+
+    // ── Traffic Layer: incidents and zone alerts ──────────────────────────────
+    if (layerState.trafficSim) {
+      const traffic = (state && state.traffic) || {};
+      for (const inc of (traffic.incidents || [])) {
+        if (!Number.isFinite(inc.lat) || !Number.isFinite(inc.lng)) continue;
+        try {
+          const incColor = inc.severity === 'high' ? '#ff4444' : (inc.severity === 'medium' ? '#ffaa00' : '#ffdd44');
+          cesiumViewer.entities.add({
+            id: 'traffic-inc-' + inc.id,
+            rwMeta: { kind: 'traffic', id: inc.id },
+            position: Cesium.Cartesian3.fromDegrees(inc.lng, inc.lat, 10),
+            point: {
+              pixelSize: inc.severity === 'high' ? 13 : 9,
+              color: Cesium.Color.fromCssColorString(incColor),
+              outlineColor: Cesium.Color.WHITE,
+              outlineWidth: 1,
+            },
+          });
+        } catch (_) { /* ignore */ }
+      }
+      for (const zone of (traffic.zoneAlerts || [])) {
+        if (!zone.active || !Number.isFinite(zone.lat) || !Number.isFinite(zone.lng)) continue;
+        try {
+          cesiumViewer.entities.add({
+            id: 'traffic-zone-' + zone.id,
+            rwMeta: { kind: 'traffic', id: zone.id },
+            position: Cesium.Cartesian3.fromDegrees(zone.lng, zone.lat, 0),
+            ellipse: {
+              semiMajorAxis: (zone.radiusKm || 10) * 1000,
+              semiMinorAxis: (zone.radiusKm || 10) * 1000,
+              material: Cesium.Color.fromCssColorString('#ffaa00').withAlpha(0.08),
+              outline: true,
+              outlineColor: Cesium.Color.fromCssColorString('#ffaa00').withAlpha(0.55),
+              outlineWidth: 1,
+              height: 0,
+            },
+          });
+        } catch (_) { /* ignore */ }
+      }
+    }
     lastCesiumRenderCounts = {
       entities: entitiesVisible,
       regions: regionsVisible,
@@ -2772,11 +3084,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!visibleEntityTypes[type]) return false;
     if (type === 'flight' && !layerState.liveFlights) return false;
     if (type === 'satellite' && !layerState.satellites) return false;
+    if (type === 'vehicle' && !layerState.vehicles) return false;
+    if (type === 'vessel' && !layerState.vessels) return false;
+    if (type === 'sensor' && !layerState.sensors) return false;
+    if (type === 'weather' && !layerState.weatherCells) return false;
     return true;
   }
 
   function buildLayerDiagnostics() {
     const allAgents = Object.values(state.agents || {});
+    const liveEntities = state.liveEntities || { vehicles: [], vessels: [], sensors: [], weather: [] };
     const flightsInState = allAgents.filter(a => getEntityType(a) === 'flight').length;
     const satellitesInState = allAgents.filter(a => getEntityType(a) === 'satellite').length;
     const regionsInState = Object.keys(state.regions || {}).length;
@@ -2785,6 +3102,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       militaryFlights: 'unavailable',
       earthquakes:     'unavailable',
       satellites:      layerState.satellites ? (satellitesInState > 0 ? 'active' : 'no data') : 'off',
+      vehicles:        layerState.vehicles ? (liveEntities.vehicles.length > 0 ? 'active' : 'no data') : 'off',
+      vessels:         layerState.vessels ? (liveEntities.vessels.length > 0 ? 'active' : 'no data') : 'off',
+      sensors:         layerState.sensors ? (liveEntities.sensors.length > 0 ? 'active' : 'no data') : 'off',
+      weatherCells:    layerState.weatherCells ? (liveEntities.weather.length > 0 ? 'active' : 'no data') : 'off',
+      trafficSim:      layerState.trafficSim ? ((state.traffic && state.traffic.segments && state.traffic.segments.length > 0) ? 'active' : 'no data') : 'off',
       traffic:         'unavailable',
       weather:         'unavailable',
       cctvMesh:        'unavailable',
@@ -2800,7 +3122,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function renderSelectedPanel() {
-    const selectedAgent = selectedAgentId ? state.agents[selectedAgentId] : null;
+    const selectedAgent = selectedAgentId
+      ? (state.agents[selectedAgentId] || findLiveEntityForPanel(selectedAgentId))
+      : null;
     const selectedRegion = selectedRegionId ? state.regions[selectedRegionId] : null;
     if (!selectedAgent && !selectedRegion) {
       selectedPanel.innerHTML = '<div class="selected-empty">No target selected</div>';
@@ -2852,6 +3176,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const heading = Number.isFinite(Number(selected.heading)) ? Number(selected.heading) : null;
     const altitude = Number.isFinite(Number(selected.altitude)) ? Number(selected.altitude) : null;
     const source = selected.source || (isOpenSkyFlight(selected) ? 'opensky' : 'sim');
+    const confidence = Number.isFinite(selected.confidence) ? (selected.confidence * 100).toFixed(0) + '%' : '—';
     const lastUpdate = Number.isFinite(Number(selected.lastUpdateMs))
       ? new Date(Number(selected.lastUpdateMs)).toISOString()
       : (selected.updatedAt || selected.lastSeen || '—');
@@ -2860,6 +3185,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selected.id) + '</span>' +
       '<span class="selected-label">TYPE</span><span class="selected-value">' + escHtml(getEntityType(selected)) + '</span>' +
       '<span class="selected-label">SOURCE</span><span class="selected-value">' + escHtml(source) + '</span>' +
+      '<span class="selected-label">CONFIDENCE</span><span class="selected-value">' + confidence + '</span>' +
       '<span class="selected-label">X</span><span class="selected-value">' + selected.x.toFixed(2) + '</span>' +
       '<span class="selected-label">Y</span><span class="selected-value">' + selected.y.toFixed(2) + '</span>' +
       '<span class="selected-label">LAT</span><span class="selected-value">' + (Number.isFinite(selectedPoint.lat) ? selectedPoint.lat.toFixed(4) : '—') + '</span>' +
@@ -2876,6 +3202,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     syncActionButtons();
   }
 
+  /** Find a live entity for use in the panel (without requiring getAllLiveEntities, safe before it's defined). */
+  function findLiveEntityForPanel(entityId) {
+    const le = (state && state.liveEntities) || {};
+    for (const list of [le.vehicles || [], le.vessels || [], le.sensors || [], le.weather || []]) {
+      const found = list.find(e => e.id === entityId);
+      if (found) return found;
+    }
+    return null;
+  }
+
   function getCurrentTargetKey(explicitType, explicitId) {
     const type = explicitType || (selectedAgentId ? 'agent' : (selectedRegionId ? 'region' : null));
     const id = explicitId || selectedAgentId || selectedRegionId;
@@ -2887,6 +3223,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     focusActionBtn.disabled = !hasSelection;
     pingActionBtn.disabled = !hasSelection;
     flagActionBtn.disabled = !hasSelection;
+    jumpActionBtn.disabled = !hasSelection;
+    inspectActionBtn.disabled = !hasSelection;
+    profileActionBtn.disabled = !hasSelection;
     followTargetToggleEl.disabled = !hasSelection;
     if (!hasSelection && followTargetEnabled) {
       disableFollowTarget('no selection');
@@ -3989,10 +4328,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const layerDiagnostics = buildLayerDiagnostics();
     lastLayerDiagnostics = layerDiagnostics;
     const layerDebugText = 'L:' + layerDiagnostics.liveFlights
-      + ' T:' + layerDiagnostics.traffic
+      + ' T:' + (layerDiagnostics.trafficSim || layerDiagnostics.traffic)
       + ' S:' + layerDiagnostics.satellites
       + ' R:' + layerDiagnostics.regions
-      + ' W:' + layerDiagnostics.weather;
+      + ' W:' + (layerDiagnostics.weatherCells || layerDiagnostics.weather)
+      + ' V:' + layerDiagnostics.vehicles
+      + ' VE:' + layerDiagnostics.vessels;
     document.getElementById('s-tick').textContent    = state.tick;
     document.getElementById('s-agents').textContent  = visibleAgents.length + '/' + allAgents.length;
     document.getElementById('s-regions').textContent = Object.keys(state.regions).length;
@@ -4035,7 +4376,261 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   focusActionBtn.addEventListener('click', runFocusAction);
   pingActionBtn.addEventListener('click', runPingAction);
   flagActionBtn.addEventListener('click', runFlagAction);
-  followTargetToggleEl.addEventListener('change', function () {
+
+  // ── Jump / Inspect / Profile actions ──────────────────────────────────────
+  jumpActionBtn.addEventListener('click', function () {
+    const fp = getSelectedFocusPoint();
+    if (!fp) return;
+    pushOperatorEvent('operator jump-to-target ' + (selectedAgentId || ('region ' + selectedRegionId)));
+    jumpToTarget(fp);
+    draw();
+  });
+
+  inspectActionBtn.addEventListener('click', function () {
+    const entityId = selectedAgentId;
+    if (!entityId) return;
+    const entity = state.agents[entityId] || findLiveEntity(entityId);
+    if (!entity) return;
+    pushOperatorEvent('operator inspect ' + entityId);
+    openEntityProfile(entity);
+  });
+
+  profileActionBtn.addEventListener('click', function () {
+    const entityId = selectedAgentId;
+    if (!entityId) return;
+    const entity = state.agents[entityId] || findLiveEntity(entityId);
+    if (!entity) return;
+    pushOperatorEvent('operator open-profile ' + entityId);
+    openEntityProfile(entity);
+  });
+
+  profileCloseBtnEl.addEventListener('click', function () {
+    closeEntityProfile();
+  });
+
+  /** Return a flat lookup of all live entities (vehicles, vessels, sensors, weather) keyed by id. */
+  function getAllLiveEntities() {
+    const result = {};
+    const le = (state && state.liveEntities) || {};
+    for (const list of [le.vehicles || [], le.vessels || [], le.sensors || [], le.weather || []]) {
+      for (const e of list) { result[e.id] = e; }
+    }
+    return result;
+  }
+
+  /** Find a live entity by id across all layers. */
+  function findLiveEntity(entityId) {
+    const le = (state && state.liveEntities) || {};
+    for (const list of [le.vehicles || [], le.vessels || [], le.sensors || [], le.weather || []]) {
+      const found = list.find(e => e.id === entityId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /** Open entity profile panel with metadata and event history. */
+  function openEntityProfile(entity) {
+    if (!entity) return;
+    entityProfilePanelEl.classList.remove('hidden');
+    profileEntityIdEl.textContent = entity.id;
+    const confidence = Number.isFinite(entity.confidence) ? (entity.confidence * 100).toFixed(0) + '%' : '—';
+    const ts = entity.ts || entity.lastUpdateMs || entity.lastSeen;
+    const tsStr = ts ? new Date(Number.isFinite(ts) ? ts : Date.parse(ts)).toISOString() : '—';
+    profileMetaEl.innerHTML =
+      'TYPE: ' + escHtml(entity.type || '—') + '<br>' +
+      'LABEL: ' + escHtml(entity.label || entity.name || entity.id) + '<br>' +
+      'SOURCE: ' + escHtml(entity.source || '—') + '<br>' +
+      'CONFIDENCE: ' + confidence + '<br>' +
+      'LAST UPDATE: ' + escHtml(tsStr) + '<br>' +
+      (Number.isFinite(entity.lat) ? 'LAT: ' + entity.lat.toFixed(4) + ' LNG: ' + entity.lng.toFixed(4) + '<br>' : '') +
+      (entity.subtype ? 'SUBTYPE: ' + escHtml(entity.subtype) + '<br>' : '') +
+      (Number.isFinite(entity.speed) ? 'SPEED: ' + entity.speed.toFixed(1) + ' m/s<br>' : '') +
+      (Number.isFinite(entity.heading) ? 'HEADING: ' + entity.heading.toFixed(0) + '°<br>' : '');
+
+    const history = Array.isArray(entity.eventHistory) ? entity.eventHistory : [];
+    if (history.length === 0) {
+      profileHistoryEl.innerHTML = '<div class="profile-history-entry" style="color:#2a3840">No event history</div>';
+    } else {
+      profileHistoryEl.innerHTML = history.slice().reverse().map(ev =>
+        '<div class="profile-history-entry">' +
+        '<span class="phe-ts">' + escHtml(ev.ts ? ev.ts.substring(11, 19) : '—') + '</span>' +
+        '<span class="phe-kind">' + escHtml(ev.kind || 'event') + '</span>' +
+        escHtml(ev.msg || '') +
+        '</div>'
+      ).join('');
+    }
+  }
+
+  /** Close the entity profile panel. */
+  function closeEntityProfile() {
+    entityProfilePanelEl.classList.add('hidden');
+  }
+
+  // ── Timeline Engine UI ──────────────────────────────────────────────────────
+  function updateTimelineUI() {
+    const mode = timelineEngine.mode;
+    timelineModeLabelEl.textContent = mode === 'replay' ? 'REPLAY' : 'LIVE';
+    timelineLiveBtnEl.classList.toggle('tl-btn-active', mode === 'live');
+    timelineReplayBtnEl.classList.toggle('tl-btn-active', mode === 'replay');
+    timelinePlayBtnEl.disabled = mode !== 'replay';
+    timelineScrubberEl.disabled = mode !== 'replay';
+
+    const snapCount = timelineEngine.snapshotCount || 0;
+    timelineSnapCountEl.textContent = snapCount > 0 ? snapCount + ' snaps' : '';
+
+    if (mode === 'live') {
+      timelineTsLabelEl.textContent = new Date().toISOString().substring(11, 19) + ' UTC';
+      timelineScrubberEl.value = 100;
+      timelineStartLabelEl.textContent = timelineEngine.replayStart
+        ? new Date(timelineEngine.replayStart).toISOString().substring(11, 19)
+        : '—';
+      timelineEndLabelEl.textContent = 'LIVE';
+    } else {
+      const ts = timelineEngine.replayTs;
+      timelineTsLabelEl.textContent = ts ? new Date(ts).toISOString().substring(11, 19) + ' UTC' : '—';
+      if (timelineEngine.replayStart && timelineEngine.replayEnd && ts) {
+        const pct = Math.max(0, Math.min(100,
+          ((ts - timelineEngine.replayStart) / (timelineEngine.replayEnd - timelineEngine.replayStart)) * 100
+        ));
+        timelineScrubberEl.value = pct.toFixed(1);
+      }
+    }
+  }
+
+  timelineLiveBtnEl.addEventListener('click', function () {
+    timelineEngine.mode = 'live';
+    timelineEngine.replayTs = null;
+    timelineEngine.playing = false;
+    clearInterval(timelineEngine.playIntervalId);
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'set_timeline_mode', mode: 'live' }));
+    }
+    updateTimelineUI();
+    pushOperatorEvent('operator timeline: switched to live');
+  });
+
+  timelineReplayBtnEl.addEventListener('click', function () {
+    timelineEngine.mode = 'replay';
+    const initTs = timelineEngine.replayEnd || Date.now();
+    timelineEngine.replayTs = initTs;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'set_timeline_mode', mode: 'replay', replayTs: initTs }));
+    }
+    updateTimelineUI();
+    pushOperatorEvent('operator timeline: switched to replay');
+  });
+
+  timelinePlayBtnEl.addEventListener('click', function () {
+    if (timelineEngine.mode !== 'replay') return;
+    timelineEngine.playing = !timelineEngine.playing;
+    timelinePlayBtnEl.textContent = timelineEngine.playing ? '⏸' : '▶';
+    if (timelineEngine.playing) {
+      timelineEngine.playIntervalId = setInterval(function () {
+        if (!timelineEngine.playing || timelineEngine.mode !== 'replay') { clearInterval(timelineEngine.playIntervalId); return; }
+        const step = 30000; // advance 30s per tick
+        const next = (timelineEngine.replayTs || timelineEngine.replayStart || Date.now()) + step;
+        if (next >= (timelineEngine.replayEnd || Date.now())) {
+          timelineEngine.playing = false;
+          timelinePlayBtnEl.textContent = '▶';
+          clearInterval(timelineEngine.playIntervalId);
+        } else {
+          timelineEngine.replayTs = next;
+          if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'timeline_scrub', ts: next }));
+          updateTimelineUI();
+        }
+      }, 800);
+    } else {
+      clearInterval(timelineEngine.playIntervalId);
+    }
+  });
+
+  timelineScrubberEl.addEventListener('input', function () {
+    if (timelineEngine.mode !== 'replay') return;
+    const pct = Number(timelineScrubberEl.value) / 100;
+    const start = timelineEngine.replayStart || (Date.now() - 3600000);
+    const end = timelineEngine.replayEnd || Date.now();
+    const ts = Math.round(start + pct * (end - start));
+    timelineEngine.replayTs = ts;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'timeline_scrub', ts }));
+    updateTimelineUI();
+  });
+
+  // Tick live-mode timestamp every second
+  setInterval(function () {
+    if (timelineEngine.mode === 'live') updateTimelineUI();
+  }, 1000);
+
+  updateTimelineUI();
+
+  // ── Layer toggle buttons for new live entity layers ────────────────────────
+  function makeLayerToggle(btnEl, layerKey) {
+    if (!btnEl) return;
+    btnEl.addEventListener('click', function () {
+      if (!LAYER_AVAILABLE[layerKey]) return;
+      setLayerOn(layerKey, !layerState[layerKey]);
+      clearSelectionIfHidden();
+      refreshEventVisibilityStyling();
+      updateLayerStatusBadges();
+      updateStats();
+      draw();
+    });
+  }
+  makeLayerToggle(toggleLayerVehiclesEl, 'vehicles');
+  makeLayerToggle(toggleLayerVesselsEl, 'vessels');
+  makeLayerToggle(toggleLayerSensorsEl, 'sensors');
+  makeLayerToggle(toggleLayerWeatherCellsEl, 'weatherCells');
+  makeLayerToggle(toggleLayerTrafficSimEl, 'trafficSim');
+
+  function onTypeToggleChangeExtended() {
+    visibleEntityTypes.vehicle  = !!toggleTypeVehicleEl.checked;
+    visibleEntityTypes.vessel   = !!toggleTypeVesselEl.checked;
+    visibleEntityTypes.sensor   = !!toggleTypeSensorEl.checked;
+    visibleEntityTypes.weather  = !!toggleTypeWeatherEl.checked;
+    clearSelectionIfHidden();
+    refreshEventVisibilityStyling();
+    renderSelectedPanel();
+    updateStats();
+    draw();
+  }
+  if (toggleTypeVehicleEl) toggleTypeVehicleEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeVesselEl)  toggleTypeVesselEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeSensorEl)  toggleTypeSensorEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeWeatherEl) toggleTypeWeatherEl.addEventListener('change', onTypeToggleChangeExtended);
+
+  /** Update layer status badges in the layers drawer. */
+  function updateLayerStatusBadges() {
+    const diag = buildLayerDiagnostics();
+    const pairs = [
+      ['layer-status-vehicles', diag.vehicles],
+      ['layer-status-vessels',  diag.vessels],
+      ['layer-status-sensors',  diag.sensors],
+      ['layer-status-weatherCells', diag.weatherCells],
+      ['layer-status-trafficSim', diag.trafficSim],
+    ];
+    for (const [id, val] of pairs) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = val ? val.toUpperCase() : '—';
+    }
+    // sync toggle button states for new layers
+    const layerBtns = [
+      [toggleLayerVehiclesEl, 'vehicles'],
+      [toggleLayerVesselsEl,  'vessels'],
+      [toggleLayerSensorsEl,  'sensors'],
+      [toggleLayerWeatherCellsEl, 'weatherCells'],
+      [toggleLayerTrafficSimEl, 'trafficSim'],
+    ];
+    for (const [btn, key] of layerBtns) {
+      if (!btn) continue;
+      const on = !!layerState[key];
+      btn.textContent = on ? 'ON' : 'OFF';
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.classList.toggle('active', on);
+      const row = btn.closest('.layer-row');
+      if (row) row.classList.toggle('on', on);
+    }
+  }
+
+  updateLayerStatusBadges();
     const shouldFollow = !!followTargetToggleEl.checked;
     if (!shouldFollow) {
       disableFollowTarget('toggle off');
@@ -4226,17 +4821,29 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     openskyStatus = nextSnapshot && nextSnapshot.opensky
       ? nextSnapshot.opensky
       : Object.assign({}, OPENSKY_STATUS_DEFAULTS);
+    // Sync timeline state from server
+    if (nextSnapshot && nextSnapshot.timeline && timelineEngine.mode === 'live') {
+      timelineEngine.replayStart = nextSnapshot.timeline.replayStart;
+      timelineEngine.replayEnd = nextSnapshot.timeline.replayEnd;
+      timelineEngine.snapshotCount = nextSnapshot.timeline.snapshotCount;
+      updateTimelineUI();
+    }
     latestRegionIntelligence = computeRegionIntelligence();
     clearSelectionIfHidden();
     if (selectedAgentId && !state.agents[selectedAgentId]) {
-      selectAgent(null);
-      return;
+      // check live entities too before clearing selection
+      const allLive = getAllLiveEntities();
+      if (!allLive[selectedAgentId]) {
+        selectAgent(null);
+        return;
+      }
     }
     if (selectedRegionId && !state.regions[selectedRegionId]) {
       selectRegion(null);
       return;
     }
     renderSelectedPanel();
+    updateLayerStatusBadges();
     draw();
   }
 
@@ -4350,18 +4957,30 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         }
         previousAgentsById = state.agents || {};
         state = msg.data;
+        // Sync timeline state from snapshot
+        if (msg.data && msg.data.timeline && timelineEngine.mode === 'live') {
+          timelineEngine.replayStart = msg.data.timeline.replayStart;
+          timelineEngine.replayEnd = msg.data.timeline.replayEnd;
+          timelineEngine.snapshotCount = msg.data.timeline.snapshotCount;
+          updateTimelineUI();
+        }
         latestRegionIntelligence = computeRegionIntelligence();
         let selectionChanged = false;
         if (selectedAgentId && !state.agents[selectedAgentId]) {
-          selectAgent(null);
-          selectionChanged = true;
-        } else if (selectedRegionId && !state.regions[selectedRegionId]) {
+          const allLive = getAllLiveEntities();
+          if (!allLive[selectedAgentId]) {
+            selectAgent(null);
+            selectionChanged = true;
+          }
+        }
+        if (!selectionChanged && selectedRegionId && !state.regions[selectedRegionId]) {
           selectRegion(null);
           selectionChanged = true;
         }
         if (!selectionChanged) {
           renderSelectedPanel();
           updateStats();
+          updateLayerStatusBadges();
           draw();
         }
         snapshotQueue.push(msg.data);
@@ -4376,6 +4995,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         if (msg.data.patch) Object.assign(state, msg.data.patch);
         renderSelectedPanel();
         draw();
+      } else if (msg.type === 'timeline_ack') {
+        if (msg.data) {
+          timelineEngine.mode = msg.data.mode || 'live';
+          timelineEngine.replayTs = msg.data.replayTs || null;
+        }
+        updateTimelineUI();
+      } else if (msg.type === 'timeline_frame') {
+        if (msg.data) {
+          timelineEngine.replayTs = msg.data.replayTs || null;
+        }
+        updateTimelineUI();
       }
     };
 
@@ -4512,6 +5142,29 @@ function snapshot() {
       lastFetchStatus: openSkyLiveState.lastRequestStatus !== null ? openSkyLiveState.lastRequestStatus : 'none',
       lastFetchError: openSkyLiveState.lastErrorMessage || 'none',
     },
+    // ── Live entity layers ───────────────────────────────────────────────────
+    liveEntities: {
+      vehicles: Object.values(liveEntityState.vehicles),
+      vessels:  Object.values(liveEntityState.vessels),
+      sensors:  Object.values(liveEntityState.sensors),
+      weather:  Object.values(liveEntityState.weather),
+    },
+    // ── Traffic layer ────────────────────────────────────────────────────────
+    traffic: {
+      segments:   trafficState.segments,
+      incidents:  trafficState.incidents,
+      closures:   trafficState.closures,
+      zoneAlerts: trafficState.zoneAlerts,
+      lastUpdateAt: trafficState.lastUpdateAt,
+    },
+    // ── Timeline state ───────────────────────────────────────────────────────
+    timeline: {
+      mode:         timelineState.mode,
+      replayTs:     timelineState.replayTs,
+      replayStart:  timelineState.replayStart,
+      replayEnd:    timelineState.replayEnd,
+      snapshotCount: timelineState.snapshots.length,
+    },
   };
 }
 
@@ -4629,6 +5282,377 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
   normalizeEntityGridPosition(entity);
   entity.region = resolveClosestRegion(entity);
   return entity;
+}
+
+// ─── Live Entity Builders ─────────────────────────────────────────────────────
+
+/**
+ * Build a ground vehicle entity with full structured metadata.
+ * @param {string} id
+ * @param {{ lat: number, lng: number, heading?: number, speed?: number,
+ *           label?: string, subtype?: string, source?: string }} opts
+ * @param {object|null} previous
+ * @returns {object}
+ */
+function buildVehicleEntity(id, opts, previous) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const trail = Array.isArray(previous && previous.trail) ? previous.trail.slice(-12) : [];
+  const moved = !previous
+    || !Number.isFinite(previous.lat) || !Number.isFinite(previous.lng)
+    || Math.abs(previous.lat - opts.lat) > 0.0001
+    || Math.abs(previous.lng - opts.lng) > 0.0001;
+  if (trail.length === 0 || moved) trail.push({ lat: opts.lat, lng: opts.lng, ts: now });
+  const entity = {
+    id: 'vehicle-' + id,
+    type: 'vehicle',
+    label: opts.label || id,
+    name: opts.label || id,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: 0,
+    heading: Number.isFinite(opts.heading) ? opts.heading : 0,
+    speed: Number.isFinite(opts.speed) ? opts.speed : 0,
+    subtype: opts.subtype || 'car',
+    source: opts.source || 'sim',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.85,
+    eventHistory: (previous && Array.isArray(previous.eventHistory)) ? previous.eventHistory : [],
+    active: true,
+    state: 'moving',
+    trail: trail.slice(-12),
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+/**
+ * Build a maritime vessel entity with full structured metadata.
+ */
+function buildVesselEntity(id, opts, previous) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const trail = Array.isArray(previous && previous.trail) ? previous.trail.slice(-16) : [];
+  const moved = !previous
+    || !Number.isFinite(previous.lat) || !Number.isFinite(previous.lng)
+    || Math.abs(previous.lat - opts.lat) > 0.0001
+    || Math.abs(previous.lng - opts.lng) > 0.0001;
+  if (trail.length === 0 || moved) trail.push({ lat: opts.lat, lng: opts.lng, ts: now });
+  const entity = {
+    id: 'vessel-' + id,
+    type: 'vessel',
+    label: opts.label || id,
+    name: opts.label || id,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: 0,
+    heading: Number.isFinite(opts.heading) ? opts.heading : 0,
+    speed: Number.isFinite(opts.speed) ? opts.speed : 0,
+    subtype: opts.subtype || 'cargo',
+    mmsi: opts.mmsi || null,
+    source: opts.source || 'ais',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.90,
+    eventHistory: (previous && Array.isArray(previous.eventHistory)) ? previous.eventHistory : [],
+    active: true,
+    state: 'underway',
+    trail: trail.slice(-16),
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+/**
+ * Build a fixed sensor node entity with full structured metadata.
+ */
+function buildSensorEntity(id, opts) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const entity = {
+    id: 'sensor-' + id,
+    type: 'sensor',
+    label: opts.label || id,
+    name: opts.label || id,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: Number.isFinite(opts.altitude) ? opts.altitude : 10,
+    heading: 0,
+    speed: 0,
+    subtype: opts.subtype || 'cctv',
+    source: opts.source || 'infra',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.95,
+    eventHistory: [],
+    active: true,
+    state: opts.state || 'online',
+    trail: [],
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+/**
+ * Build a weather cell entity (storm, rain, fog) with structured metadata.
+ */
+function buildWeatherCellEntity(id, opts, previous) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const entity = {
+    id: 'weather-' + id,
+    type: 'weather',
+    label: opts.label || id,
+    name: opts.label || id,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: Number.isFinite(opts.altitude) ? opts.altitude : 5000,
+    heading: Number.isFinite(opts.heading) ? opts.heading : 0,
+    speed: Number.isFinite(opts.speed) ? opts.speed : 0,
+    subtype: opts.subtype || 'rain',   // rain | storm | fog | clear
+    intensity: Number.isFinite(opts.intensity) ? opts.intensity : 0.5,   // 0–1
+    radiusKm: Number.isFinite(opts.radiusKm) ? opts.radiusKm : 50,
+    source: opts.source || 'noaa',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.80,
+    eventHistory: (previous && Array.isArray(previous.eventHistory)) ? previous.eventHistory : [],
+    active: true,
+    state: opts.subtype || 'rain',
+    trail: [],
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+// ─── Live Entity Layer Simulation ─────────────────────────────────────────────
+
+/** Seed a repeatable pseudo-random value from a string key and numeric slot. */
+function seededRand(key, slot) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = (h * 16777619) >>> 0; }
+  h ^= slot; h = (h * 16777619) >>> 0;
+  return (h >>> 0) / 0xFFFFFFFF;
+}
+
+const LIVE_ENTITY_UPDATE_MS = 8000; // refresh interval for simulated live entities
+let lastLiveEntityUpdateAt = 0;
+
+/**
+ * Refresh simulated live entity layers: vehicles, vessels, weather cells.
+ * Sensor nodes are static; they are seeded once on first call.
+ */
+function refreshLiveEntityLayers() {
+  const now = Date.now();
+  if (now - lastLiveEntityUpdateAt < LIVE_ENTITY_UPDATE_MS) return;
+  lastLiveEntityUpdateAt = now;
+
+  // ── Vehicles (ground traffic in major city corridors) ──────────────────────
+  const vehicleSeeds = [
+    { id: 'v001', baseLat: 40.71, baseLng: -74.01, label: 'UNIT-01', subtype: 'police' },
+    { id: 'v002', baseLat: 51.50, baseLng: -0.12,  label: 'UNIT-02', subtype: 'ambulance' },
+    { id: 'v003', baseLat: 48.85, baseLng: 2.35,   label: 'TRK-03',  subtype: 'truck' },
+    { id: 'v004', baseLat: 35.68, baseLng: 139.69, label: 'CAR-04',  subtype: 'car' },
+    { id: 'v005', baseLat: 34.05, baseLng: -118.24, label: 'UNIT-05', subtype: 'fire' },
+    { id: 'v006', baseLat: 19.43, baseLng: -99.13, label: 'TRK-06',  subtype: 'truck' },
+  ];
+  for (const s of vehicleSeeds) {
+    const drift = 0.004;
+    const lat = s.baseLat + (seededRand(s.id, now % 97) - 0.5) * drift;
+    const lng = s.baseLng + (seededRand(s.id, now % 113) - 0.5) * drift;
+    const heading = (seededRand(s.id, now % 67) * 360);
+    const speed = 5 + seededRand(s.id, now % 41) * 25;
+    const prev = liveEntityState.vehicles[s.id] || null;
+    const entity = buildVehicleEntity(s.id, {
+      lat, lng, heading, speed,
+      label: s.label, subtype: s.subtype, source: 'sim',
+      confidence: 0.80 + seededRand(s.id, 7) * 0.15,
+    }, prev);
+    if (entity) liveEntityState.vehicles[s.id] = entity;
+  }
+
+  // ── Vessels (maritime shipping lanes) ─────────────────────────────────────
+  const vesselSeeds = [
+    { id: 'sh001', baseLat: 51.90, baseLng: 4.00,  label: 'CARGO-1',  subtype: 'cargo',  mmsi: '244820000' },
+    { id: 'sh002', baseLat: 1.28,  baseLng: 103.83, label: 'TANKER-2', subtype: 'tanker', mmsi: '563012000' },
+    { id: 'sh003', baseLat: 37.77, baseLng: -122.41, label: 'FERRY-3', subtype: 'ferry',  mmsi: '367001000' },
+    { id: 'sh004', baseLat: 29.98, baseLng: 32.56,  label: 'CARGO-4',  subtype: 'cargo',  mmsi: '636091000' },
+  ];
+  for (const s of vesselSeeds) {
+    const drift = 0.02;
+    const lat = s.baseLat + (seededRand(s.id, now % 89) - 0.5) * drift;
+    const lng = s.baseLng + (seededRand(s.id, now % 101) - 0.5) * drift;
+    const heading = seededRand(s.id, now % 53) * 360;
+    const speed = 3 + seededRand(s.id, now % 37) * 15;
+    const prev = liveEntityState.vessels[s.id] || null;
+    const entity = buildVesselEntity(s.id, {
+      lat, lng, heading, speed,
+      label: s.label, subtype: s.subtype, mmsi: s.mmsi, source: 'ais',
+      confidence: 0.85 + seededRand(s.id, 9) * 0.10,
+    }, prev);
+    if (entity) liveEntityState.vessels[s.id] = entity;
+  }
+
+  // ── Weather Cells ─────────────────────────────────────────────────────────
+  const weatherSeeds = [
+    { id: 'wc001', baseLat: 30.0,  baseLng: -90.0,  label: 'STORM-1', subtype: 'storm',   radiusKm: 120, intensity: 0.85 },
+    { id: 'wc002', baseLat: 55.0,  baseLng: 10.0,   label: 'RAIN-2',  subtype: 'rain',    radiusKm: 80,  intensity: 0.55 },
+    { id: 'wc003', baseLat: -5.0,  baseLng: 115.0,  label: 'RAIN-3',  subtype: 'rain',    radiusKm: 60,  intensity: 0.40 },
+    { id: 'wc004', baseLat: 37.5,  baseLng: 127.0,  label: 'FOG-4',   subtype: 'fog',     radiusKm: 30,  intensity: 0.70 },
+    { id: 'wc005', baseLat: 25.0,  baseLng: -80.0,  label: 'STORM-5', subtype: 'storm',   radiusKm: 90,  intensity: 0.65 },
+  ];
+  for (const s of weatherSeeds) {
+    const drift = 0.05;
+    const lat = s.baseLat + (seededRand(s.id, now % 79) - 0.5) * drift;
+    const lng = s.baseLng + (seededRand(s.id, now % 83) - 0.5) * drift;
+    const heading = seededRand(s.id, now % 43) * 360;
+    const speed = 2 + seededRand(s.id, now % 31) * 8;
+    const prev = liveEntityState.weather[s.id] || null;
+    const entity = buildWeatherCellEntity(s.id, {
+      lat, lng, heading, speed,
+      label: s.label, subtype: s.subtype, source: 'noaa',
+      radiusKm: s.radiusKm, intensity: s.intensity,
+      confidence: 0.75 + seededRand(s.id, 11) * 0.15,
+    }, prev);
+    if (entity) liveEntityState.weather[s.id] = entity;
+  }
+}
+
+/** Seed static sensor nodes once at startup. */
+function seedSensorNodes() {
+  const sensorSeeds = [
+    { id: 'sn001', lat: 40.71, lng: -74.01, label: 'CAM-NYC-01', subtype: 'cctv',    source: 'infra' },
+    { id: 'sn002', lat: 51.50, lng: -0.12,  label: 'CAM-LON-02', subtype: 'cctv',    source: 'infra' },
+    { id: 'sn003', lat: 48.85, lng: 2.35,   label: 'WX-PAR-03',  subtype: 'weather', source: 'noaa'  },
+    { id: 'sn004', lat: 35.68, lng: 139.69, label: 'ACS-TKY-04', subtype: 'acoustic',source: 'infra' },
+    { id: 'sn005', lat: 34.05, lng: -118.24, label: 'CAM-LAX-05', subtype: 'cctv',   source: 'infra' },
+    { id: 'sn006', lat: 1.35,  lng: 103.82,  label: 'CAM-SIN-06', subtype: 'cctv',   source: 'infra' },
+    { id: 'sn007', lat: 25.20, lng: 55.27,   label: 'WX-DXB-07',  subtype: 'weather',source: 'noaa'  },
+    { id: 'sn008', lat: -33.86, lng: 151.21, label: 'CAM-SYD-08', subtype: 'cctv',   source: 'infra' },
+  ];
+  for (const s of sensorSeeds) {
+    if (!liveEntityState.sensors[s.id]) {
+      const entity = buildSensorEntity(s.id, { ...s, confidence: 0.95, state: 'online' });
+      if (entity) liveEntityState.sensors[s.id] = entity;
+    }
+  }
+}
+
+// ─── Traffic Layer Simulation ─────────────────────────────────────────────────
+
+const TRAFFIC_UPDATE_MS = 12000;
+let lastTrafficUpdateAt = 0;
+
+/**
+ * Refresh simulated traffic layer data: segments, incidents, closures, zone alerts.
+ */
+function refreshTrafficLayer() {
+  const now = Date.now();
+  if (now - lastTrafficUpdateAt < TRAFFIC_UPDATE_MS) return;
+  lastTrafficUpdateAt = now;
+
+  // Road segments in major metro corridors
+  const segmentDefs = [
+    { id: 'seg-nyc-1', name: 'I-95 New York',     fromLat: 40.63, fromLng: -74.03, toLat: 40.78, toLng: -73.97 },
+    { id: 'seg-la-1',  name: 'US-101 Los Angeles', fromLat: 34.00, fromLng: -118.40, toLat: 34.10, toLng: -118.20 },
+    { id: 'seg-lon-1', name: 'M25 London',          fromLat: 51.40, fromLng: -0.50, toLat: 51.55, toLng: 0.10 },
+    { id: 'seg-par-1', name: 'A1 Paris',            fromLat: 48.80, fromLng: 2.30, toLat: 48.95, toLng: 2.40 },
+    { id: 'seg-tok-1', name: 'C1 Tokyo',            fromLat: 35.62, fromLng: 139.65, toLat: 35.74, toLng: 139.75 },
+    { id: 'seg-chi-1', name: 'I-90 Chicago',        fromLat: 41.80, fromLng: -87.80, toLat: 41.90, toLng: -87.60 },
+  ];
+
+  trafficState.segments = segmentDefs.map(def => {
+    const rand = seededRand(def.id, now % 173);
+    const speedKph = 20 + rand * 100;  // 20–120 km/h
+    const congestion = 1 - (speedKph / 120);  // 0=free-flow, 1=gridlock
+    let level = 'free';
+    if (congestion > 0.75) level = 'heavy';
+    else if (congestion > 0.45) level = 'moderate';
+    else if (congestion > 0.20) level = 'light';
+    return {
+      ...def,
+      speedKph: Math.round(speedKph),
+      congestion: parseFloat(congestion.toFixed(2)),
+      level,
+      source: 'sim',
+      ts: now,
+      confidence: 0.80 + seededRand(def.id, 5) * 0.15,
+    };
+  });
+
+  // Incidents (accidents, breakdowns)
+  const incidentPool = [
+    { id: 'inc-001', lat: 40.71, lng: -74.01, type: 'accident',   desc: 'Multi-vehicle accident I-95 NB',    severity: 'high'  },
+    { id: 'inc-002', lat: 34.05, lng: -118.25, type: 'breakdown',  desc: 'Truck breakdown US-101 SB',          severity: 'medium'},
+    { id: 'inc-003', lat: 51.50, lng: -0.11,  type: 'roadwork',   desc: 'Emergency road works A4',            severity: 'low'   },
+    { id: 'inc-004', lat: 48.87, lng: 2.38,   type: 'accident',   desc: 'Minor collision Boulevard Périphérique', severity: 'low'},
+  ];
+  // Only show incidents with rand < 0.6 (60% probability active)
+  trafficState.incidents = incidentPool.filter(inc =>
+    seededRand(inc.id, now % 199) < 0.6
+  ).map(inc => ({ ...inc, source: 'sim', ts: now, confidence: 0.85 }));
+
+  // Closures
+  const closurePool = [
+    { id: 'clo-001', lat: 40.75, lng: -73.99, type: 'planned',    desc: 'Bridge maintenance — closed 22:00–05:00' },
+    { id: 'clo-002', lat: 51.52, lng: -0.08,  type: 'emergency',  desc: 'Emergency gas main repair' },
+  ];
+  trafficState.closures = closurePool.filter(cl =>
+    seededRand(cl.id, now % 211) < 0.4
+  ).map(cl => ({ ...cl, source: 'sim', ts: now, confidence: 0.90 }));
+
+  // Zone alerts (congestion charge, ULEZ, alert zones)
+  trafficState.zoneAlerts = [
+    { id: 'zone-lon-1', lat: 51.50, lng: -0.12, name: 'London ULEZ',     type: 'ulez',       radiusKm: 12, active: true, ts: now, source: 'tfl' },
+    { id: 'zone-nyc-1', lat: 40.71, lng: -74.01, name: 'NYC Congestion',  type: 'congestion', radiusKm: 8,  active: seededRand('zone-nyc-1', now % 157) > 0.3, ts: now, source: 'sim' },
+  ];
+
+  trafficState.lastUpdateAt = now;
+}
+
+// ─── Timeline Snapshot Recording ─────────────────────────────────────────────
+
+const TIMELINE_SNAPSHOT_INTERVAL_MS = 30000; // record a snapshot every 30s
+const TIMELINE_MAX_SNAPSHOTS = 300;           // ~2.5 hours of history
+
+function recordTimelineSnapshot() {
+  const now = Date.now();
+  if (timelineState.lastSnapshotAt && now - timelineState.lastSnapshotAt < TIMELINE_SNAPSHOT_INTERVAL_MS) return;
+  timelineState.lastSnapshotAt = now;
+  const snap = {
+    ts: now,
+    agentCount: Object.keys(worldview.agents).length,
+    flightCount: Object.keys(openSkyLiveState.flights).length,
+    vehicleCount: Object.keys(liveEntityState.vehicles).length,
+    vesselCount: Object.keys(liveEntityState.vessels).length,
+    incidentCount: trafficState.incidents.length,
+    events: eventLog.slice(-10).map(e => ({ kind: e.kind, msg: e.msg, ts: e.ts })),
+  };
+  timelineState.snapshots.push(snap);
+  if (timelineState.snapshots.length > TIMELINE_MAX_SNAPSHOTS) {
+    timelineState.snapshots.shift();
+  }
+  if (!timelineState.replayStart && timelineState.snapshots.length > 0) {
+    timelineState.replayStart = timelineState.snapshots[0].ts;
+  }
+  timelineState.replayEnd = now;
+}
+
+/** Record an event into an entity's event history (capped at 50). */
+function appendEntityEvent(entityId, kind, msg) {
+  if (!entityId) return;
+  if (!entityEventHistory[entityId]) entityEventHistory[entityId] = [];
+  entityEventHistory[entityId].push({ ts: new Date().toISOString(), kind, msg });
+  if (entityEventHistory[entityId].length > 50) entityEventHistory[entityId].shift();
 }
 
 async function pollOpenSkyFlights() {
@@ -5144,6 +6168,11 @@ function simulationLoop() {
   for (const agent of Object.values(worldview.agents)) {
     tickAgent(agent);
   }
+
+  // Refresh live entity layers and traffic layer at their own cadence
+  refreshLiveEntityLayers();
+  refreshTrafficLayer();
+  recordTimelineSnapshot();
 
   // broadcast full snapshot every 5 ticks, delta otherwise
   if (worldview.tick % 5 === 0) {
@@ -5720,6 +6749,30 @@ function handleClientMessage(socket, msg) {
   // clients can request a snapshot on demand
   if (msg && msg.type === 'get_snapshot') {
     wsSend(socket, JSON.stringify({ type: 'snapshot', data: snapshot() }));
+    return;
+  }
+  // set timeline mode: { type: 'set_timeline_mode', mode: 'live'|'replay', replayTs?: number }
+  if (msg && msg.type === 'set_timeline_mode') {
+    const mode = msg.mode === 'replay' ? 'replay' : 'live';
+    timelineState.mode = mode;
+    if (mode === 'replay' && Number.isFinite(msg.replayTs)) {
+      timelineState.replayTs = msg.replayTs;
+    } else if (mode === 'live') {
+      timelineState.replayTs = null;
+    }
+    wsSend(socket, JSON.stringify({ type: 'timeline_ack', data: { mode: timelineState.mode, replayTs: timelineState.replayTs } }));
+    return;
+  }
+  // scrub replay timestamp: { type: 'timeline_scrub', ts: number }
+  if (msg && msg.type === 'timeline_scrub' && Number.isFinite(msg.ts)) {
+    timelineState.mode = 'replay';
+    timelineState.replayTs = msg.ts;
+    // find the nearest snapshot
+    const nearest = timelineState.snapshots.reduce((best, snap) => {
+      return (!best || Math.abs(snap.ts - msg.ts) < Math.abs(best.ts - msg.ts)) ? snap : best;
+    }, null);
+    wsSend(socket, JSON.stringify({ type: 'timeline_frame', data: { replayTs: msg.ts, snapshot: nearest } }));
+    return;
   }
 }
 
@@ -5861,6 +6914,57 @@ function router(req, res) {
     return;
   }
 
+  // ── GET /api/live-entities  → live entity layers (vehicles, vessels, sensors, weather)
+  if (req.method === 'GET' && url === '/api/live-entities') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      vehicles: Object.values(liveEntityState.vehicles),
+      vessels:  Object.values(liveEntityState.vessels),
+      sensors:  Object.values(liveEntityState.sensors),
+      weather:  Object.values(liveEntityState.weather),
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // ── GET /api/traffic  → traffic layer data
+  if (req.method === 'GET' && url === '/api/traffic') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      segments:   trafficState.segments,
+      incidents:  trafficState.incidents,
+      closures:   trafficState.closures,
+      zoneAlerts: trafficState.zoneAlerts,
+      lastUpdateAt: trafficState.lastUpdateAt,
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // ── GET /api/timeline  → timeline state and recent snapshots
+  if (req.method === 'GET' && url === '/api/timeline') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      mode:          timelineState.mode,
+      replayTs:      timelineState.replayTs,
+      replayStart:   timelineState.replayStart,
+      replayEnd:     timelineState.replayEnd,
+      snapshotCount: timelineState.snapshots.length,
+      snapshots:     timelineState.snapshots.slice(-60),  // last 60 for replay scrubbing
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // ── GET /api/entity-history/:entityId  → event history for a specific entity
+  if (req.method === 'GET' && url.startsWith('/api/entity-history/')) {
+    const entityId = decodeURIComponent(url.slice('/api/entity-history/'.length));
+    const history = entityEventHistory[entityId] || [];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ entityId, history, count: history.length, ts: Date.now() }));
+    return;
+  }
+
   // 404
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'not found', path: url }));
@@ -5881,6 +6985,7 @@ server.on('upgrade', (req, socket, head) => {
 
 initWorld();
 bootstrapWorkers();
+seedSensorNodes();
 
 if (require.main === module) {
   setInterval(simulationLoop, 800);
@@ -5937,4 +7042,18 @@ module.exports = {
   createWorker,
   bootstrapWorkers,
   onFlightAppeared,
+  // ── Live entity layer exports ───────────────────────────────────────────────
+  buildVehicleEntity,
+  buildVesselEntity,
+  buildSensorEntity,
+  buildWeatherCellEntity,
+  liveEntityState,
+  trafficState,
+  timelineState,
+  entityEventHistory,
+  appendEntityEvent,
+  refreshLiveEntityLayers,
+  refreshTrafficLayer,
+  recordTimelineSnapshot,
+  seedSensorNodes,
 };
