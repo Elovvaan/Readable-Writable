@@ -1435,8 +1435,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!streetViewEl) return;
     streetViewEl.classList.remove('visible');
     streetViewVisible = false;
-    streetViewEl.addEventListener('transitionend', function onEnd() {
-      streetViewEl.removeEventListener('transitionend', onEnd);
+    streetViewEl.addEventListener('transitionend', function () {
       if (!streetViewVisible) streetViewEl.style.display = 'none';
     }, { once: true });
   }

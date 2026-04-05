@@ -284,8 +284,8 @@ describe('street-view panel', function () {
   test('street-view-pano div exists inside street-view', function () {
     const svIdx = src.indexOf('id="street-view"');
     assert.ok(svIdx !== -1, 'street-view must exist');
-    const closeIdx = src.indexOf('id="street-view-pano"');
-    assert.ok(closeIdx > svIdx, 'street-view-pano must appear after street-view');
+    const panoIdx = src.indexOf('id="street-view-pano"');
+    assert.ok(panoIdx > svIdx, 'street-view-pano must appear after street-view');
   });
 
   test('street-view-close button exists in HTML', function () {
