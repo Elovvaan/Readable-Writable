@@ -836,3 +836,166 @@ describe('Cesium street-level navigation', function () {
     assert.ok(snippet.includes('background: transparent'), 'street-view must have transparent background so Cesium is visible');
   });
 });
+
+// ── Camera zoom: pointer-events passthrough ───────────────────────────────────
+describe('camera zoom: wheel and pinch passthrough to Cesium', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  test('#street-level-view has pointer-events:none so wheel events reach Cesium canvas', function () {
+    const cssIdx = src.indexOf('#street-level-view {');
+    assert.ok(cssIdx !== -1, '#street-level-view CSS rule must exist');
+    const snippet = src.slice(cssIdx, cssIdx + 300);
+    assert.ok(snippet.includes('pointer-events: none'), '#street-level-view must have pointer-events:none to let wheel/pinch reach Cesium');
+  });
+
+  test('#sl-left-panel explicitly restores pointer-events:auto for interactive buttons', function () {
+    const cssIdx = src.indexOf('#sl-left-panel {');
+    assert.ok(cssIdx !== -1, '#sl-left-panel CSS rule must exist');
+    const snippet = src.slice(cssIdx, cssIdx + 300);
+    assert.ok(snippet.includes('pointer-events: auto'), '#sl-left-panel must have pointer-events:auto so its buttons remain clickable');
+  });
+
+  test('#sl-right-panel explicitly restores pointer-events:auto for interactive controls', function () {
+    const cssIdx = src.indexOf('#sl-right-panel {');
+    assert.ok(cssIdx !== -1, '#sl-right-panel CSS rule must exist');
+    const snippet = src.slice(cssIdx, cssIdx + 200);
+    assert.ok(snippet.includes('pointer-events: auto'), '#sl-right-panel must have pointer-events:auto so its controls remain clickable');
+  });
+
+  test('#sl-viewport retains pointer-events:none (center viewport must pass through to Cesium)', function () {
+    const cssIdx = src.indexOf('#sl-viewport {');
+    assert.ok(cssIdx !== -1, '#sl-viewport CSS rule must exist');
+    const snippet = src.slice(cssIdx, cssIdx + 200);
+    assert.ok(snippet.includes('pointer-events: none'), '#sl-viewport must retain pointer-events:none');
+  });
+
+  test('#sl-bottom-bar retains pointer-events:auto (location bar must be interactive)', function () {
+    const cssIdx = src.indexOf('#sl-bottom-bar {');
+    assert.ok(cssIdx !== -1, '#sl-bottom-bar CSS rule must exist');
+    const snippet = src.slice(cssIdx, cssIdx + 200);
+    assert.ok(snippet.includes('pointer-events: auto'), '#sl-bottom-bar must retain pointer-events:auto');
+  });
+
+  test('ssc.enableZoom is true and minimumZoomDistance allows street-level approach', function () {
+    assert.ok(src.includes('ssc.enableZoom   = true'), 'enableZoom must be true');
+    assert.ok(src.includes('ssc.minimumZoomDistance = 10'), 'minimumZoomDistance must be 10m');
+  });
+});
+
+// ── Location search: Google Places Autocomplete + Go flow ─────────────────────
+describe('location search: Google Places Autocomplete and Go flow', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  test('sl-search-form exists in the bottom bar HTML', function () {
+    const bbIdx = src.indexOf('id="sl-bottom-bar"');
+    assert.ok(bbIdx !== -1, 'sl-bottom-bar must exist in HTML');
+    const bbSnippet = src.slice(bbIdx, bbIdx + 600);
+    assert.ok(bbSnippet.includes('id="sl-search-form"'), 'sl-search-form must be inside sl-bottom-bar');
+  });
+
+  test('sl-location-input is a text input inside the search form', function () {
+    const formIdx = src.indexOf('id="sl-search-form"');
+    assert.ok(formIdx !== -1, 'sl-search-form must exist');
+    const formSnippet = src.slice(formIdx, formIdx + 400);
+    assert.ok(formSnippet.includes('id="sl-location-input"'), 'sl-location-input must exist in the search form');
+    assert.ok(formSnippet.includes('type="text"'), 'location input must be a text field');
+  });
+
+  test('sl-go-btn exists as a submit button inside the search form', function () {
+    const formIdx = src.indexOf('id="sl-search-form"');
+    assert.ok(formIdx !== -1, 'sl-search-form must exist');
+    const formSnippet = src.slice(formIdx, formIdx + 400);
+    assert.ok(formSnippet.includes('id="sl-go-btn"'), 'sl-go-btn must exist in the search form');
+    assert.ok(formSnippet.includes('type="submit"'), 'Go button must be type=submit for form submission');
+  });
+
+  test('sl-landmark-btn quick-picks are preserved in the bottom bar', function () {
+    const bbIdx = src.indexOf('id="sl-bottom-bar"');
+    assert.ok(bbIdx !== -1, 'sl-bottom-bar must exist');
+    const bbEnd = src.indexOf('</div>', bbIdx + 400) + 100;
+    const panel = src.slice(bbIdx, bbEnd + 500);
+    assert.ok(panel.includes('class="sl-landmark-btn"'), 'quick-pick landmark buttons must still be present');
+    assert.ok(panel.includes('New York'), 'New York quick-pick must still be present');
+  });
+
+  test('slFlyToCoords is defined for unified camera navigation', function () {
+    assert.ok(src.includes('function slFlyToCoords'), 'slFlyToCoords must be defined');
+  });
+
+  test('slFlyToCoords validates lat/lng with Number.isFinite', function () {
+    const fnIdx = src.indexOf('function slFlyToCoords');
+    assert.ok(fnIdx !== -1, 'slFlyToCoords must exist');
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('Number.isFinite'), 'slFlyToCoords must validate lat/lng with Number.isFinite');
+  });
+
+  test('slFlyToCoords uses flyTo for globe-mode navigation', function () {
+    const fnIdx = src.indexOf('function slFlyToCoords');
+    assert.ok(fnIdx !== -1, 'slFlyToCoords must exist');
+    const body = src.slice(fnIdx, fnIdx + 1400);
+    assert.ok(body.includes('flyTo'), 'slFlyToCoords must call flyTo for smooth globe-mode navigation');
+    assert.ok(body.includes('streetLevelActive'), 'slFlyToCoords must branch on streetLevelActive to pick the right camera mode');
+  });
+
+  test('slFlyToCoords uses initStreetLevelPanorama in street-level mode', function () {
+    const fnIdx = src.indexOf('function slFlyToCoords');
+    const body = src.slice(fnIdx, fnIdx + 1000);
+    assert.ok(body.includes('initStreetLevelPanorama'), 'slFlyToCoords must call initStreetLevelPanorama when in street-level mode');
+  });
+
+  test('loadGooglePlacesApi is defined and uses createElement for script injection', function () {
+    assert.ok(src.includes('function loadGooglePlacesApi'), 'loadGooglePlacesApi must be defined');
+    const fnIdx = src.indexOf('function loadGooglePlacesApi');
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('createElement'), 'loadGooglePlacesApi must create a script element to load the API');
+    assert.ok(body.includes('places'), 'loadGooglePlacesApi must request the places library');
+    assert.ok(body.includes('rwPlacesReady'), 'loadGooglePlacesApi must use rwPlacesReady as the API load callback');
+  });
+
+  test('loadGoogleMapsApi stub is preserved and does NOT use createElement', function () {
+    const fnIdx = src.indexOf('function loadGoogleMapsApi');
+    assert.ok(fnIdx !== -1, 'loadGoogleMapsApi stub must still exist for compat');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(!body.includes('createElement'), 'loadGoogleMapsApi stub must not create script elements');
+    assert.ok(body.includes('callback'), 'stub must still accept and invoke the callback');
+  });
+
+  test('initPlacesAutocomplete is defined and guards on google.maps.places', function () {
+    assert.ok(src.includes('function initPlacesAutocomplete'), 'initPlacesAutocomplete must be defined');
+    const fnIdx = src.indexOf('function initPlacesAutocomplete');
+    const body = src.slice(fnIdx, fnIdx + 500);
+    assert.ok(body.includes('google.maps.places'), 'initPlacesAutocomplete must guard on google.maps.places availability');
+    assert.ok(body.includes('Autocomplete'), 'initPlacesAutocomplete must create a google.maps.places.Autocomplete');
+    assert.ok(body.includes('place_changed'), 'initPlacesAutocomplete must listen for place_changed event');
+  });
+
+  test('search form submit handler geocodes typed query via Geocoder', function () {
+    const formBindIdx = src.indexOf("getElementById('sl-search-form')");
+    assert.ok(formBindIdx === -1 || src.indexOf('slSearchForm') !== -1, 'search form must be bound in JS');
+    const submitIdx = src.indexOf("'submit'");
+    assert.ok(submitIdx !== -1, 'submit event listener must be registered');
+    const snippet = src.slice(submitIdx, submitIdx + 600);
+    assert.ok(snippet.includes('Geocoder'), 'submit handler must use Geocoder to resolve typed addresses');
+    assert.ok(snippet.includes('slFlyToCoords'), 'submit handler must call slFlyToCoords after geocoding');
+  });
+
+  test('rwPlacesReady global callback is set for async API load', function () {
+    assert.ok(src.includes('window.rwPlacesReady'), 'rwPlacesReady must be exposed on window as the API load callback');
+  });
+
+  test('Places API initialization is guarded by googleMapsApiKey check', function () {
+    const initIdx = src.indexOf('loadGooglePlacesApi(BOOTSTRAP.googleMapsApiKey');
+    assert.ok(initIdx !== -1, 'Places API must be initialized with the bootstrap API key');
+    const context = src.slice(initIdx - 50, initIdx + 200);
+    assert.ok(context.includes('googleMapsApiKey'), 'initialization must be guarded by the API key');
+    assert.ok(context.includes('initPlacesAutocomplete'), 'must call initPlacesAutocomplete after API loads');
+  });
+
+  test('location search CSS includes #sl-search-form, #sl-location-input, #sl-go-btn rules', function () {
+    assert.ok(src.includes('#sl-search-form {'), '#sl-search-form CSS rule must exist');
+    assert.ok(src.includes('#sl-location-input {'), '#sl-location-input CSS rule must exist');
+    assert.ok(src.includes('#sl-go-btn {'), '#sl-go-btn CSS rule must exist');
+  });
+});

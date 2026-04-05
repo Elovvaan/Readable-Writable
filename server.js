@@ -322,7 +322,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .sv-alt-text { font-size: .6rem; font-family: 'Cascadia Code', 'Fira Code', monospace; color: #4e9888; background: #09090dcc; border: 1px solid #141820; border-radius: 4px; padding: 3px 8px; backdrop-filter: blur(4px); white-space: nowrap; }
     #sv-mode-hint { font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; color: #3ec9b8; background: #09090dcc; border: 1px solid #1f5e5a; border-radius: 4px; padding: 3px 8px; backdrop-filter: blur(4px); white-space: nowrap; }
     /* ── Street-level tab — absolute overlay inside globe-shell ──────────────── */
-    #street-level-view { position: absolute; inset: 0; z-index: 9; background: transparent; display: none; flex-direction: row; overflow: hidden; }
+    /* pointer-events: none lets wheel/pinch events fall through to the Cesium canvas.
+       Interactive children (left/right panels, bottom bar, states drawer) restore auto. */
+    #street-level-view { position: absolute; inset: 0; z-index: 9; background: transparent; display: none; flex-direction: row; overflow: hidden; pointer-events: none; }
     #street-level-view.active { display: flex; }
     #street-level-header { display: flex; align-items: center; padding: 8px 14px; background: #09090d; border-bottom: 1px solid #141820; gap: 10px; flex-shrink: 0; }
     #street-level-back-btn { border: 1px solid #1f5e5a; background: #0a2422; color: #3ec9b8; border-radius: 4px; font-size: .62rem; padding: 4px 6px; cursor: pointer; transition: background 160ms, color 160ms; width: 36px; text-align: center; }
@@ -332,7 +334,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #street-level-pano { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); display: none; flex-direction: column; align-items: center; gap: 6px; pointer-events: auto; }
     #street-level-pano.visible { display: flex; }
     /* ── Street-level redesigned left panel ──────────────────────────────── */
-    #sl-left-panel { width: 52px; flex-shrink: 0; background: #07080cdd; border-right: 1px solid #141820; display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; overflow-y: auto; }
+    #sl-left-panel { width: 52px; flex-shrink: 0; background: #07080cdd; border-right: 1px solid #141820; display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; overflow-y: auto; pointer-events: auto; }
     .sl-world-btn { width: 36px; min-height: 36px; border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 5px; font-size: .52rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; text-align: center; line-height: 1.2; padding: 2px; transition: background 160ms, border-color 160ms, color 160ms; user-select: none; }
     .sl-world-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; }
     .sl-world-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
@@ -346,6 +348,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .sl-landmark-btn { border: 1px solid #161e2a; background: #0a1018; color: #4e7888; border-radius: 999px; font-size: .58rem; padding: 2px 8px; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: background 160ms, border-color 160ms, color 160ms; }
     .sl-landmark-btn:hover { background: #0e1e2e; border-color: #1e3a50; color: #7abcc8; }
     .sl-landmark-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+    /* ── Location search form (inside bottom bar) ────────────────────────── */
+    #sl-search-form { display: flex; gap: 3px; flex-shrink: 0; align-items: center; }
+    #sl-location-input { border: 1px solid #1c2a36; background: #0a1018; color: #8ab8cc; border-radius: 4px; font-size: .62rem; padding: 3px 6px; width: 154px; outline: none; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    #sl-location-input::placeholder { color: #2a3e4a; }
+    #sl-location-input:focus { border-color: #1f5e5a; background: #0c1820; }
+    #sl-go-btn { border: 1px solid #1f5e5a; background: #0a2422; color: #3ec9b8; border-radius: 4px; font-size: .58rem; font-weight: 700; letter-spacing: .08em; padding: 3px 7px; cursor: pointer; white-space: nowrap; transition: background 160ms, color 160ms; }
+    #sl-go-btn:hover { background: #0d3530; color: #7fe0d4; }
+    .sl-search-sep { width: 1px; height: 14px; background: #1a2030; flex-shrink: 0; margin: 0 2px; }
+    /* Google Places autocomplete dropdown overrides to match dark theme */
+    .pac-container { background: #09090d !important; border: 1px solid #1f5e5a !important; border-radius: 4px !important; font-size: .62rem !important; z-index: 9999 !important; box-shadow: 0 4px 12px rgba(0,0,0,.7) !important; }
+    .pac-item { padding: 4px 8px !important; color: #4e7888 !important; cursor: pointer !important; border-top: 1px solid #141820 !important; background: transparent !important; }
+    .pac-item:hover, .pac-item-selected { background: #0c1820 !important; color: #8ab8cc !important; }
+    .pac-item-query { color: #3ec9b8 !important; }
+    .pac-matched { color: #7fe0d4 !important; font-weight: 700 !important; }
+    .pac-logo::after { display: none !important; }
     /* ── States pop-up drawer (bottom, inside #sl-viewport) ─────────────── */
     #sl-states-drawer { position: absolute; left: 0; right: 0; bottom: 0; background: #09090dee; border-top: 1px solid #1f5e5a; transform: translateY(100%); transition: transform 260ms cubic-bezier(.4,0,.2,1); z-index: 10; display: flex; flex-direction: column; max-height: 60%; pointer-events: auto; }
     #sl-states-drawer.open { transform: translateY(0); }
@@ -358,7 +375,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .sl-state-btn:hover { background: #0e1e2e; border-color: #1e3a50; color: #7abcc8; }
     .sl-state-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
     /* ── Street-level right tactical panel (dark CRT console) ───────────── */
-    #sl-right-panel { width: 118px; flex-shrink: 0; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow-y: auto; }
+    #sl-right-panel { width: 118px; flex-shrink: 0; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow-y: auto; pointer-events: auto; }
     .sl-mono { font-family: 'Cascadia Code', 'Fira Code', monospace; }
     /* Monitor module */
     #sl-monitor { border-bottom: 1px solid #1a2030; padding: 7px 8px; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
@@ -880,9 +897,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Bottom bar: locations/landmarks navigator -->
+    <!-- Bottom bar: location search + quick-pick landmarks navigator -->
     <div id="sl-bottom-bar" aria-label="Locations navigator">
-      <span class="sl-bottom-label">LOCATIONS</span>
+      <!-- Address search: type any address, city, or landmark and press Go -->
+      <form id="sl-search-form" role="search" aria-label="Fly to location" autocomplete="off">
+        <input id="sl-location-input" type="text" placeholder="Search address or landmark…" aria-label="Location search" spellcheck="false" />
+        <button id="sl-go-btn" type="submit" title="Fly to location">GO</button>
+      </form>
+      <span class="sl-search-sep" aria-hidden="true"></span>
+      <span class="sl-bottom-label">QUICK</span>
       <div id="sl-landmarks">
         <button class="sl-landmark-btn" data-lat="40.7128" data-lng="-74.006">New York</button>
         <button class="sl-landmark-btn" data-lat="34.0522" data-lng="-118.2437">Los Angeles</button>
@@ -1985,6 +2008,117 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       slNavigateTo(lat, lng, btn.textContent);
     });
   });
+
+  // ── Street-level: location search — unified camera navigation ─────────────
+  // slFlyToCoords: fly camera to lat/lng in both globe mode and city/street-level mode.
+  function slFlyToCoords(lat, lng, label) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    const targetLabelEl = document.getElementById('street-level-target-label');
+    const monitorStatus = document.getElementById('sl-monitor-status');
+    if (targetLabelEl) targetLabelEl.textContent = label || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+    if (monitorStatus && monitorStatus.textContent === 'STANDBY') monitorStatus.textContent = 'LIVE';
+    document.querySelectorAll('.sl-state-btn, .sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
+    if (streetLevelActive) {
+      // In street-level / city mode: descend to ground level for an immersive view
+      const noTargetEl = document.getElementById('street-level-no-target');
+      const panoEl = document.getElementById('street-level-pano');
+      if (noTargetEl) noTargetEl.style.display = 'none';
+      if (panoEl) panoEl.classList.add('visible');
+      initStreetLevelPanorama(lat, lng);
+    } else if (cesiumViewer) {
+      // In globe mode: fly to city-view altitude so the user can see the area
+      cesiumCameraMoveInternal = true;
+      cesiumFollowDisengageMutedUntil = Date.now() + 2000;
+      cesiumViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(lng, lat, 50000),
+        orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+        duration: 2.0,
+        complete: function () { cesiumCameraMoveInternal = false; },
+        cancel:   function () { cesiumCameraMoveInternal = false; },
+      });
+    }
+  }
+
+  // loadGooglePlacesApi: loads the Google Maps JS API with the Places library.
+  // This is a real loader (unlike the Cesium-compat loadGoogleMapsApi stub) and
+  // is used exclusively for address search/autocomplete functionality.
+  var _rwPlacesLoadCbs = [];
+  var _rwPlacesApiState = 'idle'; // 'idle' | 'loading' | 'ready' | 'failed'
+  window.rwPlacesReady = function () {
+    _rwPlacesApiState = 'ready';
+    var pending = _rwPlacesLoadCbs.splice(0);
+    pending.forEach(function (fn) { try { fn(); } catch (e) { console.warn('[RW Places]', e); } });
+  };
+  function loadGooglePlacesApi(apiKey, callback) {
+    if (!apiKey) { if (typeof callback === 'function') callback(new Error('no key')); return; }
+    if (_rwPlacesApiState === 'ready') { if (typeof callback === 'function') callback(); return; }
+    if (typeof callback === 'function') _rwPlacesLoadCbs.push(callback);
+    if (_rwPlacesApiState === 'loading') return;
+    _rwPlacesApiState = 'loading';
+    var script = document.createElement('script');
+    script.async = true;
+    script.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(apiKey) + '&libraries=places&callback=rwPlacesReady';
+    script.onerror = function () {
+      _rwPlacesApiState = 'failed';
+      var cbs = _rwPlacesLoadCbs.splice(0);
+      cbs.forEach(function (fn) { try { fn(new Error('Google Places API load failed')); } catch (e) {} });
+    };
+    document.head.appendChild(script);
+  }
+
+  // initPlacesAutocomplete: wire Google Places Autocomplete to the search input.
+  var _slPlacesAc = null;
+  function initPlacesAutocomplete() {
+    if (typeof google === 'undefined' || !google.maps || !google.maps.places) return;
+    var inputEl = document.getElementById('sl-location-input');
+    if (!inputEl || _slPlacesAc) return;
+    _slPlacesAc = new google.maps.places.Autocomplete(inputEl, {
+      types: ['geocode', 'establishment'],
+      fields: ['name', 'geometry.location'],
+    });
+    _slPlacesAc.addListener('place_changed', function () {
+      var place = _slPlacesAc.getPlace();
+      if (!place || !place.geometry || !place.geometry.location) return;
+      var lat = place.geometry.location.lat();
+      var lng = place.geometry.location.lng();
+      var label = place.name || inputEl.value || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+      slFlyToCoords(lat, lng, label);
+      inputEl.blur();
+    });
+  }
+
+  // Search form "Go" handler: geocode the typed address and fly the camera there.
+  // Works with or without a Places autocomplete suggestion being selected.
+  var slSearchForm = document.getElementById('sl-search-form');
+  var slLocationInput = document.getElementById('sl-location-input');
+  if (slSearchForm) {
+    slSearchForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var query = slLocationInput ? slLocationInput.value.trim() : '';
+      if (!query) return;
+      if (typeof google !== 'undefined' && google.maps && google.maps.Geocoder) {
+        var geocoder = new google.maps.Geocoder();
+        geocoder.geocode({ address: query }, function (results, status) {
+          if (status === 'OK' && results && results.length > 0) {
+            var loc = results[0].geometry.location;
+            var label = results[0].formatted_address || query;
+            slFlyToCoords(loc.lat(), loc.lng(), label);
+          } else {
+            console.warn('[RW] Geocoder: no results for "' + query + '" (status=' + status + ')');
+          }
+        });
+      } else {
+        console.warn('[RW] Google Places API not available; cannot geocode "' + query + '"');
+      }
+    });
+  }
+
+  // Load the Google Places API (with Geocoder) when an API key is configured.
+  if (BOOTSTRAP.googleMapsApiKey) {
+    loadGooglePlacesApi(BOOTSTRAP.googleMapsApiKey, function (err) {
+      if (!err) initPlacesAutocomplete();
+    });
+  }
 
   // ── Street-level: tactical button toggles ─────────────────────────────
   document.querySelectorAll('.sl-tac-btn').forEach(function (btn) {
