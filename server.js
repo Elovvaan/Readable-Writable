@@ -1949,12 +1949,28 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
   }
 
-  // ── Drone keyboard navigation (WASD + R/F keys) ────────────────────────────
-  // Movement speed scales with current altitude: low speeds near ground, faster at higher altitudes
-  const DRONE_MOVE_PER_FRAME = 1.5;
+  // ── Drone keyboard navigation (WASD + Q/E/R/F keys, Shift for boost) ─────────
+  // Works in all Cesium modes (orbital and street-level). Speed scales with
+  // altitude so city flight feels like a drone and high-altitude feels like a
+  // smooth orbit. Shift multiplies speed for fast traversal.
+  const DRONE_MOVE_PER_FRAME    = 1.5;
+  const DRONE_BOOST_MULTIPLIER  = 4;
+  const DRONE_ALT_LOW           = 100;    // m: street / low-drone altitude
+  const DRONE_ALT_MID           = 500;    // m: low aerial altitude
+  const DRONE_ALT_HIGH          = 5000;   // m: high aerial / approach altitude
+  const DRONE_SPEED_LOW         = 1;      // multiplier at < DRONE_ALT_LOW
+  const DRONE_SPEED_MID         = 4;      // multiplier at < DRONE_ALT_MID
+  const DRONE_SPEED_HIGH        = 20;     // multiplier at < DRONE_ALT_HIGH
+  const DRONE_SPEED_ORBITAL     = 150;    // multiplier above DRONE_ALT_HIGH
+  const DRONE_FLIGHT_KEYS = ['w', 'a', 's', 'd', 'q', 'e', 'r', 'f', 'shift'];
+
+  // Normalise a keyboard event key to the drone key token.
+  function toDroneKey(key) {
+    return key === 'Shift' ? 'shift' : key.toLowerCase();
+  }
 
   function droneMoveLoop() {
-    if (!cesiumViewer || !cesiumStreetLevelMode) {
+    if (!cesiumViewer) {
       droneMoveFrameId = null;
       return;
     }
@@ -1963,14 +1979,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       droneMoveFrameId = null;
       return;
     }
-    const alt = cesiumViewer.camera.positionCartographic.height;
-    const speed = DRONE_MOVE_PER_FRAME * (alt < 50 ? 1 : alt < 200 ? 3 : 8);
+    const alt  = cesiumViewer.camera.positionCartographic.height;
+    const mul  = alt < DRONE_ALT_LOW  ? DRONE_SPEED_LOW
+               : alt < DRONE_ALT_MID  ? DRONE_SPEED_MID
+               : alt < DRONE_ALT_HIGH ? DRONE_SPEED_HIGH
+               :                        DRONE_SPEED_ORBITAL;
+    const base  = DRONE_MOVE_PER_FRAME * mul;
+    const speed = base * (cesiumDroneKeys['shift'] ? DRONE_BOOST_MULTIPLIER : 1);
     if (cesiumDroneKeys['w']) cesiumViewer.camera.moveForward(speed);
     if (cesiumDroneKeys['s']) cesiumViewer.camera.moveBackward(speed);
     if (cesiumDroneKeys['a']) cesiumViewer.camera.moveLeft(speed);
     if (cesiumDroneKeys['d']) cesiumViewer.camera.moveRight(speed);
-    if (cesiumDroneKeys['r']) cesiumViewer.camera.moveUp(speed * 0.5);
-    if (cesiumDroneKeys['f']) cesiumViewer.camera.moveDown(speed * 0.5);
+    if (cesiumDroneKeys['e']) cesiumViewer.camera.moveUp(speed * 0.5);    // E = ascend
+    if (cesiumDroneKeys['q']) cesiumViewer.camera.moveDown(speed * 0.5);  // Q = descend
+    if (cesiumDroneKeys['r']) cesiumViewer.camera.moveUp(speed * 0.5);    // R = ascend (button fallback)
+    if (cesiumDroneKeys['f']) cesiumViewer.camera.moveDown(speed * 0.5);  // F = descend (button fallback)
     droneMoveFrameId = requestAnimationFrame(droneMoveLoop);
   }
 
@@ -2005,19 +2028,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   bindDroneButton('sl-desc-btn', 'f');
 
   document.addEventListener('keydown', function (e) {
-    if (!cesiumStreetLevelMode) return;
+    if (!USE_CESIUM || !cesiumViewer) return;
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
-    const k = e.key.toLowerCase();
-    if (['w', 'a', 's', 'd', 'r', 'f'].includes(k)) {
-      e.preventDefault();
-      cesiumDroneKeys[k] = true;
-      if (!droneMoveFrameId) droneMoveFrameId = requestAnimationFrame(droneMoveLoop);
-    }
+    const k = toDroneKey(e.key);
+    if (!DRONE_FLIGHT_KEYS.includes(k)) return;
+    if (k !== 'shift') e.preventDefault();
+    cesiumDroneKeys[k] = true;
+    if (!droneMoveFrameId) droneMoveFrameId = requestAnimationFrame(droneMoveLoop);
   });
 
   document.addEventListener('keyup', function (e) {
-    const k = e.key.toLowerCase();
-    if (['w', 'a', 's', 'd', 'r', 'f'].includes(k)) cesiumDroneKeys[k] = false;
+    const k = toDroneKey(e.key);
+    if (DRONE_FLIGHT_KEYS.includes(k)) cesiumDroneKeys[k] = false;
   });
 
   // ── Altitude readout: update sv-alt-readout and sl-alt-readout every second ──
