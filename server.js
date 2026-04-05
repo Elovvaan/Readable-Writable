@@ -3036,7 +3036,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     if (layerState.aircraft !== false && visibleEntityTypes.aircraft !== false) {
       for (const ac of (liveEntities.aircraft || [])) {
-        addLiveEntityPoint(ac, '#c8884a', 8, ac.altitude || 10000);
+        addLiveEntityPoint(ac, TYPE_STYLE.aircraft.fill, 8, ac.altitude || 10000);
       }
     }
     if (layerState.vessels && visibleEntityTypes.vessel) {
