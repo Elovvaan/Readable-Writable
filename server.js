@@ -1472,7 +1472,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     let terrainProvider;
     if (BOOTSTRAP.cesiumAccessToken) {
       try {
-        terrainProvider = await Cesium.createWorldTerrainAsync({ requestVertexNormals: true, requestWaterMask: false });
+        terrainProvider = await Cesium.createWorldTerrainAsync({ requestVertexNormals: false, requestWaterMask: false });
         console.info('[RW Cesium] World Terrain loaded');
       } catch (terrainErr) {
         console.warn('[RW Cesium] World Terrain unavailable, using ellipsoid', terrainErr);
@@ -1726,7 +1726,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const tabBtn = document.getElementById('street-level-tab');
     const railBtn = document.getElementById('rail-btn-street-level');
     if (!streetLevelView) return;
-    // Keep globe-shell visible so Cesium renders through the transparent overlay
+    // Set empty string to reset any inline style, reverting to CSS default (flex/block)
+    // so globe-shell remains visible and Cesium renders through the transparent overlay
     if (globeShell) globeShell.style.display = '';
     streetLevelView.classList.add('active');
     streetLevelActive = true;
@@ -1905,6 +1906,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         destination: Cesium.Cartesian3.fromDegrees(pos.lng, pos.lat, pos.height),
         orientation: {
           heading: pos.heading,
+          // Clamp to valid orbital range: ensure camera points at Earth on return (-90° nadir to -20° low-angle)
           pitch: Cesium.Math.clamp(pos.pitch, Cesium.Math.toRadians(-90), Cesium.Math.toRadians(-20)),
           roll: 0,
         },
@@ -1948,8 +1950,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   // ── Drone keyboard navigation (WASD + R/F keys) ────────────────────────────
-  // Movement speed scales with current altitude for smooth low/high navigation
-  var DRONE_MOVE_PER_FRAME = 1.5;
+  // Movement speed scales with current altitude: low speeds near ground, faster at higher altitudes
+  const DRONE_MOVE_PER_FRAME = 1.5;
 
   function droneMoveLoop() {
     if (!cesiumViewer || !cesiumStreetLevelMode) {
@@ -1974,7 +1976,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   // Wire drone button press/release to key state for button-based control
   function bindDroneButton(btnId, key) {
-    var btn = document.getElementById(btnId);
+    const btn = document.getElementById(btnId);
     if (!btn) return;
     function startMove(e) {
       e.preventDefault();
@@ -2023,9 +2025,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!cesiumViewer || !cesiumStreetLevelMode) return;
     const alt = cesiumViewer.camera.positionCartographic.height;
     const text = Math.round(alt) + 'm';
-    var svEl = document.getElementById('sv-alt-readout');
+    const svEl = document.getElementById('sv-alt-readout');
     if (svEl) svEl.textContent = text;
-    var slEl = document.getElementById('sl-alt-readout');
+    const slEl = document.getElementById('sl-alt-readout');
     if (slEl) slEl.textContent = text;
   }, 500);
 
@@ -3171,8 +3173,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       text = cesiumStreetLevelMode ? 'drone' : 'orbit free';
       if (cesiumViewer) {
         const h = cesiumViewer.camera.positionCartographic.height;
-        const altKm = h >= 1000 ? (h / 1000).toFixed(0) + ' km' : Math.round(h) + ' m';
-        text += ' · alt ' + altKm;
+        const altDisplay = h >= 1000 ? (h / 1000).toFixed(0) + ' km' : Math.round(h) + ' m';
+        text += ' · alt ' + altDisplay;
         const pitch = Cesium.Math.toDegrees(cesiumViewer.camera.pitch).toFixed(0);
         text += ' · pitch ' + pitch + '°';
         if (cesiumFocusModeActive) text += ' · focus lock';

@@ -334,7 +334,7 @@ describe('street-view panel', function () {
     const fnIdx = src.indexOf('function loadGoogleMapsApi');
     const body = src.slice(fnIdx, fnIdx + 300);
     assert.ok(body.includes('callback'), 'stub must accept and invoke the callback');
-    assert.ok(!body.includes('maps.googleapis.com'), 'stub must not load Google Maps API');
+    assert.ok(!body.includes('createElement'), 'stub must not create script elements for Google Maps loading');
   });
 
   test('street-view close button is bound to hideStreetView', function () {
