@@ -1235,3 +1235,167 @@ describe('street-level mode enhancements', function () {
     assert.ok(body.includes('maximumScreenSpaceError'), 'exitCesiumStreetLevel must restore maximumScreenSpaceError on exit');
   });
 });
+
+// ── Globe Boundary Navigation ──────────────────────────────────────────────────
+describe('globe boundary navigation', function () {
+  const fs = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  // ── Panel removal ──────────────────────────────────────────────────────────
+  test('#mode-states-panel has been removed from the HTML', function () {
+    assert.ok(!src.includes('id="mode-states-panel"'), '#mode-states-panel must not exist in HTML');
+  });
+
+  test('#mode-states-toggle-btn has been removed from the HTML', function () {
+    assert.ok(!src.includes('id="mode-states-toggle-btn"'), '#mode-states-toggle-btn must not exist in HTML');
+  });
+
+  test('.sl-state-btn class has been removed from the HTML', function () {
+    assert.ok(!src.includes('class="sl-state-btn"'), '.sl-state-btn buttons must not exist in HTML');
+  });
+
+  test('.sl-state-btn CSS rules have been removed', function () {
+    assert.ok(!src.includes('.sl-state-btn {'), '.sl-state-btn CSS rule must be removed');
+  });
+
+  test('#mode-states-panel CSS rules have been removed', function () {
+    assert.ok(!src.includes('#mode-states-panel {'), '#mode-states-panel CSS rule must be removed');
+  });
+
+  // ── Boundary label overlay ─────────────────────────────────────────────────
+  test('#globe-boundary-label element exists in HTML', function () {
+    assert.ok(src.includes('id="globe-boundary-label"'), '#globe-boundary-label must exist in HTML');
+  });
+
+  test('#globe-boundary-label is inside #globe-shell and before #mode-drawer', function () {
+    const shellIdx  = src.indexOf('id="globe-shell"');
+    const labelIdx  = src.indexOf('id="globe-boundary-label"');
+    const drawerIdx = src.indexOf('id="mode-drawer"');
+    assert.ok(labelIdx > shellIdx, '#globe-boundary-label must be inside #globe-shell');
+    assert.ok(labelIdx < drawerIdx, '#globe-boundary-label must appear before #mode-drawer');
+  });
+
+  test('#globe-boundary-label CSS rule exists with pointer-events:none', function () {
+    assert.ok(src.includes('#globe-boundary-label {'), '#globe-boundary-label CSS rule must exist');
+    const idx = src.indexOf('#globe-boundary-label {');
+    const snippet = src.slice(idx, idx + 200);
+    assert.ok(snippet.includes('pointer-events: none') || snippet.includes('pointer-events:none'),
+      '#globe-boundary-label must have pointer-events:none');
+  });
+
+  test('#globe-boundary-label.visible CSS rule exists', function () {
+    assert.ok(src.includes('#globe-boundary-label.visible'), '#globe-boundary-label.visible CSS rule must exist');
+  });
+
+  // ── initGlobeBoundaries function ───────────────────────────────────────────
+  test('initGlobeBoundaries function is defined', function () {
+    assert.ok(src.includes('async function initGlobeBoundaries'), 'initGlobeBoundaries must be defined as async function');
+  });
+
+  test('initGlobeBoundaries is called inside initCesium', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    assert.ok(fnIdx !== -1, 'initCesium must exist');
+    const body = src.slice(fnIdx, fnIdx + 8000);
+    assert.ok(body.includes('initGlobeBoundaries()'), 'initGlobeBoundaries() must be called inside initCesium');
+  });
+
+  test('initGlobeBoundaries loads country GeoJSON from a public URL', function () {
+    const fnIdx = src.indexOf('async function initGlobeBoundaries');
+    assert.ok(fnIdx !== -1, 'initGlobeBoundaries must exist');
+    const body = src.slice(fnIdx, fnIdx + 2000);
+    assert.ok(body.includes('ne_110m_admin_0_countries') || body.includes('countries'),
+      'initGlobeBoundaries must reference a Natural Earth countries dataset URL');
+  });
+
+  test('initGlobeBoundaries loads US states GeoJSON from a public URL', function () {
+    const fnIdx = src.indexOf('async function initGlobeBoundaries');
+    const body = src.slice(fnIdx, fnIdx + 2000);
+    assert.ok(body.includes('us-states') || body.includes('states'),
+      'initGlobeBoundaries must reference a US states GeoJSON URL');
+  });
+
+  test('initGlobeBoundaries registers a MOUSE_MOVE hover handler', function () {
+    const fnIdx = src.indexOf('async function initGlobeBoundaries');
+    const body = src.slice(fnIdx, fnIdx + 3500);
+    assert.ok(body.includes('MOUSE_MOVE'), 'initGlobeBoundaries must register a MOUSE_MOVE handler for hover');
+  });
+
+  test('initGlobeBoundaries registers a LEFT_CLICK handler for navigation', function () {
+    const fnIdx = src.indexOf('async function initGlobeBoundaries');
+    const body = src.slice(fnIdx, fnIdx + 3500);
+    assert.ok(body.includes('LEFT_CLICK'), 'initGlobeBoundaries must register a LEFT_CLICK handler for navigation');
+  });
+
+  // ── LOD constants ──────────────────────────────────────────────────────────
+  test('BOUNDARY_ALT_COUNTRY constant is defined (3 000 km)', function () {
+    assert.ok(src.includes('BOUNDARY_ALT_COUNTRY'), 'BOUNDARY_ALT_COUNTRY constant must exist');
+    const idx = src.indexOf('BOUNDARY_ALT_COUNTRY');
+    const snippet = src.slice(idx, idx + 60);
+    assert.ok(snippet.includes('3000000'), 'BOUNDARY_ALT_COUNTRY must be 3000000 (3 000 km)');
+  });
+
+  test('BOUNDARY_ALT_STATE constant is defined (300 km)', function () {
+    assert.ok(src.includes('BOUNDARY_ALT_STATE'), 'BOUNDARY_ALT_STATE constant must exist');
+    const idx = src.indexOf('BOUNDARY_ALT_STATE');
+    const snippet = src.slice(idx, idx + 60);
+    assert.ok(snippet.includes('300000'), 'BOUNDARY_ALT_STATE must be 300000 (300 km)');
+  });
+
+  // ── Helper functions ───────────────────────────────────────────────────────
+  test('boundaryFeatureName helper is defined', function () {
+    assert.ok(src.includes('function boundaryFeatureName'), 'boundaryFeatureName must be defined');
+  });
+
+  test('boundaryFeatureName reads NAME, name, ADMIN properties', function () {
+    const fnIdx = src.indexOf('function boundaryFeatureName');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 250);
+    assert.ok(body.includes('NAME') || body.includes('.name'), 'boundaryFeatureName must handle NAME/name properties');
+    assert.ok(body.includes('ADMIN'), 'boundaryFeatureName must handle ADMIN property');
+  });
+
+  test('setBoundaryHoverStyle helper is defined', function () {
+    assert.ok(src.includes('function setBoundaryHoverStyle'), 'setBoundaryHoverStyle must be defined');
+  });
+
+  test('flyToBoundaryEntity uses camera.flyTo with isState-dependent altitude', function () {
+    const fnIdx = src.indexOf('function flyToBoundaryEntity');
+    assert.ok(fnIdx !== -1, 'flyToBoundaryEntity must exist');
+    const body = src.slice(fnIdx, fnIdx + 1000);
+    assert.ok(body.includes('camera.flyTo'), 'flyToBoundaryEntity must call camera.flyTo');
+    assert.ok(body.includes('boundaryFlyAltitude') || body.includes('BOUNDARY_FLY_ALT_STATE') || body.includes('isState'),
+      'flyToBoundaryEntity must differentiate altitude between countries and states');
+  });
+
+  test('showBoundaryLabel controls visibility of #globe-boundary-label', function () {
+    const fnIdx = src.indexOf('function showBoundaryLabel');
+    assert.ok(fnIdx !== -1, 'showBoundaryLabel must be defined');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('globe-boundary-label'), 'showBoundaryLabel must target #globe-boundary-label');
+    assert.ok(body.includes('visible'), 'showBoundaryLabel must use .visible class for show/hide');
+  });
+
+  test('updateBoundaryLod hides states layer above BOUNDARY_ALT_COUNTRY threshold', function () {
+    const fnIdx = src.indexOf('function updateBoundaryLod');
+    assert.ok(fnIdx !== -1, 'updateBoundaryLod must be defined');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('BOUNDARY_ALT_COUNTRY'), 'updateBoundaryLod must use BOUNDARY_ALT_COUNTRY threshold');
+    assert.ok(body.includes('globeBoundaryStateDs'), 'updateBoundaryLod must control globeBoundaryStateDs visibility');
+  });
+
+  test('camera.moveEnd listener is registered for LOD updates', function () {
+    const fnIdx = src.indexOf('async function initGlobeBoundaries');
+    const body = src.slice(fnIdx, fnIdx + 3500);
+    assert.ok(body.includes('moveEnd') && body.includes('updateBoundaryLod'),
+      'initGlobeBoundaries must register camera.moveEnd listener for LOD updates');
+  });
+
+  // ── Search input preserved ────────────────────────────────────────────────
+  test('search input #sl-location-input still present in mode-drawer', function () {
+    assert.ok(src.includes('id="sl-location-input"'), 'location search input must still exist');
+  });
+
+  test('sl-search-form still present in mode-drawer', function () {
+    assert.ok(src.includes('id="sl-search-form"'), 'search form must still exist');
+  });
+});
