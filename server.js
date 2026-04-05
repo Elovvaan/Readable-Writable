@@ -3589,9 +3589,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   initCesium();
 
   // ── Flight API polling ──
-  // Polls /api/flights every 12 seconds, normalizes OpenSky states, and merges
-  // into state.agents so real flights are visible even if WebSocket lags.
-  const FLIGHT_POLL_INTERVAL_MS = 12000;
+  // Uses recursive setTimeout with exponential backoff instead of setInterval.
+  // Base interval: 20 s. On error, delay doubles up to 120 s, then resets on
+  // the next success. This prevents OpenSky rate-limit cascades.
+  const FLIGHT_POLL_BASE_MS  = 20000;
+  const FLIGHT_POLL_MAX_MS   = 120000;
+  let   flightPollDelay      = FLIGHT_POLL_BASE_MS;
 
   function latLngToGridFE(lat, lng) {
     return {
@@ -3607,20 +3610,30 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     Object.assign(state.agents, entities);
   }
 
-  async function fetchFlights() {
-    if (!layerState.liveFlights) return;   // respect layer toggle
+  async function fetchFlightsSafe() {
+    if (!layerState.liveFlights) {
+      // Layer off — check again at base interval without penalising delay
+      setTimeout(fetchFlightsSafe, FLIGHT_POLL_BASE_MS);
+      return;
+    }
     try {
       const res = await fetch('/api/flights');
+      console.log('[flights] response.status:', res.status);
       if (!res.ok) throw new Error('HTTP ' + res.status);
+
       const data = await res.json();
-      if (data.error) { console.warn('[flights] /api/flights error:', data.error); return; }
+      if (data.error) throw new Error(data.error);
 
       const states = Array.isArray(data.states) ? data.states : [];
+      if (!states.length) {
+        console.warn('[flights] empty states — skipping world update');
+        setTimeout(fetchFlightsSafe, flightPollDelay);
+        return;
+      }
       console.log('[flights] states.length:', states.length);
 
       const now = Date.now();
       const normalized = {};
-
       for (const row of states) {
         if (!Array.isArray(row)) continue;
         const icao24 = String(row[0] || '').trim().toLowerCase();
@@ -3628,32 +3641,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         const lon = parseFloat(row[5]);
         const lat = parseFloat(row[6]);
         if (!icao24 || !isFinite(lat) || !isFinite(lon)) continue;
-
         const altitude = parseFloat(
           row[7] !== null && row[7] !== undefined ? row[7] : (row[13] !== null ? row[13] : 0)
         ) || 0;
-        const velocity  = parseFloat(row[9])  || 0;
-        const heading   = parseFloat(row[10]) || 0;
-        const onGround  = Boolean(row[8]);
+        const velocity = parseFloat(row[9])  || 0;
+        const heading  = parseFloat(row[10]) || 0;
+        const onGround = Boolean(row[8]);
         const id = 'flight-' + icao24;
         const grid = latLngToGridFE(lat, lon);
-
         normalized[id] = {
-          id,
-          type: 'flight',
-          label: callsign || icao24,
-          callsign,
-          icao24,
-          lat,
-          lng: lon,
-          x: grid.x,
-          y: grid.y,
-          altitude,
-          velocity,
-          heading,
-          onGround,
-          source: 'api',
-          lastUpdateMs: now,
+          id, type: 'flight', label: callsign || icao24,
+          callsign, icao24, lat, lng: lon, x: grid.x, y: grid.y,
+          altitude, velocity, heading, onGround,
+          source: 'api', lastUpdateMs: now,
         };
       }
 
@@ -3662,9 +3662,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       layerLastUpdated.liveFlights = now;
       mergeEntities(normalized);
 
+      // Success — reset to base delay
+      flightPollDelay = FLIGHT_POLL_BASE_MS;
     } catch (err) {
-      console.warn('[flights] fetchFlights failed:', err.message);
+      console.warn('[flights] fetchFlightsSafe error:', err.message,
+        '— backing off to', Math.min(flightPollDelay * 2, FLIGHT_POLL_MAX_MS) / 1000 + 's');
+      flightPollDelay = Math.min(flightPollDelay * 2, FLIGHT_POLL_MAX_MS);
     }
+
+    setTimeout(fetchFlightsSafe, flightPollDelay);
   }
 
   // Merge API flights into every incoming snapshot so they survive WS refreshes
@@ -3678,8 +3684,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
   }
 
-  fetchFlights();
-  setInterval(fetchFlights, FLIGHT_POLL_INTERVAL_MS);
+  fetchFlightsSafe();
 
   // ── WebSocket ──
   function connect() {
@@ -4132,13 +4137,27 @@ function startOpenSkyPolling() {
     return;
   }
   openSkyLiveState.pollingRunning = true;
-  console.log('[RW Worldview] OpenSky polling enabled; interval=' + OPENSKY_POLL_INTERVAL_MS + 'ms');
+  console.log('[RW Worldview] OpenSky polling enabled; base=' + OPENSKY_POLL_INTERVAL_MS + 'ms max=120000ms');
   console.log('[RW Worldview] OpenSky polling URL=' + OPENSKY_STATES_URL + ' publicFallback=' + OPENSKY_PUBLIC_STATES_URL);
   console.log('RW_OPENSKY_ENABLED', process.env.RW_OPENSKY_ENABLED);
-  pollOpenSkyFlights().catch(() => {});
-  setInterval(() => {
-    pollOpenSkyFlights().catch(() => {});
-  }, OPENSKY_POLL_INTERVAL_MS);
+
+  const OPENSKY_MAX_DELAY_MS = 120000;
+  let openSkyDelay = OPENSKY_POLL_INTERVAL_MS;
+
+  function schedulePoll() {
+    pollOpenSkyFlights()
+      .then(() => {
+        openSkyDelay = OPENSKY_POLL_INTERVAL_MS; // success — reset to base
+        setTimeout(schedulePoll, openSkyDelay);
+      })
+      .catch(() => {
+        openSkyDelay = Math.min(openSkyDelay * 2, OPENSKY_MAX_DELAY_MS);
+        console.warn('[RW Worldview] OpenSky poll failed — backing off to ' + openSkyDelay / 1000 + 's');
+        setTimeout(schedulePoll, openSkyDelay);
+      });
+  }
+
+  schedulePoll();
 }
 
 // ─── OpenSky file source ──────────────────────────────────────────────────────
