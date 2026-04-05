@@ -387,7 +387,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #sl-monitor-window { width: 100%; aspect-ratio: 16/9; background: #030408; border: 1px solid #141e2a; border-radius: 2px; overflow: hidden; position: relative; }
     #sl-monitor-window::after { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(to bottom, rgba(180,255,240,.04) 0, rgba(180,255,240,.04) 1px, transparent 1px, transparent 3px); pointer-events: none; }
     /* Tactical controls */
-    #sl-tac-panel { display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; flex: 1; }
+    #sl-tac-panel { display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; }
     .sl-tac-btn { border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 3px; font-size: .54rem; font-weight: 700; letter-spacing: .09em; padding: 6px 4px; cursor: pointer; text-align: center; transition: background 160ms, border-color 160ms, color 160ms; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .sl-tac-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; }
     .sl-tac-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
@@ -499,6 +499,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <button class="rail-btn" type="button" data-panel="target" title="Selected Target" aria-label="Toggle Target panel">⊕</button>
     <button class="rail-btn" type="button" data-panel="stats"  title="Stats" aria-label="Toggle Stats panel">▦</button>
     <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel">◈</button>
+    <button class="rail-btn" type="button" data-panel="tactical" title="Tactical Controls" aria-label="Toggle Tactical panel">⊙</button>
     <button class="rail-btn" id="rail-btn-street-level" type="button" title="Street Level" aria-label="Street Level" aria-pressed="false">⊞</button>
     <button class="rail-btn" id="rail-btn-ground-level" type="button" title="Ground Level" aria-label="Ground Level" aria-pressed="false">▣</button>
   </nav>
@@ -641,6 +642,23 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <div class="lp-divider"></div>
       <div class="lp-title">Region Layer</div>
       <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
+    </div>
+  </div>
+
+  <!-- Tactical drawer (left) -->
+  <div id="drawer-tactical" class="drawer drawer-left" role="region" aria-label="Tactical Controls">
+    <div class="drawer-header"><span class="drawer-title">Tactical</span><button class="drawer-close" type="button" aria-label="Close">✕</button></div>
+    <div class="drawer-body">
+      <div class="lp-divider"></div>
+      <div class="lp-title">TACTICAL</div>
+      <div id="sl-tac-panel">
+        <button class="sl-tac-btn" data-tac="move">MOVE</button>
+        <button class="sl-tac-btn" data-tac="bloom">BLOOM</button>
+        <button class="sl-tac-btn" data-tac="sharpen">SHARPEN</button>
+        <button class="sl-tac-btn" data-tac="hud">HUD</button>
+        <button class="sl-tac-btn" data-tac="panoptic">PANOPTIC</button>
+        <button class="sl-tac-btn" data-tac="cleanui">CLEAN UI</button>
+      </div>
     </div>
   </div>
 
@@ -971,15 +989,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         <button class="sl-state-btn" data-lat="38.5976" data-lng="-80.4549">West Virginia</button>
         <button class="sl-state-btn" data-lat="43.7844" data-lng="-88.7879">Wisconsin</button>
         <button class="sl-state-btn" data-lat="43.0760" data-lng="-107.2903">Wyoming</button>
-      </div>
-      <div class="mode-section-lbl" style="margin-top:auto;">TACTICAL</div>
-      <div id="sl-tac-panel" style="display:flex;flex-direction:column;gap:2px;padding:5px 6px;">
-        <button class="sl-tac-btn" data-tac="move">MOVE</button>
-        <button class="sl-tac-btn" data-tac="bloom">BLOOM</button>
-        <button class="sl-tac-btn" data-tac="sharpen">SHARPEN</button>
-        <button class="sl-tac-btn" data-tac="hud">HUD</button>
-        <button class="sl-tac-btn" data-tac="panoptic">PANOPTIC</button>
-        <button class="sl-tac-btn" data-tac="cleanui">CLEAN UI</button>
       </div>
     </div>
 
