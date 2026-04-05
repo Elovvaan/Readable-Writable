@@ -309,58 +309,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .lp-title, .selected-label, .stat-label, .drawer-title { color: color-mix(in srgb, var(--style-shell, #4ab8ac) 38%, #2a3840); }
     /* ── Global transitions ──────────────────────────────────────────────── */
     #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
-  /* === RW NEW LAYOUT === */
-
-#sidebar {
-  position: absolute;
-  left: 0;
-  top: 60px;
-  width: 200px;
-  bottom: 0;
-  background: rgba(0,0,0,0.85);
-  padding: 12px;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-#sidebar button {
-  background: #111;
-  color: #0ff;
-  border: 1px solid #0ff;
-  padding: 8px;
-  cursor: pointer;
-  text-align: left;
-}
-
-#sidebar button:hover {
-  background: #0ff;
-  color: #000;
-}
-
-#worldview {
-  position: absolute;
-  left: 200px;
-  top: 60px;
-  right: 0;
-  bottom: 0;
-}
-
-.panel {
-  position: absolute;
-  left: 200px;
-  right: 0;
-  bottom: 0;
-  height: 240px;
-  background: rgba(0,0,0,0.92);
-  color: white;
-  display: none;
-  z-index: 30;
-  overflow: auto;
-  padding: 12px;
-  border-top: 1px solid #0ff;
-}
     /* ── Street-view overlay (transparent HUD over Cesium) ──────────────────── */
     #street-view { position: absolute; inset: 0; z-index: 50; background: transparent; display: none; opacity: 0; transition: opacity 300ms ease; pointer-events: none; }
     #street-view.visible { display: block; opacity: 1; pointer-events: auto; }
@@ -460,7 +408,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .profile-history-entry .phe-ts { color: #2a3840; margin-right: 5px; }
     .profile-history-entry .phe-kind { color: #3ec9b8; margin-right: 5px; }
     /* ── Adjust globe shell bottom to make room for timeline ─────────────── */
-    #globe-shell { bottom: 44px; }
+    #globe-shell { padding-bottom: 44px; }
   </style>
 </head>
 <body>
@@ -1551,7 +1499,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     telemetryModeEl.textContent = styleMode.toUpperCase();
     telemetryRecEl.classList.toggle('live', !paused);
     const anchor = (selectedAgentId && state.agents[selectedAgentId]) || Object.values(state.agents || {})[0] || null;
-    const point = anchor ? getAgentBasePoint(anchor) : null;
+    const point = anchor ? toLatLngWithFallback(anchor) : null;
     telemetryCoordsEl.textContent = point && Number.isFinite(point.lat) && Number.isFinite(point.lng)
       ? (point.lat.toFixed(3) + ', ' + point.lng.toFixed(3))
       : '--.--, --.--';
@@ -4631,6 +4579,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   updateLayerStatusBadges();
+
+  followTargetToggleEl.addEventListener('change', function () {
     const shouldFollow = !!followTargetToggleEl.checked;
     if (!shouldFollow) {
       disableFollowTarget('toggle off');
