@@ -426,6 +426,43 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .profile-history-entry .phe-kind { color: #3ec9b8; margin-right: 5px; }
     /* ── Adjust globe shell bottom to make room for timeline ─────────────── */
     #globe-shell { padding-bottom: 44px; }
+    /* ── Mode Drawer: right-side slide-in console (Street Level / Ground Level) ── */
+    #mode-drawer { position: absolute; right: 0; top: 0; bottom: 44px; width: 268px; z-index: 18; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; transform: translateX(268px); opacity: 0; pointer-events: none; transition: transform 260ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
+    #mode-drawer.open { transform: translateX(0); opacity: 1; pointer-events: auto; }
+    #mode-drawer-hdr { display: flex; align-items: center; padding: 6px 10px; border-bottom: 1px solid #1f5e5a; flex-shrink: 0; gap: 6px; background: #07080c; }
+    #mode-drawer-indicator { color: #c05050; font-size: .66rem; animation: rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0; }
+    #mode-drawer-title { font-size: .58rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; }
+    #mode-drawer-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; line-height: 1; transition: color 160ms; flex-shrink: 0; }
+    #mode-drawer-close:hover { color: #3ec9b8; }
+    .mode-drawer-section { display: flex; flex-direction: column; flex: 1; overflow-y: auto; min-height: 0; }
+    .mode-drawer-section.hidden { display: none; }
+    .mode-section-lbl { font-size: .5rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #2a3e4a; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 5px 10px 3px; border-bottom: 1px solid #111820; background: #07080c; flex-shrink: 0; }
+    #mode-nav-group { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 10px 8px; background: #060709; border-bottom: 1px solid #111820; flex-shrink: 0; }
+    #mode-search-wrap { padding: 7px 10px; border-bottom: 1px solid #111820; flex-shrink: 0; }
+    #mode-search-wrap #sl-search-form { display: flex; gap: 3px; align-items: center; width: 100%; }
+    #mode-search-wrap #sl-location-input { flex: 1; width: auto; }
+    #mode-landmarks-wrap { padding: 6px 8px; border-bottom: 1px solid #111820; flex-shrink: 0; }
+    #mode-landmarks-wrap #sl-landmarks { flex-wrap: wrap; gap: 4px; }
+    #mode-states-toggle-btn { border: none; background: none; color: #2e4050; font-size: .56rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 5px 10px; width: 100%; text-align: left; cursor: pointer; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #111820; transition: color 160ms, background 160ms; flex-shrink: 0; }
+    #mode-states-toggle-btn:hover { color: #5a8098; background: #0c1018; }
+    #mode-states-toggle-btn.open { color: #3ec9b8; }
+    #mode-states-panel { display: none; padding: 5px 8px; border-bottom: 1px solid #111820; flex-shrink: 0; overflow-y: auto; max-height: 180px; }
+    #mode-states-panel.open { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; }
+    #mode-no-target { padding: 12px 10px; color: #2e4050; font-size: .72rem; font-style: italic; text-align: center; display: none; flex-shrink: 0; }
+    #mode-target-label { font-size: .54rem; color: #4e9888; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 3px 10px; border-bottom: 1px solid #111820; flex-shrink: 0; display: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #mode-target-label.visible { display: block; }
+    #mode-monitor-bar { display: flex; align-items: center; gap: 5px; padding: 4px 10px; border-bottom: 1px solid #111820; flex-shrink: 0; background: #06070a; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .52rem; }
+    #mode-monitor-bar #sl-rec-dot { font-size: .6rem; }
+    #mode-monitor-bar #sl-timestamp { color: #4e9888; margin-left: auto; }
+    #mode-monitor-bar #sl-monitor-status { letter-spacing: .08em; text-transform: uppercase; color: #b89040; }
+    .gl-section { padding: 7px 10px; border-bottom: 1px solid #111820; display: flex; flex-direction: column; gap: 5px; flex-shrink: 0; }
+    .gl-section-title { font-size: .5rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .gl-toggle-row { display: flex; align-items: center; gap: 7px; font-size: .62rem; color: #4e7888; cursor: pointer; user-select: none; }
+    .gl-toggle-row input { width: 11px; height: 11px; accent-color: #2ab8a4; cursor: pointer; flex-shrink: 0; }
+    .gl-select { border: 1px solid #1c2a36; background: #0a1018; color: #7ab8c8; border-radius: 4px; font-size: .62rem; padding: 3px 6px; width: 100%; font-family: 'Cascadia Code', 'Fira Code', monospace; outline: none; }
+    .gl-select:focus { border-color: #1f5e5a; background: #0c1820; }
+    /* Reposition the right drawer so it doesn't overlap mode drawer */
+    #mode-drawer.open ~ #drawer-right, .mode-drawer-open #drawer-right { right: 268px; }
   </style>
 </head>
 <body>
@@ -451,6 +488,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <button class="rail-btn" type="button" data-panel="stats"  title="Stats" aria-label="Toggle Stats panel">▦</button>
     <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel">◈</button>
     <button class="rail-btn" id="rail-btn-street-level" type="button" title="Street Level" aria-label="Street Level" aria-pressed="false">⊞</button>
+    <button class="rail-btn" id="rail-btn-ground-level" type="button" title="Ground Level" aria-label="Ground Level" aria-pressed="false">▣</button>
   </nav>
 
   <!-- Layers drawer (left) -->
@@ -801,49 +839,70 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Street-level tab view — absolute overlay inside globe-shell for seamless Cesium transitions -->
-  <div id="street-level-view" role="region" aria-label="Street Level View">
-
-  <!-- Left panel: world controls -->
-  <div id="sl-left-panel">
-    <button id="street-level-back-btn" type="button" title="Return to globe view">←</button>
-    <div class="rail-sep"></div>
-    <button class="sl-world-btn active" id="street-level-tab" type="button" aria-pressed="false" title="Street Level mode active">⊞<br>Street Level</button>
-    <button class="sl-world-btn" data-sl-world="citymesh" type="button" title="City Mesh">⬡<br>City Mesh</button>
-    <button class="sl-world-btn" data-sl-world="layers" type="button" title="Data Layers">☰<br>Layers</button>
-    <button class="sl-world-btn" data-sl-world="scenes" type="button" title="Scenes">◈<br>Scenes</button>
-    <div class="rail-sep"></div>
-    <button class="sl-world-btn" id="sl-states-toggle" type="button" title="Open States drawer">▤<br>States</button>
-    <div class="rail-sep"></div>
-    <span id="street-level-target-label"></span>
+  <!-- Street-level tab view — minimal transparent overlay (panels are in #mode-drawer) -->
+  <div id="street-level-view" role="region" aria-label="Street Level View" style="position:absolute;inset:0;z-index:9;display:none;pointer-events:none;">
   </div>
 
-  <!-- Center: panorama viewport -->
-  <div id="sl-viewport">
-    <div id="street-level-no-target">Select a target first.</div>
-    <div id="street-level-pano">
-      <span class="sv-alt-text" id="sl-alt-readout">—m</span>
-      <div class="sv-nav-row">
-        <button id="sl-fwd-btn" class="sv-nav-btn" type="button" title="Forward (W)">↑ FWD</button>
-      </div>
-      <div class="sv-nav-row">
-        <button id="sl-left-btn" class="sv-nav-btn" type="button" title="Left (A)">← LEFT</button>
-        <button id="sl-back-btn" class="sv-nav-btn" type="button" title="Back (S)">↓ BACK</button>
-        <button id="sl-right-btn" class="sv-nav-btn" type="button" title="Right (D)">RIGHT →</button>
-      </div>
-      <div class="sv-nav-row">
-        <button id="sl-asc-btn" class="sv-nav-btn" type="button" title="Ascend (R)">▲ ASC</button>
-        <button id="sl-desc-btn" class="sv-nav-btn" type="button" title="Descend (F)">▼ DES</button>
-      </div>
+  <!-- Mode Drawer: right-side slide-in console for Street Level and Ground Level modes -->
+  <div id="mode-drawer" role="dialog" aria-label="Mode Controls" aria-hidden="true">
+    <div id="mode-drawer-hdr">
+      <span id="mode-drawer-indicator" aria-hidden="true">●</span>
+      <span id="mode-drawer-title">TARGETING</span>
+      <button id="mode-drawer-close" type="button" aria-label="Close mode panel">✕</button>
     </div>
 
-    <!-- States pop-up drawer (slides up from bottom inside viewport) -->
-    <div id="sl-states-drawer" role="dialog" aria-label="States navigator" aria-hidden="true">
-      <div id="sl-states-hdr">
-        <span class="sl-states-title">STATES</span>
-        <button id="sl-states-close" type="button" title="Close States drawer">✕</button>
+    <!-- Street Level section -->
+    <div id="mode-drawer-street" class="mode-drawer-section hidden">
+      <div class="mode-section-lbl">NAVIGATION</div>
+      <div id="mode-nav-group">
+        <div class="sv-nav-row">
+          <button id="sl-fwd-btn" class="sv-nav-btn" type="button" title="Forward (W)">↑ FWD</button>
+        </div>
+        <div class="sv-nav-row">
+          <button id="sl-left-btn" class="sv-nav-btn" type="button" title="Left (A)">← LEFT</button>
+          <button id="sl-back-btn" class="sv-nav-btn" type="button" title="Back (S)">↓ BACK</button>
+          <button id="sl-right-btn" class="sv-nav-btn" type="button" title="Right (D)">RIGHT →</button>
+        </div>
+        <div class="sv-nav-row">
+          <button id="sl-asc-btn" class="sv-nav-btn" type="button" title="Ascend (R)">▲ ASC</button>
+          <span id="sl-alt-readout" class="sv-alt-text">—m</span>
+          <button id="sl-desc-btn" class="sv-nav-btn" type="button" title="Descend (F)">▼ DES</button>
+        </div>
       </div>
-      <div id="sl-states-grid">
+      <div id="mode-monitor-bar">
+        <span id="sl-rec-dot" aria-label="REC indicator">●</span>
+        <span class="sl-mono" style="font-size:.55rem;letter-spacing:.1em;color:#3ec9b8;">REC</span>
+        <span id="sl-monitor-status" class="sl-mono">STANDBY</span>
+        <span id="sl-timestamp" class="sl-mono">00:00:00Z</span>
+      </div>
+      <div id="mode-target-label" aria-live="polite"></div>
+      <div id="mode-no-target">Select a target to navigate.</div>
+      <div class="mode-section-lbl">LOCATE</div>
+      <div id="mode-search-wrap">
+        <form id="sl-search-form" role="search" aria-label="Fly to location" autocomplete="off">
+          <input id="sl-location-input" type="text" placeholder="Search address or landmark…" aria-label="Location search" spellcheck="false" />
+          <button id="sl-go-btn" type="submit" title="Fly to location">GO</button>
+        </form>
+      </div>
+      <div class="mode-section-lbl">NEARBY PLACES</div>
+      <div id="mode-landmarks-wrap">
+        <div id="sl-landmarks">
+          <button class="sl-landmark-btn" data-lat="40.7128" data-lng="-74.006">New York</button>
+          <button class="sl-landmark-btn" data-lat="34.0522" data-lng="-118.2437">Los Angeles</button>
+          <button class="sl-landmark-btn" data-lat="41.8781" data-lng="-87.6298">Chicago</button>
+          <button class="sl-landmark-btn" data-lat="29.7604" data-lng="-95.3698">Houston</button>
+          <button class="sl-landmark-btn" data-lat="33.4484" data-lng="-112.074">Phoenix</button>
+          <button class="sl-landmark-btn" data-lat="39.9526" data-lng="-75.1652">Philadelphia</button>
+          <button class="sl-landmark-btn" data-lat="29.4241" data-lng="-98.4936">San Antonio</button>
+          <button class="sl-landmark-btn" data-lat="32.7767" data-lng="-96.797">Dallas</button>
+          <button class="sl-landmark-btn" data-lat="37.7749" data-lng="-122.4194">San Francisco</button>
+          <button class="sl-landmark-btn" data-lat="47.6062" data-lng="-122.3321">Seattle</button>
+          <button class="sl-landmark-btn" data-lat="42.3601" data-lng="-71.0589">Boston</button>
+          <button class="sl-landmark-btn" data-lat="25.7617" data-lng="-80.1918">Miami</button>
+        </div>
+      </div>
+      <button id="mode-states-toggle-btn" type="button" aria-expanded="false">▼ STATES <span id="mode-states-arrow">▼</span></button>
+      <div id="mode-states-panel" role="list">
         <button class="sl-state-btn" data-lat="32.3617" data-lng="-86.2792">Alabama</button>
         <button class="sl-state-btn" data-lat="64.2008" data-lng="-153.4937">Alaska</button>
         <button class="sl-state-btn" data-lat="34.0489" data-lng="-111.0937">Arizona</button>
@@ -895,62 +954,113 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         <button class="sl-state-btn" data-lat="43.7844" data-lng="-88.7879">Wisconsin</button>
         <button class="sl-state-btn" data-lat="43.0760" data-lng="-107.2903">Wyoming</button>
       </div>
-    </div>
-
-    <!-- Bottom bar: location search + quick-pick landmarks navigator -->
-    <div id="sl-bottom-bar" aria-label="Locations navigator">
-      <!-- Address search: type any address, city, or landmark and press Go -->
-      <form id="sl-search-form" role="search" aria-label="Fly to location" autocomplete="off">
-        <input id="sl-location-input" type="text" placeholder="Search address or landmark…" aria-label="Location search" spellcheck="false" />
-        <button id="sl-go-btn" type="submit" title="Fly to location">GO</button>
-      </form>
-      <span class="sl-search-sep" aria-hidden="true"></span>
-      <span class="sl-bottom-label">QUICK</span>
-      <div id="sl-landmarks">
-        <button class="sl-landmark-btn" data-lat="40.7128" data-lng="-74.006">New York</button>
-        <button class="sl-landmark-btn" data-lat="34.0522" data-lng="-118.2437">Los Angeles</button>
-        <button class="sl-landmark-btn" data-lat="41.8781" data-lng="-87.6298">Chicago</button>
-        <button class="sl-landmark-btn" data-lat="29.7604" data-lng="-95.3698">Houston</button>
-        <button class="sl-landmark-btn" data-lat="33.4484" data-lng="-112.074">Phoenix</button>
-        <button class="sl-landmark-btn" data-lat="39.9526" data-lng="-75.1652">Philadelphia</button>
-        <button class="sl-landmark-btn" data-lat="29.4241" data-lng="-98.4936">San Antonio</button>
-        <button class="sl-landmark-btn" data-lat="32.7767" data-lng="-96.797">Dallas</button>
-        <button class="sl-landmark-btn" data-lat="37.7749" data-lng="-122.4194">San Francisco</button>
-        <button class="sl-landmark-btn" data-lat="47.6062" data-lng="-122.3321">Seattle</button>
-        <button class="sl-landmark-btn" data-lat="42.3601" data-lng="-71.0589">Boston</button>
-        <button class="sl-landmark-btn" data-lat="25.7617" data-lng="-80.1918">Miami</button>
+      <div class="mode-section-lbl" style="margin-top:auto;">TACTICAL</div>
+      <div id="sl-tac-panel" style="display:flex;flex-direction:column;gap:2px;padding:5px 6px;">
+        <button class="sl-tac-btn" data-tac="move">MOVE</button>
+        <button class="sl-tac-btn" data-tac="bloom">BLOOM</button>
+        <button class="sl-tac-btn" data-tac="sharpen">SHARPEN</button>
+        <button class="sl-tac-btn" data-tac="hud">HUD</button>
+        <button class="sl-tac-btn" data-tac="panoptic">PANOPTIC</button>
+        <button class="sl-tac-btn" data-tac="cleanui">CLEAN UI</button>
       </div>
     </div>
-  </div>
 
-  <!-- Right panel: tactical controls + monitor -->
-  <div id="sl-right-panel">
-    <!-- Record / Monitor module -->
-    <div id="sl-monitor">
-      <div id="sl-monitor-hdr">
-        <span id="sl-rec-dot" aria-label="REC indicator">●</span>
-        <span class="sl-mono">REC</span>
-        <span id="sl-timestamp" class="sl-mono">00:00:00Z</span>
+    <!-- Ground Level section -->
+    <div id="mode-drawer-ground" class="mode-drawer-section hidden">
+      <div class="mode-section-lbl">REGION</div>
+      <div class="gl-section">
+        <div class="gl-section-title">SELECT REGION</div>
+        <select id="gl-region-select" class="gl-select" aria-label="Region">
+          <option value="">— All Regions —</option>
+          <option value="northeast">Northeast</option>
+          <option value="southeast">Southeast</option>
+          <option value="midwest">Midwest</option>
+          <option value="southwest">Southwest</option>
+          <option value="west">West</option>
+          <option value="northwest">Northwest</option>
+        </select>
       </div>
-      <div id="sl-monitor-status" class="sl-mono">STANDBY</div>
-      <div id="sl-monitor-window" aria-label="Monitor preview"></div>
+      <div class="mode-section-lbl">STATE / CITY</div>
+      <div class="gl-section">
+        <div class="gl-section-title">JUMP TO STATE</div>
+        <select id="gl-state-select" class="gl-select" aria-label="State">
+          <option value="">— State —</option>
+          <option value="32.3617,-86.2792">Alabama</option>
+          <option value="64.2008,-153.4937">Alaska</option>
+          <option value="34.0489,-111.0937">Arizona</option>
+          <option value="34.7999,-92.1996">Arkansas</option>
+          <option value="36.7783,-119.4179">California</option>
+          <option value="39.5501,-105.7821">Colorado</option>
+          <option value="41.6032,-73.0877">Connecticut</option>
+          <option value="38.9108,-75.5277">Delaware</option>
+          <option value="27.9944,-81.7603">Florida</option>
+          <option value="32.1656,-82.9001">Georgia</option>
+          <option value="19.8968,-155.5828">Hawaii</option>
+          <option value="44.0682,-114.7421">Idaho</option>
+          <option value="40.6331,-89.3985">Illinois</option>
+          <option value="40.2672,-86.1349">Indiana</option>
+          <option value="41.8780,-93.0977">Iowa</option>
+          <option value="39.0119,-98.4842">Kansas</option>
+          <option value="37.8393,-84.2700">Kentucky</option>
+          <option value="31.2448,-92.1451">Louisiana</option>
+          <option value="45.2538,-69.4455">Maine</option>
+          <option value="39.0458,-76.6413">Maryland</option>
+          <option value="42.4072,-71.3824">Massachusetts</option>
+          <option value="44.3148,-85.6024">Michigan</option>
+          <option value="46.7296,-94.6859">Minnesota</option>
+          <option value="32.3547,-89.3985">Mississippi</option>
+          <option value="37.9643,-91.8318">Missouri</option>
+          <option value="46.8797,-110.3626">Montana</option>
+          <option value="41.4925,-99.9018">Nebraska</option>
+          <option value="38.8026,-116.4194">Nevada</option>
+          <option value="43.1939,-71.5724">New Hampshire</option>
+          <option value="40.0583,-74.4057">New Jersey</option>
+          <option value="34.5199,-105.8701">New Mexico</option>
+          <option value="42.1657,-74.9481">New York</option>
+          <option value="35.7596,-79.0193">North Carolina</option>
+          <option value="47.5515,-101.002">North Dakota</option>
+          <option value="40.4173,-82.9071">Ohio</option>
+          <option value="35.4676,-97.5164">Oklahoma</option>
+          <option value="43.8041,-120.5542">Oregon</option>
+          <option value="41.2033,-77.1945">Pennsylvania</option>
+          <option value="41.5801,-71.4774">Rhode Island</option>
+          <option value="33.8361,-81.1637">South Carolina</option>
+          <option value="44.2998,-99.4388">South Dakota</option>
+          <option value="35.5175,-86.5804">Tennessee</option>
+          <option value="31.9686,-99.9018">Texas</option>
+          <option value="39.3210,-111.0937">Utah</option>
+          <option value="44.5588,-72.5778">Vermont</option>
+          <option value="37.4316,-78.6569">Virginia</option>
+          <option value="47.7511,-120.7401">Washington</option>
+          <option value="38.5976,-80.4549">West Virginia</option>
+          <option value="43.7844,-88.7879">Wisconsin</option>
+          <option value="43.0760,-107.2903">Wyoming</option>
+        </select>
+        <input id="gl-city-input" class="gl-select" type="text" placeholder="City or zip code…" aria-label="City search" spellcheck="false" />
+      </div>
+      <div class="mode-section-lbl">TRAFFIC</div>
+      <div class="gl-section">
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-traffic-toggle"> Live Traffic</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-incidents-toggle"> Incidents</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-flow-toggle"> Flow Overlay</label>
+      </div>
+      <div class="mode-section-lbl">SENSORS</div>
+      <div class="gl-section">
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-cctv-toggle"> CCTV Mesh</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-acoustic-toggle"> Acoustic</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-weather-toggle"> Weather Stations</label>
+      </div>
+      <div class="mode-section-lbl">LOCAL FEED</div>
+      <div class="gl-section">
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-feeds-toggle" checked> Live Feeds</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-bikeshare-toggle"> Bike Share</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-transit-toggle"> Transit</label>
+      </div>
     </div>
-    <!-- Tactical controls -->
-    <div id="sl-tac-panel">
-      <button class="sl-tac-btn" data-tac="move">MOVE</button>
-      <button class="sl-tac-btn" data-tac="bloom">BLOOM</button>
-      <button class="sl-tac-btn" data-tac="sharpen">SHARPEN</button>
-      <button class="sl-tac-btn" data-tac="hud">HUD</button>
-      <button class="sl-tac-btn" data-tac="layout">LAYOUT</button>
-      <button class="sl-tac-btn" data-tac="panoptic">PANOPTIC</button>
-      <button class="sl-tac-btn" data-tac="density">DENSITY</button>
-      <button class="sl-tac-btn" data-tac="cleanui">CLEAN UI</button>
-    </div>
-  </div>
-
   </div>
 
 </div>
+
 
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
 <script id="rw-bootstrap" type="application/json">__RW_BOOTSTRAP__</script>
@@ -1896,96 +2006,162 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     enterCesiumStreetLevel(lat, lng);
   }
 
+  // ── Mode Drawer: open/close helpers ────────────────────────────────────
+  function openModeDrawer(mode) {
+    const drawer = document.getElementById('mode-drawer');
+    const streetSection = document.getElementById('mode-drawer-street');
+    const groundSection = document.getElementById('mode-drawer-ground');
+    const titleEl = document.getElementById('mode-drawer-title');
+    if (!drawer) return;
+    if (mode === 'street') {
+      if (streetSection) streetSection.classList.remove('hidden');
+      if (groundSection) groundSection.classList.add('hidden');
+      if (titleEl) titleEl.textContent = 'STREET LEVEL';
+    } else {
+      if (streetSection) streetSection.classList.add('hidden');
+      if (groundSection) groundSection.classList.remove('hidden');
+      if (titleEl) titleEl.textContent = 'GROUND LEVEL';
+    }
+    drawer.classList.add('open');
+    drawer.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeModeDrawer() {
+    const drawer = document.getElementById('mode-drawer');
+    if (drawer) { drawer.classList.remove('open'); drawer.setAttribute('aria-hidden', 'true'); }
+  }
+
   function openStreetLevelTab() {
-    const globeShell = document.getElementById('globe-shell');
-    const streetLevelView = document.getElementById('street-level-view');
-    const noTargetEl = document.getElementById('street-level-no-target');
-    const panoEl = document.getElementById('street-level-pano');
-    const targetLabelEl = document.getElementById('street-level-target-label');
-    const tabBtn = document.getElementById('street-level-tab');
     const railBtn = document.getElementById('rail-btn-street-level');
-    if (!streetLevelView) return;
-    // Set empty string to reset any inline style, reverting to CSS default (flex/block)
-    // so globe-shell remains visible and Cesium renders through the transparent overlay
-    if (globeShell) globeShell.style.display = '';
-    streetLevelView.classList.add('active');
     streetLevelActive = true;
-    if (tabBtn) { tabBtn.classList.add('active'); tabBtn.setAttribute('aria-pressed', 'true'); }
     if (railBtn) { railBtn.classList.add('active'); railBtn.setAttribute('aria-pressed', 'true'); }
+    openModeDrawer('street');
     startSlMonitor();
+    const noTargetEl = document.getElementById('mode-no-target');
+    const targetLabelEl = document.getElementById('mode-target-label');
     if (selectedTargetCoords) {
       if (noTargetEl) noTargetEl.style.display = 'none';
-      if (panoEl) panoEl.classList.add('visible');
       if (targetLabelEl) {
         targetLabelEl.textContent = selectedTargetCoords.lat.toFixed(4) + ', ' + selectedTargetCoords.lng.toFixed(4);
+        targetLabelEl.classList.add('visible');
       }
       loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, function () {
         initStreetLevelPanorama(selectedTargetCoords.lat, selectedTargetCoords.lng);
       });
     } else {
-      if (noTargetEl) noTargetEl.style.display = 'flex';
-      if (panoEl) panoEl.classList.remove('visible');
-      if (targetLabelEl) targetLabelEl.textContent = '';
+      if (noTargetEl) noTargetEl.style.display = 'block';
+      if (targetLabelEl) { targetLabelEl.textContent = ''; targetLabelEl.classList.remove('visible'); }
     }
   }
 
   function closeStreetLevelTab() {
-    const globeShell = document.getElementById('globe-shell');
-    const streetLevelView = document.getElementById('street-level-view');
-    const tabBtn = document.getElementById('street-level-tab');
     const railBtn = document.getElementById('rail-btn-street-level');
-    if (streetLevelView) streetLevelView.classList.remove('active');
-    if (globeShell) globeShell.style.display = '';
     streetLevelActive = false;
     exitCesiumStreetLevel();
     stopSlMonitor();
-    if (tabBtn) { tabBtn.classList.remove('active'); tabBtn.setAttribute('aria-pressed', 'false'); }
     if (railBtn) { railBtn.classList.remove('active'); railBtn.setAttribute('aria-pressed', 'false'); }
+    if (!groundLevelActive) { closeModeDrawer(); }
   }
 
-  const streetLevelTabBtn = document.getElementById('street-level-tab');
-  if (streetLevelTabBtn) {
-    streetLevelTabBtn.addEventListener('click', openStreetLevelTab);
+  // ── Ground Level mode ────────────────────────────────────────────────────
+  let groundLevelActive = false;
+
+  function openGroundLevelMode() {
+    const railBtn = document.getElementById('rail-btn-ground-level');
+    groundLevelActive = true;
+    if (railBtn) { railBtn.classList.add('active'); railBtn.setAttribute('aria-pressed', 'true'); }
+    openModeDrawer('ground');
+    if (!cesiumStreetLevelMode && cesiumViewer) {
+      const cPos = cesiumViewer.camera.positionCartographic;
+      const lat = Cesium.Math.toDegrees(cPos.latitude);
+      const lng = Cesium.Math.toDegrees(cPos.longitude);
+      enterCesiumStreetLevel(lat, lng);
+    }
+  }
+
+  function closeGroundLevelMode() {
+    const railBtn = document.getElementById('rail-btn-ground-level');
+    groundLevelActive = false;
+    if (railBtn) { railBtn.classList.remove('active'); railBtn.setAttribute('aria-pressed', 'false'); }
+    if (!streetLevelActive) { exitCesiumStreetLevel(); }
+    closeModeDrawer();
   }
 
   const streetLevelRailBtn = document.getElementById('rail-btn-street-level');
   if (streetLevelRailBtn) {
-    streetLevelRailBtn.addEventListener('click', openStreetLevelTab);
+    streetLevelRailBtn.addEventListener('click', function () {
+      if (streetLevelActive) { closeStreetLevelTab(); } else { openStreetLevelTab(); }
+    });
   }
 
-  const streetLevelBackBtn = document.getElementById('street-level-back-btn');
-  if (streetLevelBackBtn) {
-    streetLevelBackBtn.addEventListener('click', closeStreetLevelTab);
+  const groundLevelRailBtn = document.getElementById('rail-btn-ground-level');
+  if (groundLevelRailBtn) {
+    groundLevelRailBtn.addEventListener('click', function () {
+      if (groundLevelActive) { closeGroundLevelMode(); } else { openGroundLevelMode(); }
+    });
   }
 
-  // ── Street-level: States drawer ────────────────────────────────────────
-  function openStatesDrawer() {
-    const drawer = document.getElementById('sl-states-drawer');
-    if (drawer) { drawer.classList.add('open'); drawer.setAttribute('aria-hidden', 'false'); }
+  const modeDrawerCloseBtn = document.getElementById('mode-drawer-close');
+  if (modeDrawerCloseBtn) {
+    modeDrawerCloseBtn.addEventListener('click', function () {
+      if (streetLevelActive) { closeStreetLevelTab(); }
+      else if (groundLevelActive) { closeGroundLevelMode(); }
+      else { closeModeDrawer(); }
+    });
   }
-  function closeStatesDrawer() {
-    const drawer = document.getElementById('sl-states-drawer');
-    if (drawer) { drawer.classList.remove('open'); drawer.setAttribute('aria-hidden', 'true'); }
+
+  // ── Mode Drawer: States panel toggle ────────────────────────────────────
+  const modeStatesToggleBtn = document.getElementById('mode-states-toggle-btn');
+  if (modeStatesToggleBtn) {
+    modeStatesToggleBtn.addEventListener('click', function () {
+      const panel = document.getElementById('mode-states-panel');
+      if (!panel) return;
+      const isOpen = panel.classList.toggle('open');
+      modeStatesToggleBtn.classList.toggle('open', isOpen);
+      modeStatesToggleBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      const arrow = document.getElementById('mode-states-arrow');
+      if (arrow) arrow.textContent = isOpen ? '▲' : '▼';
+    });
   }
-  const slStatesToggle = document.getElementById('sl-states-toggle');
-  if (slStatesToggle) { slStatesToggle.addEventListener('click', openStatesDrawer); }
-  const slStatesClose = document.getElementById('sl-states-close');
-  if (slStatesClose) { slStatesClose.addEventListener('click', closeStatesDrawer); }
+
+  // ── Ground Level: state select navigation ───────────────────────────────
+  const glStateSelect = document.getElementById('gl-state-select');
+  if (glStateSelect) {
+    glStateSelect.addEventListener('change', function () {
+      const val = glStateSelect.value;
+      if (!val) return;
+      const parts = val.split(',');
+      const lat = parseFloat(parts[0]);
+      const lng = parseFloat(parts[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      if (cesiumViewer) {
+        cesiumCameraMoveInternal = true;
+        cesiumFollowDisengageMutedUntil = Date.now() + 2000;
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(lng, lat, 50000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+          duration: 2.0,
+          complete: function () { cesiumCameraMoveInternal = false; },
+          cancel:   function () { cesiumCameraMoveInternal = false; },
+        });
+      }
+    });
+  }
 
   // ── Street-level: state/landmark navigation ────────────────────────────
   function slNavigateTo(lat, lng, label) {
-    const panoEl = document.getElementById('street-level-pano');
-    const noTargetEl = document.getElementById('street-level-no-target');
-    const targetLabelEl = document.getElementById('street-level-target-label');
+    const noTargetEl = document.getElementById('mode-no-target');
+    const targetLabelEl = document.getElementById('mode-target-label');
     const monitorStatus = document.getElementById('sl-monitor-status');
-    if (targetLabelEl) targetLabelEl.textContent = label || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+    if (targetLabelEl) {
+      targetLabelEl.textContent = label || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+      targetLabelEl.classList.add('visible');
+    }
     if (monitorStatus) monitorStatus.textContent = label ? label.toUpperCase() : 'LIVE';
     if (noTargetEl) noTargetEl.style.display = 'none';
-    if (panoEl) panoEl.classList.add('visible');
     loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, function () {
       initStreetLevelPanorama(lat, lng);
     });
-    closeStatesDrawer();
     document.querySelectorAll('.sl-state-btn, .sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
   }
 
@@ -2013,17 +2189,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   // slFlyToCoords: fly camera to lat/lng in both globe mode and city/street-level mode.
   function slFlyToCoords(lat, lng, label) {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-    const targetLabelEl = document.getElementById('street-level-target-label');
+    const targetLabelEl = document.getElementById('mode-target-label');
     const monitorStatus = document.getElementById('sl-monitor-status');
-    if (targetLabelEl) targetLabelEl.textContent = label || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+    if (targetLabelEl) {
+      targetLabelEl.textContent = label || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+      targetLabelEl.classList.add('visible');
+    }
     if (monitorStatus && monitorStatus.textContent === 'STANDBY') monitorStatus.textContent = 'LIVE';
     document.querySelectorAll('.sl-state-btn, .sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
-    if (streetLevelActive) {
-      // In street-level / city mode: descend to ground level for an immersive view
-      const noTargetEl = document.getElementById('street-level-no-target');
-      const panoEl = document.getElementById('street-level-pano');
+    if (streetLevelActive || groundLevelActive) {
+      // In street/ground level mode: fly to the location
+      const noTargetEl = document.getElementById('mode-no-target');
       if (noTargetEl) noTargetEl.style.display = 'none';
-      if (panoEl) panoEl.classList.add('visible');
       initStreetLevelPanorama(lat, lng);
     } else if (cesiumViewer) {
       // In globe mode: fly to city-view altitude so the user can see the area

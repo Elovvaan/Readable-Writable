@@ -416,37 +416,36 @@ describe('street-level tab (dedicated mode switch)', function () {
     assert.ok(snippet.includes('display: flex'), 'active state must show with display:flex');
   });
 
-  test('street-level tab button exists in HTML', function () {
-    assert.ok(src.includes('id="street-level-tab"'), 'street-level tab button must exist in HTML');
+  test('mode drawer street section exists in HTML', function () {
+    assert.ok(src.includes('id="mode-drawer-street"'), 'mode-drawer-street section must exist in HTML');
+    assert.ok(src.includes('id="mode-drawer"'), 'mode-drawer must exist in HTML');
   });
 
-  test('street-level tab button is labeled Street Level', function () {
-    const btnIdx = src.indexOf('id="street-level-tab"');
-    assert.ok(btnIdx !== -1);
-    const snippet = src.slice(btnIdx, btnIdx + 200);
-    assert.ok(snippet.includes('Street Level'), 'tab button must be labeled Street Level');
+  test('mode drawer is labeled Street Level when in street mode', function () {
+    // The JS sets the title to 'STREET LEVEL' when opening street mode
+    assert.ok(src.includes("'STREET LEVEL'"), 'mode drawer must reference STREET LEVEL title');
   });
 
-  test('street-level-back-btn exists in HTML', function () {
-    assert.ok(src.includes('id="street-level-back-btn"'), 'back-to-globe button must exist in HTML');
+  test('mode-drawer-close button exists in HTML', function () {
+    assert.ok(src.includes('id="mode-drawer-close"'), 'mode-drawer close button must exist in HTML');
   });
 
-  test('street-level-back-btn appears inside street-level-view', function () {
-    const viewIdx = src.indexOf('id="street-level-view"');
-    const backIdx = src.indexOf('id="street-level-back-btn"');
-    assert.ok(viewIdx !== -1, 'street-level-view must exist');
-    assert.ok(backIdx > viewIdx, 'back button must appear after street-level-view in source');
+  test('mode-drawer-close appears inside mode-drawer', function () {
+    const drawerIdx = src.indexOf('id="mode-drawer"');
+    const closeIdx = src.indexOf('id="mode-drawer-close"');
+    assert.ok(drawerIdx !== -1, 'mode-drawer must exist');
+    assert.ok(closeIdx > drawerIdx, 'close button must appear after mode-drawer opening in source');
   });
 
-  test('street-level-pano div exists inside street-level-view', function () {
-    const viewIdx = src.indexOf('id="street-level-view"');
-    const panoIdx = src.indexOf('id="street-level-pano"');
-    assert.ok(viewIdx !== -1, 'street-level-view must exist');
-    assert.ok(panoIdx > viewIdx, 'street-level-pano must appear after street-level-view in source');
+  test('navigation controls exist inside mode-drawer-street', function () {
+    const sectionIdx = src.indexOf('id="mode-drawer-street"');
+    const fwdIdx = src.indexOf('id="sl-fwd-btn"');
+    assert.ok(sectionIdx !== -1, 'mode-drawer-street must exist');
+    assert.ok(fwdIdx > sectionIdx, 'navigation buttons must appear inside mode-drawer-street');
   });
 
   test('no-target message text is present in HTML', function () {
-    assert.ok(src.includes('Select a target first'), 'no-target message must exist in HTML');
+    assert.ok(src.includes('Select a target to navigate'), 'no-target message must exist in HTML');
   });
 
   test('openStreetLevelTab is defined', function () {
@@ -473,39 +472,38 @@ describe('street-level tab (dedicated mode switch)', function () {
     assert.ok(fnIdx !== -1);
     const body = src.slice(fnIdx, fnIdx + 1400);
     assert.ok(body.includes('selectedTargetCoords'), 'must check selectedTargetCoords');
-    assert.ok(body.includes('street-level-no-target'), 'must reference the no-target message element');
+    assert.ok(body.includes('mode-no-target'), 'must reference the no-target message element in mode drawer');
     assert.ok(body.includes('loadGoogleMapsApi'), 'must load Google Maps API when coords available');
   });
 
-  test('openStreetLevelTab hides globe-shell and activates street-level-view', function () {
+  test('openStreetLevelTab opens mode drawer and activates street level', function () {
     const fnIdx = src.indexOf('function openStreetLevelTab');
     assert.ok(fnIdx !== -1);
     const body = src.slice(fnIdx, fnIdx + 1000);
-    assert.ok(body.includes('globe-shell'), 'must reference globe-shell to hide it');
-    assert.ok(body.includes('classList.add'), 'must add active class to street-level-view');
+    assert.ok(body.includes('openModeDrawer'), 'must open the mode drawer');
+    assert.ok(body.includes('classList.add'), 'must add active class to the rail button');
   });
 
-  test('closeStreetLevelTab restores globe-shell', function () {
+  test('closeStreetLevelTab closes mode drawer and exits street level', function () {
     const fnIdx = src.indexOf('function closeStreetLevelTab');
     assert.ok(fnIdx !== -1);
     const body = src.slice(fnIdx, fnIdx + 500);
-    assert.ok(body.includes('globe-shell'), 'must restore globe-shell visibility');
-    assert.ok(body.includes('classList.remove'), 'must remove active class from street-level-view');
+    assert.ok(body.includes('closeModeDrawer'), 'must close the mode drawer');
+    assert.ok(body.includes('classList.remove'), 'must remove active class from rail button');
   });
 
-  test('street-level-tab button is bound to openStreetLevelTab', function () {
-    // The event binding uses 'const streetLevelTabBtn' — find that variable assignment
-    const bindIdx = src.indexOf('const streetLevelTabBtn');
-    assert.ok(bindIdx !== -1, 'streetLevelTabBtn must be declared for the event binding');
-    const snippet = src.slice(bindIdx, bindIdx + 250);
-    assert.ok(snippet.includes('openStreetLevelTab'), 'street-level-tab click must call openStreetLevelTab');
+  test('rail-btn-street-level is wired to open/close street level mode', function () {
+    const bindIdx = src.indexOf('streetLevelRailBtn');
+    assert.ok(bindIdx !== -1, 'streetLevelRailBtn variable must be declared for the event binding');
+    const snippet = src.slice(bindIdx, bindIdx + 300);
+    assert.ok(snippet.includes('openStreetLevelTab'), 'rail button click must call openStreetLevelTab');
   });
 
-  test('street-level-back-btn is bound to closeStreetLevelTab', function () {
-    const bindIdx = src.indexOf("getElementById('street-level-back-btn')");
-    assert.ok(bindIdx !== -1, 'back button must be fetched via getElementById');
-    const snippet = src.slice(bindIdx, bindIdx + 250);
-    assert.ok(snippet.includes('closeStreetLevelTab'), 'back button click must call closeStreetLevelTab');
+  test('mode-drawer-close is bound to close the active mode', function () {
+    const bindIdx = src.indexOf("getElementById('mode-drawer-close')");
+    assert.ok(bindIdx !== -1, 'mode-drawer-close must be fetched via getElementById');
+    const snippet = src.slice(bindIdx, bindIdx + 300);
+    assert.ok(snippet.includes('closeStreetLevelTab'), 'close button click must call closeStreetLevelTab');
   });
 
   test('selectedTargetCoords is stored when selectAgent finds valid coordinates', function () {
@@ -555,7 +553,7 @@ describe('street-level tab (dedicated mode switch)', function () {
   test('rail-btn-street-level is wired to openStreetLevelTab', function () {
     const bindIdx = src.indexOf('streetLevelRailBtn');
     assert.ok(bindIdx !== -1, 'streetLevelRailBtn variable must be declared for the event binding');
-    const snippet = src.slice(bindIdx, bindIdx + 250);
+    const snippet = src.slice(bindIdx, bindIdx + 320);
     assert.ok(snippet.includes('openStreetLevelTab'), 'rail button click must call openStreetLevelTab');
   });
 
@@ -888,11 +886,11 @@ describe('location search: Google Places Autocomplete and Go flow', function () 
   const fs  = require('node:fs');
   const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
 
-  test('sl-search-form exists in the bottom bar HTML', function () {
-    const bbIdx = src.indexOf('id="sl-bottom-bar"');
-    assert.ok(bbIdx !== -1, 'sl-bottom-bar must exist in HTML');
-    const bbSnippet = src.slice(bbIdx, bbIdx + 600);
-    assert.ok(bbSnippet.includes('id="sl-search-form"'), 'sl-search-form must be inside sl-bottom-bar');
+  test('sl-search-form exists in the mode drawer HTML', function () {
+    const drawerIdx = src.indexOf('id="mode-drawer-street"');
+    assert.ok(drawerIdx !== -1, 'mode-drawer-street must exist in HTML');
+    const drawerSnippet = src.slice(drawerIdx, drawerIdx + 1800);
+    assert.ok(drawerSnippet.includes('id="sl-search-form"'), 'sl-search-form must be inside mode-drawer-street');
   });
 
   test('sl-location-input is a text input inside the search form', function () {
@@ -911,13 +909,12 @@ describe('location search: Google Places Autocomplete and Go flow', function () 
     assert.ok(formSnippet.includes('type="submit"'), 'Go button must be type=submit for form submission');
   });
 
-  test('sl-landmark-btn quick-picks are preserved in the bottom bar', function () {
-    const bbIdx = src.indexOf('id="sl-bottom-bar"');
-    assert.ok(bbIdx !== -1, 'sl-bottom-bar must exist');
-    const bbEnd = src.indexOf('</div>', bbIdx + 400) + 100;
-    const panel = src.slice(bbIdx, bbEnd + 500);
-    assert.ok(panel.includes('class="sl-landmark-btn"'), 'quick-pick landmark buttons must still be present');
-    assert.ok(panel.includes('New York'), 'New York quick-pick must still be present');
+  test('sl-landmark-btn quick-picks are preserved in the mode drawer', function () {
+    const drawerIdx = src.indexOf('id="mode-drawer-street"');
+    assert.ok(drawerIdx !== -1, 'mode-drawer-street must exist');
+    const drawerSnippet = src.slice(drawerIdx, drawerIdx + 3000);
+    assert.ok(drawerSnippet.includes('class="sl-landmark-btn"'), 'quick-pick landmark buttons must still be present');
+    assert.ok(drawerSnippet.includes('New York'), 'New York quick-pick must still be present');
   });
 
   test('slFlyToCoords is defined for unified camera navigation', function () {
