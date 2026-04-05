@@ -1429,6 +1429,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
     });
+    // Immediately anchor the camera to a valid global view so the Earth fills the viewport
+    // before any async tile loading; this prevents the camera from starting off-screen.
+    cesiumViewer.trackedEntity = undefined;
+    cesiumViewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+    });
     cesiumViewer.scene.skyBox.show = true;
     cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
@@ -1478,10 +1485,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastCesiumRenderCounts.tilesLoaded = true;
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
-        cesiumViewer.camera.flyTo({
+        cesiumViewer.camera.setView({
           destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
-          duration: 0,
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
         });
       } else {
         console.warn('[RW Cesium] No Google Maps API key — using built-in Natural Earth imagery');
@@ -1498,15 +1504,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         } catch (imgErr) {
           console.warn('[RW Cesium] Natural Earth fallback failed, keeping default imagery', imgErr);
         }
-        cesiumViewer.camera.flyTo({
+        cesiumViewer.camera.setView({
           destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
-          duration: 0,
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
         });
       }
       lastCesiumRenderCounts.earthInitialized = true;
       lastCesiumRenderCounts.tilesLoaded = !!cesiumGoogleTileset;
       console.info('[RW Cesium] initialized');
+      const _cp = cesiumViewer.camera.positionCartographic;
+      console.info('[RW Cesium] camera init: lat=' + Cesium.Math.toDegrees(_cp.latitude).toFixed(2) + ' lng=' + Cesium.Math.toDegrees(_cp.longitude).toFixed(2) + ' alt=' + (_cp.height / 1000).toFixed(0) + 'km pitch=' + Cesium.Math.toDegrees(cesiumViewer.camera.pitch).toFixed(1) + 'deg');
     } catch (err) {
       console.error('[RW Cesium] init failed', err);
       lastCesiumRenderCounts.tilesLoaded = false;
@@ -1514,6 +1521,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       lastCesiumRenderCounts.tilesError = (err && err.message) ? err.message : String(err || 'unknown');
     }
     bindCesiumSelection();
+    cesiumViewer.resize();
     draw();
   }
 
@@ -2053,7 +2061,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function viewerCameraSafetyCheck() {
     if (!cesiumViewer || !cesiumViewer.camera || cesiumSafetyViewApplied) return;
     cesiumViewer.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000)
+      destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
     });
     cesiumSafetyViewApplied = true;
   }
