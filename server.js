@@ -391,6 +391,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .sl-tac-btn { border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 3px; font-size: .54rem; font-weight: 700; letter-spacing: .09em; padding: 6px 4px; cursor: pointer; text-align: center; transition: background 160ms, border-color 160ms, color 160ms; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .sl-tac-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; }
     .sl-tac-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+    /* ── First-person mode toggle button and crosshair ──────────────────── */
+    #sl-fp-btn { font-size:.6rem; padding:3px 7px; background:#0a1922; border:1px solid #1c4a40; color:#3ec9b8; border-radius:3px; cursor:pointer; white-space:nowrap; transition:background 160ms,border-color 160ms,color 160ms; width:100%; text-align:center; }
+    #sl-fp-btn:hover { background:#0d2a23; color:#7fe0d4; border-color:#2a6a5a; }
+    #sl-fp-btn.active { background:#0d2a23; border-color:#3ec9b8; color:#7fe0d4; }
+    #sl-fp-crosshair { position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:22px;height:22px;pointer-events:none;display:none;z-index:15; }
+    #sl-fp-crosshair.visible { display:block; }
+    #sl-fp-crosshair::before,#sl-fp-crosshair::after { content:'';position:absolute;background:#3ec9b8;opacity:0.85; }
+    #sl-fp-crosshair::before { width:100%;height:1px;top:50%;transform:translateY(-50%);left:0; }
+    #sl-fp-crosshair::after { width:1px;height:100%;left:50%;transform:translateX(-50%);top:0; }
+    #cesium-world.fp-mode { cursor:none; }
+    /* ── Traffic density indicator ───────────────────────────────────────── */
+    #sl-traffic-indicator { font-size:.5rem; letter-spacing:.07em; text-transform:uppercase; color:#b89040; font-family:'Cascadia Code','Fira Code',monospace; padding:0 6px; white-space:nowrap; }
     /* ── Header tab button ───────────────────────────────────────────────── */
     .header-tab { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; transition: background 160ms, border-color 160ms, color 160ms; }
     .header-tab:hover { background: #111e2a; border-color: #254056; color: #8abccc; }
@@ -841,6 +853,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   <!-- Street-level tab view — minimal transparent overlay (panels are in #mode-drawer) -->
   <div id="street-level-view" role="region" aria-label="Street Level View" style="position:absolute;inset:0;z-index:9;display:none;pointer-events:none;">
+    <!-- First-person crosshair, shown only in FP look mode -->
+    <div id="sl-fp-crosshair" aria-hidden="true"></div>
   </div>
 
   <!-- Mode Drawer: right-side slide-in console for Street Level and Ground Level modes -->
@@ -868,12 +882,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           <span id="sl-alt-readout" class="sv-alt-text">—m</span>
           <button id="sl-desc-btn" class="sv-nav-btn" type="button" title="Descend (F)">▼ DES</button>
         </div>
+        <div class="sv-nav-row" style="margin-top:4px;">
+          <button id="sl-fp-btn" type="button" title="First-person look — click viewport then move mouse to look around (Esc to exit)">👁 FP LOOK</button>
+        </div>
       </div>
       <div id="mode-monitor-bar">
         <span id="sl-rec-dot" aria-label="REC indicator">●</span>
         <span class="sl-mono" style="font-size:.55rem;letter-spacing:.1em;color:#3ec9b8;">REC</span>
         <span id="sl-monitor-status" class="sl-mono">STANDBY</span>
         <span id="sl-timestamp" class="sl-mono">00:00:00Z</span>
+        <span id="sl-traffic-indicator" style="margin-left:auto;display:none;">🚗 TRAFFIC</span>
       </div>
       <div id="mode-target-label" aria-live="polite"></div>
       <div id="mode-no-target">Select a target to navigate.</div>
@@ -1098,6 +1116,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let cesiumStreetLevelMode = false;
   let cesiumPreStreetLevelPos = null;
   let cesiumFocusModeActive = false;
+  let cesiumFpMode = false;             // first-person pointer-lock camera mode
+  let slTrafficEntities = [];           // [{entity, lat, lng, heading, speed}]
+  let slTrafficLoopId   = null;         // rAF handle for traffic animation loop
+  let slTrafficPrevTime = 0;            // last timestamp for traffic dt
   const cesiumDroneKeys = {};
   let droneMoveFrameId = null;
   let lastCesiumRenderCounts = {
@@ -1307,6 +1329,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const STREET_LEVEL_ALTITUDE_M = 60;
   const STREET_LEVEL_PITCH_DEG = -10;
   const STREET_LEVEL_AUTO_TILT_ALT = 250;
+  const SL_FP_MOUSE_SENSITIVITY  = 0.003;  // radians per pixel for first-person look
+  const SL_MIN_ABOVE_GROUND      = 1.5;    // m: minimum camera height above ellipsoid
+  const SL_MAX_TRAFFIC_CARS      = 40;     // maximum simulated traffic cars in scene
+  const SL_TRAFFIC_DENSITY       = 0.7;    // fraction of SL_MAX_TRAFFIC_CARS to spawn (0–1)
+  const SL_TRAFFIC_SPEED_MPS     = 14;     // m/s base speed (~50 km/h)
+  const SL_TRAFFIC_RADIUS_M      = 600;    // metres: car visibility radius around camera
+  const SL_TRAFFIC_ALTITUDE_MAX  = 800;    // m: traffic entities hidden above this altitude
   const REGION_ACTIVITY_WINDOW_TICKS = 24;
   const REGION_ACTIVE_EVENT_THRESHOLD = 2;
   const REGION_HOT_EVENT_THRESHOLD = 5;
@@ -1896,6 +1925,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
     });
     bindCesiumSelection();
+    registerTerrainClamp();
     cesiumViewer.resize();
     draw();
   }
@@ -2343,6 +2373,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumStreetLevelMode = true;
     cesiumCameraMoveInternal = true;
     cesiumFollowDisengageMutedUntil = Date.now() + 3000;
+    // Tighten LOD quality for Google tileset while at street level
+    if (cesiumGoogleTileset) { cesiumGoogleTileset.maximumScreenSpaceError = 4; }
     cesiumViewer.camera.flyTo({
       destination: Cesium.Cartesian3.fromDegrees(lng, lat, STREET_LEVEL_ALTITUDE_M),
       orientation: {
@@ -2351,8 +2383,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         roll: 0,
       },
       duration: 2.0,
-      complete: function () { cesiumCameraMoveInternal = false; },
-      cancel:   function () { cesiumCameraMoveInternal = false; },
+      complete: function () {
+        cesiumCameraMoveInternal = false;
+        spawnSlTraffic();
+      },
+      cancel: function () { cesiumCameraMoveInternal = false; },
     });
   }
 
@@ -2360,6 +2395,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function exitCesiumStreetLevel() {
     if (!cesiumViewer) return;
     cesiumStreetLevelMode = false;
+    exitCesiumFpMode();   // exit first-person pointer-lock if active
+    clearSlTraffic();     // remove simulated traffic entities
+    // Restore default LOD quality for globe view
+    if (cesiumGoogleTileset) { cesiumGoogleTileset.maximumScreenSpaceError = 16; }
     // Release lookAt constraint if focus mode was active
     if (cesiumFocusModeActive) {
       cesiumFocusModeActive = false;
@@ -2416,7 +2455,199 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
   }
 
-  // ── Drone keyboard navigation (WASD + Q/E/R/F keys, Shift for boost) ─────────
+  // ── First-person camera mode (pointer lock + mouse look) ─────────────────────
+  // enterCesiumFpMode — requests pointer lock on the Cesium canvas so mouse
+  // movement drives camera look (yaw + pitch) without moving the cursor.
+  function enterCesiumFpMode() {
+    if (!cesiumViewer || !cesiumStreetLevelMode) return;
+    const canvas = cesiumViewer.scene.canvas;
+    if (canvas && canvas.requestPointerLock) {
+      canvas.requestPointerLock();
+    }
+  }
+
+  // exitCesiumFpMode — releases pointer lock and restores normal camera inputs.
+  // Safe to call even when FP mode is not active.
+  function exitCesiumFpMode() {
+    if (!cesiumFpMode) return;
+    if (document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+    cesiumFpMode = false;
+    updateFpModeUi();
+  }
+
+  // updateFpModeUi — sync button, crosshair visibility, cursor, and ssc inputs.
+  function updateFpModeUi() {
+    const fpBtn    = document.getElementById('sl-fp-btn');
+    const crosshair = document.getElementById('sl-fp-crosshair');
+    const cesiumEl  = document.getElementById('cesium-world');
+    if (fpBtn)    { fpBtn.classList.toggle('active', cesiumFpMode); }
+    if (crosshair){ crosshair.classList.toggle('visible', cesiumFpMode); }
+    if (cesiumEl) { cesiumEl.classList.toggle('fp-mode', cesiumFpMode); }
+    // Disable Cesium's built-in mouse controls while FP mode drives the camera
+    const ssc = cesiumViewer && cesiumViewer.scene.screenSpaceCameraController;
+    if (ssc) { ssc.enableInputs = !cesiumFpMode; }
+  }
+
+  // Pointer lock state change: sync cesiumFpMode with actual lock state.
+  document.addEventListener('pointerlockchange', function () {
+    if (!cesiumViewer) return;
+    const locked = document.pointerLockElement === cesiumViewer.scene.canvas;
+    cesiumFpMode = locked;
+    updateFpModeUi();
+  });
+
+  // Mouse look in FP mode — yaw around world-up, pitch around camera right.
+  document.addEventListener('mousemove', function (e) {
+    if (!cesiumFpMode || !cesiumViewer) return;
+    const cam = cesiumViewer.camera;
+    const dx  = e.movementX * SL_FP_MOUSE_SENSITIVITY;
+    const dy  = e.movementY * SL_FP_MOUSE_SENSITIVITY;
+    // Yaw: look left/right using the camera's own up vector
+    cam.look(cam.up, -dx);
+    // Pitch: clamp to ±85° to prevent gimbal flip
+    const pitchAfter = cam.pitch - dy;
+    if (pitchAfter > Cesium.Math.toRadians(-85) && pitchAfter < Cesium.Math.toRadians(85)) {
+      cam.look(cam.right, -dy);
+    }
+  });
+
+  // FP mode toggle button
+  const slFpBtn = document.getElementById('sl-fp-btn');
+  if (slFpBtn) {
+    slFpBtn.addEventListener('click', function () {
+      if (cesiumFpMode) { exitCesiumFpMode(); } else { enterCesiumFpMode(); }
+    });
+  }
+
+  // Escape key exits FP mode (pointer lock also exits on Escape natively, but
+  // we also update state to stay consistent)
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && cesiumFpMode) { exitCesiumFpMode(); }
+  }, true);
+
+  // ── Collision-aware camera: keep camera above minimum ground clearance ────────
+  // Registered once at Cesium init; clamps camera altitude every rendered frame
+  // when in street-level mode so the user never clips through the terrain.
+  function registerTerrainClamp() {
+    if (!cesiumViewer) return;
+    cesiumViewer.scene.postRender.addEventListener(function () {
+      if (!cesiumStreetLevelMode) return;
+      const cPos = cesiumViewer.camera.positionCartographic;
+      if (cPos.height < SL_MIN_ABOVE_GROUND) {
+        cesiumViewer.camera.position = Cesium.Cartesian3.fromDegrees(
+          Cesium.Math.toDegrees(cPos.longitude),
+          Cesium.Math.toDegrees(cPos.latitude),
+          SL_MIN_ABOVE_GROUND
+        );
+      }
+    });
+  }
+
+  // ── Simulated traffic entities: lightweight moving cars ───────────────────────
+  // Cars are represented as point billboards using Cesium's CallbackProperty so
+  // their positions update every render frame without creating new objects.
+  // Density is controlled by SL_TRAFFIC_DENSITY (0–1). When the Google Traffic
+  // API is unavailable the flow is purely simulated (grid-aligned headings at
+  // varied speeds). Cars respawn on the far side when they leave the visible radius.
+
+  function clearSlTraffic() {
+    if (cesiumViewer) {
+      for (const car of slTrafficEntities) {
+        if (car.entity) { try { cesiumViewer.entities.remove(car.entity); } catch (_) {} }
+      }
+    }
+    slTrafficEntities = [];
+    if (slTrafficLoopId) { cancelAnimationFrame(slTrafficLoopId); slTrafficLoopId = null; }
+    const indicator = document.getElementById('sl-traffic-indicator');
+    if (indicator) { indicator.style.display = 'none'; }
+  }
+
+  function spawnSlTraffic() {
+    clearSlTraffic();
+    if (!cesiumViewer || !cesiumStreetLevelMode) return;
+    const n = Math.max(1, Math.round(SL_MAX_TRAFFIC_CARS * SL_TRAFFIC_DENSITY));
+    const cPos    = cesiumViewer.camera.positionCartographic;
+    const baseLat = Cesium.Math.toDegrees(cPos.latitude);
+    const baseLng = Cesium.Math.toDegrees(cPos.longitude);
+    const CAR_COLORS = [
+      Cesium.Color.fromCssColorString('#f5a623'),
+      Cesium.Color.fromCssColorString('#e74c3c'),
+      Cesium.Color.fromCssColorString('#3498db'),
+      Cesium.Color.fromCssColorString('#ecf0f1'),
+      Cesium.Color.fromCssColorString('#95a5a6'),
+    ];
+    for (let i = 0; i < n; i++) {
+      const angle   = Math.random() * 2 * Math.PI;
+      const dist    = (0.1 + Math.random() * 0.9) * SL_TRAFFIC_RADIUS_M;
+      const cosLat  = Math.cos(Cesium.Math.toRadians(baseLat));
+      const car = {
+        lat:     baseLat + (dist * Math.cos(angle)) / 111319,
+        lng:     baseLng + (dist * Math.sin(angle)) / (111319 * cosLat),
+        heading: Math.round(Math.random() * 3) * (Math.PI / 2), // 0°/90°/180°/270°
+        speed:   SL_TRAFFIC_SPEED_MPS * (0.4 + Math.random() * 0.8),
+        entity:  null,
+      };
+      const color = CAR_COLORS[i % CAR_COLORS.length];
+      car.entity = cesiumViewer.entities.add({
+        position: new Cesium.CallbackProperty(function () {
+          return Cesium.Cartesian3.fromDegrees(car.lng, car.lat, 0.5);
+        }, false),
+        point: {
+          pixelSize: 5,
+          color: color,
+          outlineColor: Cesium.Color.BLACK.withAlpha(0.6),
+          outlineWidth: 1,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: 800,
+          scaleByDistance: new Cesium.NearFarScalar(10, 2.0, 600, 0.5),
+        },
+        show: true,
+      });
+      slTrafficEntities.push(car);
+    }
+    slTrafficPrevTime = 0;
+    slTrafficLoopId = requestAnimationFrame(slTrafficMoveLoop);
+    const indicator = document.getElementById('sl-traffic-indicator');
+    if (indicator) { indicator.style.display = ''; }
+  }
+
+  function slTrafficMoveLoop(timestamp) {
+    if (!cesiumStreetLevelMode || !cesiumViewer) {
+      slTrafficLoopId = null;
+      return;
+    }
+    const dt = slTrafficPrevTime > 0 ? Math.min((timestamp - slTrafficPrevTime) / 1000, 0.1) : 0;
+    slTrafficPrevTime = timestamp;
+    const cPos   = cesiumViewer.camera.positionCartographic;
+    const camLat = Cesium.Math.toDegrees(cPos.latitude);
+    const camLng = Cesium.Math.toDegrees(cPos.longitude);
+    const camAlt = cPos.height;
+    const visible = camAlt < SL_TRAFFIC_ALTITUDE_MAX;
+    for (const car of slTrafficEntities) {
+      if (car.entity) { car.entity.show = visible; }
+      if (!visible || dt <= 0) { continue; }
+      // Advance position along heading vector
+      const cosLat = Math.cos(Cesium.Math.toRadians(car.lat));
+      car.lat += (car.speed * dt * Math.cos(car.heading)) / 111319;
+      car.lng += (car.speed * dt * Math.sin(car.heading)) / (111319 * cosLat);
+      // Respawn car on the opposite side when it exits the visible radius
+      const dLat = (car.lat - camLat) * 111319;
+      const dLng = (car.lng - camLng) * 111319 * Math.cos(Cesium.Math.toRadians(camLat));
+      const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+      if (dist > SL_TRAFFIC_RADIUS_M) {
+        const spawnAngle = car.heading + Math.PI + (Math.random() - 0.5) * 0.4;
+        const spawnDist  = SL_TRAFFIC_RADIUS_M * (0.5 + Math.random() * 0.4);
+        const cosBase    = Math.cos(Cesium.Math.toRadians(camLat));
+        car.lat = camLat + (spawnDist * Math.cos(spawnAngle)) / 111319;
+        car.lng = camLng + (spawnDist * Math.sin(spawnAngle)) / (111319 * cosBase);
+      }
+    }
+    slTrafficLoopId = requestAnimationFrame(slTrafficMoveLoop);
+  }
+
+
   // Works in all Cesium modes (orbital and street-level). Speed scales with
   // altitude so city flight feels like a drone and high-altitude feels like a
   // smooth orbit. Shift multiplies speed for fast traversal.
