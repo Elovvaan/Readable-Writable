@@ -24,6 +24,8 @@ const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
 const CESIUM_ACCESS_TOKEN = process.env.CESIUM_ACCESS_TOKEN || '';
 const OPENSKY_FILE_PATH = path.resolve(process.env.OPENSKY_FILE_PATH || 'opensky.json');
 const OPENSKY_FILE_POLL_MS = 5000;
+const AVIATIONSTACK_KEY = process.env.AVIATIONSTACK_KEY || '';
+const AVIATIONSTACK_POLL_INTERVAL_MS = 20000;
 // Anything above this speed (m/s) is flagged as physically impossible for civil aircraft.
 // Commercial jets cruise at ~240–280 m/s; 600 m/s ≈ Mach 1.8.
 const ANOMALY_MAX_SPEED_MS = 600;
@@ -65,6 +67,15 @@ const openSkyFileState = {
   lastErrorAt: null,
   lastContentHash: null,
   anomalies: [],
+};
+
+const aviationstackState = {
+  flights: [],          // normalized flight objects { id, lat, lon, altitude, velocity }
+  lastPollAt: null,
+  lastErrorAt: null,
+  lastErrorMessage: null,
+  lastFetchedCount: 0,
+  pollingRunning: false,
 };
 
 // ─── Planner / Worker / Task Runtime Stores ───────────────────────────────────
@@ -3624,41 +3635,33 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
-      const states = Array.isArray(data.states) ? data.states : [];
-      if (!states.length) {
-        console.warn('[flights] empty states — skipping world update');
+      const flights = Array.isArray(data.flights) ? data.flights : [];
+      if (!flights.length) {
+        console.warn('[flights] empty flights — skipping world update');
         setTimeout(fetchFlightsSafe, flightPollDelay);
         return;
       }
-      console.log('[flights] states.length:', states.length);
+      console.log('[flights] flights.length:', flights.length);
 
       const now = Date.now();
       const normalized = {};
-      for (const row of states) {
-        if (!Array.isArray(row)) continue;
-        const icao24 = String(row[0] || '').trim().toLowerCase();
-        const callsign = String(row[1] || '').trim();
-        const lon = parseFloat(row[5]);
-        const lat = parseFloat(row[6]);
-        if (!icao24 || !isFinite(lat) || !isFinite(lon)) continue;
-        const altitude = parseFloat(
-          row[7] !== null && row[7] !== undefined ? row[7] : (row[13] !== null ? row[13] : 0)
-        ) || 0;
-        const velocity = parseFloat(row[9])  || 0;
-        const heading  = parseFloat(row[10]) || 0;
-        const onGround = Boolean(row[8]);
-        const id = 'flight-' + icao24;
+      for (const f of flights) {
+        if (!f || !f.id) continue;
+        const lat = parseFloat(f.lat);
+        const lon = parseFloat(f.lon);
+        if (!isFinite(lat) || !isFinite(lon)) continue;
         const grid = latLngToGridFE(lat, lon);
-        normalized[id] = {
-          id, type: 'flight', label: callsign || icao24,
-          callsign, icao24, lat, lng: lon, x: grid.x, y: grid.y,
-          altitude, velocity, heading, onGround,
+        normalized[f.id] = {
+          id: f.id, type: 'flight', label: f.id,
+          lat, lng: lon, x: grid.x, y: grid.y,
+          altitude: parseFloat(f.altitude) || 0,
+          velocity: parseFloat(f.velocity) || 0,
           source: 'api', lastUpdateMs: now,
         };
       }
 
       apiFetchedFlights = normalized;
-      lastApiFetchedCount = states.length;
+      lastApiFetchedCount = flights.length;
       layerLastUpdated.liveFlights = now;
       mergeEntities(normalized);
 
@@ -4155,6 +4158,64 @@ function startOpenSkyPolling() {
         console.warn('[RW Worldview] OpenSky poll failed — backing off to ' + openSkyDelay / 1000 + 's');
         setTimeout(schedulePoll, openSkyDelay);
       });
+  }
+
+  schedulePoll();
+}
+
+// ─── Aviationstack polling ─────────────────────────────────────────────────────
+
+async function pollAviationstackFlights() {
+  if (!AVIATIONSTACK_KEY) {
+    console.warn('[RW Worldview] Aviationstack key not configured (AVIATIONSTACK_KEY)');
+    return;
+  }
+  const url = 'https://api.aviationstack.com/v1/flights?access_key=' + AVIATIONSTACK_KEY;
+  console.log('[RW Worldview] Polling Aviationstack...');
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Aviationstack request failed with HTTP ' + response.status);
+    }
+    const payload = await response.json();
+    const data = Array.isArray(payload && payload.data) ? payload.data : [];
+    const normalized = data
+      .filter(f => f && f.live &&
+        Number.isFinite(f.live.latitude) &&
+        Number.isFinite(f.live.longitude) &&
+        f.flight && (f.flight.iata || f.flight.icao))
+      .map(f => ({
+        id: 'flight-' + (f.flight.iata || f.flight.icao),
+        lat: f.live.latitude,
+        lon: f.live.longitude,
+        altitude: f.live.altitude || 0,
+        velocity: f.live.speed_horizontal || 0,
+      }));
+    aviationstackState.flights = normalized;
+    aviationstackState.lastFetchedCount = normalized.length;
+    aviationstackState.lastPollAt = new Date().toISOString();
+    aviationstackState.lastErrorAt = null;
+    aviationstackState.lastErrorMessage = null;
+    console.log('[RW Worldview] Aviationstack: fetched ' + data.length + ' flights, ' + normalized.length + ' with live position');
+  } catch (err) {
+    console.warn('[RW Worldview] Aviationstack poll error: ' + err.message);
+    aviationstackState.lastErrorAt = new Date().toISOString();
+    aviationstackState.lastErrorMessage = err.message;
+  }
+}
+
+function startAviationstackPolling() {
+  if (!AVIATIONSTACK_KEY) {
+    console.log('[RW Worldview] Aviationstack polling disabled (AVIATIONSTACK_KEY not set)');
+    return;
+  }
+  aviationstackState.pollingRunning = true;
+  console.log('[RW Worldview] Aviationstack polling enabled; interval=' + AVIATIONSTACK_POLL_INTERVAL_MS + 'ms');
+
+  function schedulePoll() {
+    pollAviationstackFlights()
+      .then(() => setTimeout(schedulePoll, AVIATIONSTACK_POLL_INTERVAL_MS))
+      .catch(() => setTimeout(schedulePoll, AVIATIONSTACK_POLL_INTERVAL_MS));
   }
 
   schedulePoll();
@@ -5164,34 +5225,11 @@ function router(req, res) {
     return;
   }
 
-  // ── GET /api/flights  → server-side OpenSky proxy (raw states pass-through)
+  // ── GET /api/flights  → Aviationstack normalized flights
   if (req.method === 'GET' && url === '/api/flights') {
-    const states = openSkyLiveState.rawStates;
-    if (!Array.isArray(states) || states.length === 0) {
-      // No cached data yet — do a live fetch so the first request always returns data
-      const effectiveUser = OPENSKY_USERNAME || fileCredentials.username;
-      const effectivePass = OPENSKY_PASSWORD || fileCredentials.password;
-      const authHeader = (effectiveUser && effectivePass)
-        ? 'Basic ' + Buffer.from(effectiveUser + ':' + effectivePass).toString('base64')
-        : null;
-      const fetchUrl = authHeader ? OPENSKY_STATES_URL : OPENSKY_PUBLIC_STATES_URL;
-      fetch(fetchUrl, { headers: authHeader ? { Authorization: authHeader } : undefined })
-        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
-        .then(payload => {
-          const s = Array.isArray(payload && payload.states) ? payload.states : [];
-          openSkyLiveState.rawStates = s;
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ states: s, count: s.length, time: Date.now() }));
-        })
-        .catch(err => {
-          console.warn('[RW /api/flights] fetch failed:', err.message);
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'flight fetch failed' }));
-        });
-      return;
-    }
+    const flights = aviationstackState.flights;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ states, count: states.length, time: openSkyLiveState.lastPollAt || Date.now() }));
+    res.end(JSON.stringify({ flights, count: flights.length, time: aviationstackState.lastPollAt || Date.now() }));
     return;
   }
 
@@ -5220,7 +5258,7 @@ if (require.main === module) {
   setInterval(simulationLoop, 800);
   setInterval(plannerTick, 2000);
   setInterval(pruneOldTasks, 60000);
-  startOpenSkyPolling();
+  startAviationstackPolling();
   startOpenSkyFileWatcher();
 
   server.listen(PORT, '0.0.0.0', () => {
