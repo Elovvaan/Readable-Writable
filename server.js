@@ -372,9 +372,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #sl-states-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; line-height: 1; transition: color 160ms; flex-shrink: 0; }
     #sl-states-close:hover { color: #6898aa; }
     #sl-states-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 4px; padding: 8px 12px; overflow-y: auto; flex: 1; }
-    .sl-state-btn { border: 1px solid #161e2a; background: #0b1018; color: #4e7888; border-radius: 4px; font-size: .6rem; padding: 4px 6px; cursor: pointer; text-align: left; transition: background 160ms, border-color 160ms, color 160ms; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .sl-state-btn:hover { background: #0e1e2e; border-color: #1e3a50; color: #7abcc8; }
-    .sl-state-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+
     /* ── Street-level right tactical panel (dark CRT console) ───────────── */
     #sl-right-panel { width: 118px; flex-shrink: 0; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow-y: auto; pointer-events: auto; }
     .sl-mono { font-family: 'Cascadia Code', 'Fira Code', monospace; }
@@ -456,11 +454,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #mode-search-wrap #sl-location-input { flex: 1; width: auto; }
     #mode-landmarks-wrap { padding: 6px 8px; border-bottom: 1px solid #111820; flex-shrink: 0; }
     #mode-landmarks-wrap #sl-landmarks { flex-wrap: wrap; gap: 4px; }
-    #mode-states-toggle-btn { border: none; background: none; color: #2e4050; font-size: .56rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 5px 10px; width: 100%; text-align: left; cursor: pointer; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #111820; transition: color 160ms, background 160ms; flex-shrink: 0; }
-    #mode-states-toggle-btn:hover { color: #5a8098; background: #0c1018; }
-    #mode-states-toggle-btn.open { color: #3ec9b8; }
-    #mode-states-panel { display: none; padding: 5px 8px; border-bottom: 1px solid #111820; flex-shrink: 0; overflow-y: auto; max-height: 180px; }
-    #mode-states-panel.open { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; }
     #mode-no-target { padding: 12px 10px; color: #2e4050; font-size: .72rem; font-style: italic; text-align: center; display: none; flex-shrink: 0; }
     #mode-target-label { font-size: .54rem; color: #4e9888; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 3px 10px; border-bottom: 1px solid #111820; flex-shrink: 0; display: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #mode-target-label.visible { display: block; }
@@ -476,6 +469,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .gl-select:focus { border-color: #1f5e5a; background: #0c1820; }
     /* Reposition the right drawer so it doesn't overlap mode drawer */
     #mode-drawer.open ~ #drawer-right, .mode-drawer-open #drawer-right { right: 268px; }
+    /* ── Globe Boundary Navigation ─────────────────────────────────────────── */
+    #globe-boundary-label { position: absolute; pointer-events: none; z-index: 25; background: #07080cee; border: 1px solid #1f5e5a; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 4px 8px; border-radius: 3px; white-space: nowrap; display: none; box-shadow: 0 0 8px #1f5e5a88, 0 0 2px #3ec9b844; transition: opacity 120ms; }
+    #globe-boundary-label.visible { display: block; }
   </style>
 </head>
 <body>
@@ -886,6 +882,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div id="sl-fp-crosshair" aria-hidden="true"></div>
   </div>
 
+  <!-- Globe boundary hover label -->
+  <div id="globe-boundary-label" aria-live="polite" aria-hidden="true"></div>
+
   <!-- Mode Drawer: right-side slide-in console for Street Level and Ground Level modes -->
   <div id="mode-drawer" role="dialog" aria-label="Mode Controls" aria-hidden="true">
     <div id="mode-drawer-hdr">
@@ -947,59 +946,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           <button class="sl-landmark-btn" data-lat="42.3601" data-lng="-71.0589">Boston</button>
           <button class="sl-landmark-btn" data-lat="25.7617" data-lng="-80.1918">Miami</button>
         </div>
-      </div>
-      <button id="mode-states-toggle-btn" type="button" aria-expanded="false">▼ STATES <span id="mode-states-arrow">▼</span></button>
-      <div id="mode-states-panel" role="list">
-        <button class="sl-state-btn" data-lat="32.3617" data-lng="-86.2792">Alabama</button>
-        <button class="sl-state-btn" data-lat="64.2008" data-lng="-153.4937">Alaska</button>
-        <button class="sl-state-btn" data-lat="34.0489" data-lng="-111.0937">Arizona</button>
-        <button class="sl-state-btn" data-lat="34.7999" data-lng="-92.1996">Arkansas</button>
-        <button class="sl-state-btn" data-lat="36.7783" data-lng="-119.4179">California</button>
-        <button class="sl-state-btn" data-lat="39.5501" data-lng="-105.7821">Colorado</button>
-        <button class="sl-state-btn" data-lat="41.6032" data-lng="-73.0877">Connecticut</button>
-        <button class="sl-state-btn" data-lat="38.9108" data-lng="-75.5277">Delaware</button>
-        <button class="sl-state-btn" data-lat="27.9944" data-lng="-81.7603">Florida</button>
-        <button class="sl-state-btn" data-lat="32.1656" data-lng="-82.9001">Georgia</button>
-        <button class="sl-state-btn" data-lat="19.8968" data-lng="-155.5828">Hawaii</button>
-        <button class="sl-state-btn" data-lat="44.0682" data-lng="-114.7421">Idaho</button>
-        <button class="sl-state-btn" data-lat="40.6331" data-lng="-89.3985">Illinois</button>
-        <button class="sl-state-btn" data-lat="40.2672" data-lng="-86.1349">Indiana</button>
-        <button class="sl-state-btn" data-lat="41.8780" data-lng="-93.0977">Iowa</button>
-        <button class="sl-state-btn" data-lat="39.0119" data-lng="-98.4842">Kansas</button>
-        <button class="sl-state-btn" data-lat="37.8393" data-lng="-84.2700">Kentucky</button>
-        <button class="sl-state-btn" data-lat="31.2448" data-lng="-92.1451">Louisiana</button>
-        <button class="sl-state-btn" data-lat="45.2538" data-lng="-69.4455">Maine</button>
-        <button class="sl-state-btn" data-lat="39.0458" data-lng="-76.6413">Maryland</button>
-        <button class="sl-state-btn" data-lat="42.4072" data-lng="-71.3824">Massachusetts</button>
-        <button class="sl-state-btn" data-lat="44.3148" data-lng="-85.6024">Michigan</button>
-        <button class="sl-state-btn" data-lat="46.7296" data-lng="-94.6859">Minnesota</button>
-        <button class="sl-state-btn" data-lat="32.3547" data-lng="-89.3985">Mississippi</button>
-        <button class="sl-state-btn" data-lat="37.9643" data-lng="-91.8318">Missouri</button>
-        <button class="sl-state-btn" data-lat="46.8797" data-lng="-110.3626">Montana</button>
-        <button class="sl-state-btn" data-lat="41.4925" data-lng="-99.9018">Nebraska</button>
-        <button class="sl-state-btn" data-lat="38.8026" data-lng="-116.4194">Nevada</button>
-        <button class="sl-state-btn" data-lat="43.1939" data-lng="-71.5724">New Hampshire</button>
-        <button class="sl-state-btn" data-lat="40.0583" data-lng="-74.4057">New Jersey</button>
-        <button class="sl-state-btn" data-lat="34.5199" data-lng="-105.8701">New Mexico</button>
-        <button class="sl-state-btn" data-lat="42.1657" data-lng="-74.9481">New York</button>
-        <button class="sl-state-btn" data-lat="35.7596" data-lng="-79.0193">North Carolina</button>
-        <button class="sl-state-btn" data-lat="47.5515" data-lng="-101.002">North Dakota</button>
-        <button class="sl-state-btn" data-lat="40.4173" data-lng="-82.9071">Ohio</button>
-        <button class="sl-state-btn" data-lat="35.4676" data-lng="-97.5164">Oklahoma</button>
-        <button class="sl-state-btn" data-lat="43.8041" data-lng="-120.5542">Oregon</button>
-        <button class="sl-state-btn" data-lat="41.2033" data-lng="-77.1945">Pennsylvania</button>
-        <button class="sl-state-btn" data-lat="41.5801" data-lng="-71.4774">Rhode Island</button>
-        <button class="sl-state-btn" data-lat="33.8361" data-lng="-81.1637">South Carolina</button>
-        <button class="sl-state-btn" data-lat="44.2998" data-lng="-99.4388">South Dakota</button>
-        <button class="sl-state-btn" data-lat="35.5175" data-lng="-86.5804">Tennessee</button>
-        <button class="sl-state-btn" data-lat="31.9686" data-lng="-99.9018">Texas</button>
-        <button class="sl-state-btn" data-lat="39.3210" data-lng="-111.0937">Utah</button>
-        <button class="sl-state-btn" data-lat="44.5588" data-lng="-72.5778">Vermont</button>
-        <button class="sl-state-btn" data-lat="37.4316" data-lng="-78.6569">Virginia</button>
-        <button class="sl-state-btn" data-lat="47.7511" data-lng="-120.7401">Washington</button>
-        <button class="sl-state-btn" data-lat="38.5976" data-lng="-80.4549">West Virginia</button>
-        <button class="sl-state-btn" data-lat="43.7844" data-lng="-88.7879">Wisconsin</button>
-        <button class="sl-state-btn" data-lat="43.0760" data-lng="-107.2903">Wyoming</button>
       </div>
     </div>
 
@@ -1952,6 +1898,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
     });
     bindCesiumSelection();
+    initGlobeBoundaries();
     registerTerrainClamp();
     cesiumViewer.resize();
     draw();
@@ -2006,6 +1953,224 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
     }
     return nearestDistSq <= (CESIUM_PICK_RADIUS_PX * CESIUM_PICK_RADIUS_PX) ? nearest : null;
+  }
+
+  // ── Globe Boundary Navigation: LOD-based geographic boundaries ───────────
+  // Fetches country/state GeoJSON from public CDNs and renders them as
+  // interactive Cesium entities with CRT glow styling and hover/click behavior.
+  //
+  // LOD tiers (camera altitude):
+  //   > 3 000 km  → countries only  (Natural Earth 110m)
+  //   300–3 000 km → countries + US states  (Natural Earth 110m + Census states)
+  //   < 300 km    → states layer still shown; street-level is handled by Cesium terrain
+  //
+  // GeoJSON sources:
+  //   Countries: https://raw.githubusercontent.com/nvkelso/natural-earth-vector/.../ne_110m_admin_0_countries.geojson
+  //   US States: https://raw.githubusercontent.com/PublicaMundi/MappingAPI/.../us-states.json
+
+  const BOUNDARY_ALT_COUNTRY      = 3000000;   // 3 000 km — show only countries above this
+  const BOUNDARY_ALT_STATE        = 300000;    // 300 km — show states below this
+  const BOUNDARY_ALT_CITY         = 80000;     // 80 km — show city-level hint below this
+  const BOUNDARY_FLY_ALT_COUNTRY  = 3000000;   // fly altitude when zooming to a country
+  const BOUNDARY_FLY_ALT_STATE    = 600000;    // fly altitude when zooming to a US state
+
+  // CRT palette
+  const BOUNDARY_COLOR_COUNTRY_IDLE    = new Cesium.Color(0.12, 0.6, 0.55, 0.55);
+  const BOUNDARY_COLOR_COUNTRY_HOVER   = new Cesium.Color(0.24, 0.79, 0.72, 0.95);
+  const BOUNDARY_COLOR_STATE_IDLE      = new Cesium.Color(0.08, 0.45, 0.42, 0.40);
+  const BOUNDARY_COLOR_STATE_HOVER     = new Cesium.Color(0.20, 0.70, 0.65, 0.90);
+  const BOUNDARY_FILL_IDLE             = new Cesium.Color(0.12, 0.60, 0.55, 0.04);
+  const BOUNDARY_FILL_HOVER            = new Cesium.Color(0.24, 0.79, 0.72, 0.12);
+
+  let globeBoundaryCountryDs  = null;
+  let globeBoundaryStateDs    = null;
+  let globeBoundaryLodLevel   = -1;
+  let globeBoundaryHoveredId  = null;
+  let globeBoundaryHoverTimer = null;
+
+  function boundaryFeatureName(props) {
+    if (!props) return '';
+    return props.NAME || props.name || props.NAME_EN || props.NAME_LONG ||
+           props.GEOUNIT || props.ADMIN || props.name_en || '';
+  }
+
+  function boundaryFlyAltitude(isState) {
+    return isState ? BOUNDARY_FLY_ALT_STATE : BOUNDARY_FLY_ALT_COUNTRY;
+  }
+
+  function setBoundaryHoverStyle(entity, hovered, isState) {
+    if (!entity || !entity.polygon) return;
+    const idleColor  = isState ? BOUNDARY_COLOR_STATE_IDLE  : BOUNDARY_COLOR_COUNTRY_IDLE;
+    const hoverColor = isState ? BOUNDARY_COLOR_STATE_HOVER : BOUNDARY_COLOR_COUNTRY_HOVER;
+    entity.polygon.outline      = true;
+    entity.polygon.outlineColor = hovered ? hoverColor : idleColor;
+    entity.polygon.outlineWidth = hovered ? 2.5 : 1.0;
+    entity.polygon.material     = hovered ? BOUNDARY_FILL_HOVER : BOUNDARY_FILL_IDLE;
+  }
+
+  function flyToBoundaryEntity(entity, isState) {
+    if (!cesiumViewer || !entity) return;
+    const bb = entity.polygon && entity.polygon.hierarchy
+      ? entity.polygon.hierarchy.getValue(Cesium.JulianDate.now())
+      : null;
+    if (!bb || !bb.positions || bb.positions.length === 0) return;
+
+    let cx = 0, cy = 0, cz = 0;
+    const pts = bb.positions;
+    for (let i = 0; i < pts.length; i++) { cx += pts[i].x; cy += pts[i].y; cz += pts[i].z; }
+    cx /= pts.length; cy /= pts.length; cz /= pts.length;
+    const carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(new Cesium.Cartesian3(cx, cy, cz));
+    if (!carto) return;
+    const lat = Cesium.Math.toDegrees(carto.latitude);
+    const lng = Cesium.Math.toDegrees(carto.longitude);
+
+    const alt = boundaryFlyAltitude(isState);
+    cesiumCameraMoveInternal = true;
+    cesiumFollowDisengageMutedUntil = Date.now() + 2500;
+    cesiumViewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lng, lat, alt),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-55), roll: 0 },
+      duration: 1.8,
+      complete: function () { cesiumCameraMoveInternal = false; },
+      cancel:   function () { cesiumCameraMoveInternal = false; },
+    });
+
+    const name = entity._boundaryName || '';
+    if (name) {
+      const targetLabelEl = document.getElementById('mode-target-label');
+      if (targetLabelEl) {
+        targetLabelEl.textContent = name;
+        targetLabelEl.classList.add('visible');
+      }
+    }
+  }
+
+  function showBoundaryLabel(name, x, y) {
+    const el = document.getElementById('globe-boundary-label');
+    if (!el) return;
+    if (!name) { el.classList.remove('visible'); el.setAttribute('aria-hidden', 'true'); return; }
+    el.textContent = name;
+    el.style.left = (x + 14) + 'px';
+    el.style.top  = (y - 8) + 'px';
+    el.classList.add('visible');
+    el.setAttribute('aria-hidden', 'false');
+  }
+
+  function styleBoundaryDataSource(ds, isState) {
+    if (!ds) return;
+    const entities = ds.entities.values;
+    for (let i = 0; i < entities.length; i++) {
+      const e = entities[i];
+      if (!e.polygon) continue;
+      e.polygon.outline      = true;
+      e.polygon.outlineColor = isState ? BOUNDARY_COLOR_STATE_IDLE : BOUNDARY_COLOR_COUNTRY_IDLE;
+      e.polygon.outlineWidth = 1.0;
+      e.polygon.material     = BOUNDARY_FILL_IDLE;
+      e.polygon.height       = 0;
+      e.polygon.heightReference = Cesium.HeightReference.CLAMP_TO_GROUND;
+      const props = e.properties ? e.properties.getValue(Cesium.JulianDate.now()) : null;
+      e._boundaryName = boundaryFeatureName(props) || (e.name || '');
+      e._boundaryIsState = isState;
+    }
+  }
+
+  function updateBoundaryLod() {
+    if (!cesiumViewer) return;
+    const alt = cesiumViewer.camera.positionCartographic.height;
+    if (globeBoundaryCountryDs) {
+      globeBoundaryCountryDs.show = true;
+    }
+    if (globeBoundaryStateDs) {
+      globeBoundaryStateDs.show = (alt < BOUNDARY_ALT_COUNTRY);
+    }
+  }
+
+  function loadBoundaryGeoJson(url, name) {
+    return Cesium.GeoJsonDataSource.load(url, {
+      stroke: Cesium.Color.TRANSPARENT,
+      fill:   Cesium.Color.TRANSPARENT,
+      strokeWidth: 1,
+      clampToGround: true,
+    }).then(function (ds) {
+      ds.name = name;
+      return ds;
+    }).catch(function (err) {
+      console.warn('[RW Boundary] Failed to load ' + name + ':', err);
+      return null;
+    });
+  }
+
+  async function initGlobeBoundaries() {
+    if (!cesiumViewer || typeof Cesium === 'undefined') return;
+
+    const COUNTRY_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson';
+    const STATE_URL   = 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json';
+
+    try {
+      const [countryDs, stateDs] = await Promise.all([
+        loadBoundaryGeoJson(COUNTRY_URL, 'countries'),
+        loadBoundaryGeoJson(STATE_URL,   'us-states'),
+      ]);
+
+      if (countryDs) {
+        styleBoundaryDataSource(countryDs, false);
+        cesiumViewer.dataSources.add(countryDs);
+        globeBoundaryCountryDs = countryDs;
+        console.info('[RW Boundary] Countries loaded (' + countryDs.entities.values.length + ' polygons)');
+      }
+
+      if (stateDs) {
+        styleBoundaryDataSource(stateDs, true);
+        cesiumViewer.dataSources.add(stateDs);
+        globeBoundaryStateDs = stateDs;
+        console.info('[RW Boundary] US States loaded (' + stateDs.entities.values.length + ' polygons)');
+      }
+
+      if (!countryDs && !stateDs) return;
+
+      updateBoundaryLod();
+
+      cesiumViewer.camera.moveEnd.addEventListener(updateBoundaryLod);
+
+      const boundaryHoverHandler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
+      let lastHoveredEntity = null;
+
+      boundaryHoverHandler.setInputAction(function (movement) {
+        const picked = cesiumViewer.scene.pick(movement.endPosition);
+        const entity = picked && picked.id instanceof Cesium.Entity ? picked.id : null;
+
+        if (lastHoveredEntity && lastHoveredEntity !== entity) {
+          setBoundaryHoverStyle(lastHoveredEntity, false, lastHoveredEntity._boundaryIsState);
+        }
+
+        if (entity && entity.polygon && entity._boundaryName !== undefined) {
+          if (entity !== lastHoveredEntity) {
+            setBoundaryHoverStyle(entity, true, entity._boundaryIsState);
+          }
+          const screenPos = movement.endPosition;
+          showBoundaryLabel(entity._boundaryName, screenPos.x, screenPos.y);
+          cesiumViewer.scene.canvas.style.cursor = 'pointer';
+          lastHoveredEntity = entity;
+        } else {
+          showBoundaryLabel('', 0, 0);
+          if (lastHoveredEntity) {
+            cesiumViewer.scene.canvas.style.cursor = '';
+            lastHoveredEntity = null;
+          }
+        }
+      }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+      boundaryHoverHandler.setInputAction(function (click) {
+        const picked = cesiumViewer.scene.pick(click.position);
+        const entity = picked && picked.id instanceof Cesium.Entity ? picked.id : null;
+        if (entity && entity.polygon && entity._boundaryName !== undefined) {
+          flyToBoundaryEntity(entity, entity._boundaryIsState);
+        }
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    } catch (err) {
+      console.warn('[RW Boundary] initGlobeBoundaries error:', err);
+    }
   }
 
   // ── Cesium street-level navigation helpers ──────────────────────────────────
@@ -2167,20 +2332,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
   }
 
-  // ── Mode Drawer: States panel toggle ────────────────────────────────────
-  const modeStatesToggleBtn = document.getElementById('mode-states-toggle-btn');
-  if (modeStatesToggleBtn) {
-    modeStatesToggleBtn.addEventListener('click', function () {
-      const panel = document.getElementById('mode-states-panel');
-      if (!panel) return;
-      const isOpen = panel.classList.toggle('open');
-      modeStatesToggleBtn.classList.toggle('open', isOpen);
-      modeStatesToggleBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-      const arrow = document.getElementById('mode-states-arrow');
-      if (arrow) arrow.textContent = isOpen ? '▲' : '▼';
-    });
-  }
-
   // ── Ground Level: state select navigation ───────────────────────────────
   const glStateSelect = document.getElementById('gl-state-select');
   if (glStateSelect) {
@@ -2219,18 +2370,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, function () {
       initStreetLevelPanorama(lat, lng);
     });
-    document.querySelectorAll('.sl-state-btn, .sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
+    document.querySelectorAll('.sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
   }
-
-  document.querySelectorAll('.sl-state-btn').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      const lat = parseFloat(btn.dataset.lat);
-      const lng = parseFloat(btn.dataset.lng);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-      btn.classList.add('active');
-      slNavigateTo(lat, lng, btn.textContent);
-    });
-  });
 
   document.querySelectorAll('.sl-landmark-btn').forEach(function (btn) {
     btn.addEventListener('click', function () {
@@ -2253,7 +2394,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       targetLabelEl.classList.add('visible');
     }
     if (monitorStatus && monitorStatus.textContent === 'STANDBY') monitorStatus.textContent = 'LIVE';
-    document.querySelectorAll('.sl-state-btn, .sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
+    document.querySelectorAll('.sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
     if (streetLevelActive || groundLevelActive) {
       // In street/ground level mode: fly to the location
       const noTargetEl = document.getElementById('mode-no-target');
