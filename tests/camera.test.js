@@ -305,22 +305,19 @@ describe('street-view panel', function () {
     assert.ok(src.includes('function initStreetView'), 'initStreetView must be defined');
   });
 
-  test('initStreetView creates StreetViewPanorama with correct options', function () {
+  test('initStreetView delegates to Cesium street-level navigation', function () {
     const fnIdx = src.indexOf('function initStreetView');
     assert.ok(fnIdx !== -1);
-    const body = src.slice(fnIdx, fnIdx + 800);
-    assert.ok(body.includes('StreetViewPanorama'), 'must create google.maps.StreetViewPanorama');
-    assert.ok(body.includes('pov'), 'must set pov');
-    assert.ok(body.includes('heading: 0'), 'pov heading must be 0');
-    assert.ok(body.includes('pitch: 0'), 'pov pitch must be 0');
-    assert.ok(body.includes('zoom: 1'), 'zoom must be 1');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('enterCesiumStreetLevel'), 'initStreetView must call enterCesiumStreetLevel for Cesium-based ground navigation');
+    assert.ok(body.includes('cesiumViewer'), 'must guard on cesiumViewer availability');
   });
 
   test('showStreetView is defined and guards on valid coords', function () {
     assert.ok(src.includes('function showStreetView'), 'showStreetView must be defined');
     const fnIdx = src.indexOf('function showStreetView');
     const body = src.slice(fnIdx, fnIdx + 500);
-    assert.ok(body.includes('googleMapsApiKey'), 'must check for googleMapsApiKey before showing');
+    assert.ok(body.includes('cesiumViewer'), 'must check for cesiumViewer before entering street-level');
     assert.ok(body.includes('Number.isFinite'), 'must validate lat/lng with Number.isFinite');
   });
 
@@ -332,13 +329,12 @@ describe('street-view panel', function () {
     assert.ok(body.includes('visible'), 'must reference the visible class');
   });
 
-  test('loadGoogleMapsApi is defined and injects script tag', function () {
-    assert.ok(src.includes('function loadGoogleMapsApi'), 'loadGoogleMapsApi must be defined');
+  test('loadGoogleMapsApi is a Cesium-compat stub that invokes callback directly', function () {
+    assert.ok(src.includes('function loadGoogleMapsApi'), 'loadGoogleMapsApi must be defined as a compat stub');
     const fnIdx = src.indexOf('function loadGoogleMapsApi');
-    const body = src.slice(fnIdx, fnIdx + 600);
-    assert.ok(body.includes('createElement'), 'must create a script element');
-    assert.ok(body.includes('maps.googleapis.com'), 'must point at Google Maps API');
-    assert.ok(body.includes('encodeURIComponent'), 'API key must be URL-encoded');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('callback'), 'stub must accept and invoke the callback');
+    assert.ok(!body.includes('createElement'), 'stub must not create script elements for Google Maps loading');
   });
 
   test('street-view close button is bound to hideStreetView', function () {
@@ -465,12 +461,11 @@ describe('street-level tab (dedicated mode switch)', function () {
     assert.ok(src.includes('function initStreetLevelPanorama'), 'initStreetLevelPanorama must be defined');
   });
 
-  test('initStreetLevelPanorama reuses existing panorama via setPosition', function () {
+  test('initStreetLevelPanorama uses Cesium street-level navigation', function () {
     const fnIdx = src.indexOf('function initStreetLevelPanorama');
     assert.ok(fnIdx !== -1);
-    const body = src.slice(fnIdx, fnIdx + 700);
-    assert.ok(body.includes('streetLevelPanorama'), 'must use streetLevelPanorama for single-instance reuse');
-    assert.ok(body.includes('setPosition'), 'must call setPosition when reusing existing instance');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('enterCesiumStreetLevel'), 'initStreetLevelPanorama must delegate to enterCesiumStreetLevel for Cesium-based navigation');
   });
 
   test('openStreetLevelTab checks selectedTargetCoords before loading panorama', function () {
@@ -624,7 +619,7 @@ describe('globe viewport centering invariants', function () {
   test('initCesium calls cesiumViewer.resize() before first draw()', function () {
     const fnIdx = src.indexOf('async function initCesium');
     assert.ok(fnIdx !== -1, 'initCesium must be defined');
-    const body = src.slice(fnIdx, fnIdx + 6000);
+    const body = src.slice(fnIdx, fnIdx + 10000);
     const resizeIdx = body.lastIndexOf('cesiumViewer.resize()');
     const drawIdx   = body.lastIndexOf('draw()');
     assert.ok(resizeIdx !== -1, 'cesiumViewer.resize() must be called inside initCesium');
@@ -635,7 +630,7 @@ describe('globe viewport centering invariants', function () {
   test('initCesium logs camera position after initialization', function () {
     const fnIdx = src.indexOf('async function initCesium');
     assert.ok(fnIdx !== -1, 'initCesium must be defined');
-    const body = src.slice(fnIdx, fnIdx + 6000);
+    const body = src.slice(fnIdx, fnIdx + 10000);
     assert.ok(body.includes('positionCartographic'), 'initCesium must read positionCartographic to log camera position');
     assert.ok(body.includes('camera init:'), 'initCesium must log a camera init message confirming position');
   });
@@ -661,5 +656,144 @@ describe('globe viewport centering invariants', function () {
       'canvas#world must use inset:0 so it is anchored at top:0 left:0'
     );
     assert.ok(src.includes('pointer-events: none'), 'canvas overlay must not capture pointer events');
+  });
+});
+
+// ── Cesium street-level navigation (replacing Google Street View) ─────────────
+describe('Cesium street-level navigation', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  test('enterCesiumStreetLevel is defined and uses flyTo for smooth transition', function () {
+    assert.ok(src.includes('function enterCesiumStreetLevel'), 'enterCesiumStreetLevel must be defined');
+    const fnIdx = src.indexOf('function enterCesiumStreetLevel');
+    const body = src.slice(fnIdx, fnIdx + 1000);
+    assert.ok(body.includes('flyTo'), 'must use flyTo for smooth street-level transition');
+    assert.ok(body.includes('STREET_LEVEL_ALTITUDE_M'), 'must use STREET_LEVEL_ALTITUDE_M constant for altitude');
+    assert.ok(body.includes('STREET_LEVEL_PITCH_DEG'), 'must use STREET_LEVEL_PITCH_DEG constant for forward pitch');
+  });
+
+  test('enterCesiumStreetLevel saves orbit position for return journey', function () {
+    const fnIdx = src.indexOf('function enterCesiumStreetLevel');
+    const body = src.slice(fnIdx, fnIdx + 1000);
+    assert.ok(body.includes('cesiumPreStreetLevelPos'), 'must save pre-street-level position to restore on exit');
+    assert.ok(body.includes('positionCartographic'), 'must read current camera cartographic position');
+  });
+
+  test('exitCesiumStreetLevel is defined and returns camera to orbit altitude', function () {
+    assert.ok(src.includes('function exitCesiumStreetLevel'), 'exitCesiumStreetLevel must be defined');
+    const fnIdx = src.indexOf('function exitCesiumStreetLevel');
+    const body = src.slice(fnIdx, fnIdx + 900);
+    assert.ok(body.includes('flyTo'), 'must flyTo the saved orbit position');
+    assert.ok(body.includes('cesiumPreStreetLevelPos'), 'must restore the pre-street-level orbit position');
+  });
+
+  test('cesiumStreetLevelMode state var is declared', function () {
+    assert.ok(src.includes('cesiumStreetLevelMode'), 'cesiumStreetLevelMode state var must be declared');
+    assert.ok(src.includes('cesiumStreetLevelMode = false'), 'cesiumStreetLevelMode must default to false');
+  });
+
+  test('STREET_LEVEL_ALTITUDE_M constant is declared and is 10-200m range', function () {
+    assert.ok(src.includes('const STREET_LEVEL_ALTITUDE_M'), 'STREET_LEVEL_ALTITUDE_M constant must be declared');
+    const match = src.match(/const STREET_LEVEL_ALTITUDE_M\s*=\s*(\d+)/);
+    assert.ok(match, 'STREET_LEVEL_ALTITUDE_M must have a numeric value');
+    const val = Number(match[1]);
+    assert.ok(val >= 10 && val <= 200, 'STREET_LEVEL_ALTITUDE_M must be between 10m and 200m (got ' + val + ')');
+  });
+
+  test('STREET_LEVEL_AUTO_TILT_ALT constant is declared for auto-tilt threshold', function () {
+    assert.ok(src.includes('const STREET_LEVEL_AUTO_TILT_ALT'), 'STREET_LEVEL_AUTO_TILT_ALT must be declared');
+  });
+
+  test('auto-tilt is registered via camera.moveEnd listener in initCesium', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    assert.ok(fnIdx !== -1, 'initCesium must exist');
+    const body = src.slice(fnIdx, fnIdx + 10000);
+    assert.ok(body.includes('camera.moveEnd'), 'auto-tilt must use camera.moveEnd event to trigger after zoom');
+    assert.ok(body.includes('STREET_LEVEL_AUTO_TILT_ALT'), 'auto-tilt must check STREET_LEVEL_AUTO_TILT_ALT threshold');
+  });
+
+  test('Cesium World Terrain is requested in initCesium when Ion token present', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    const body = src.slice(fnIdx, fnIdx + 10000);
+    assert.ok(body.includes('createWorldTerrainAsync'), 'initCesium must call createWorldTerrainAsync for realistic elevation');
+    assert.ok(body.includes('terrainProvider'), 'terrain provider must be passed to Viewer constructor');
+  });
+
+  test('OSM Buildings are loaded in initCesium when Ion token present', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    const body = src.slice(fnIdx, fnIdx + 10000);
+    assert.ok(body.includes('createOsmBuildingsAsync'), 'initCesium must load OSM Buildings for 3D scene');
+    assert.ok(body.includes('OSM Buildings'), 'initCesium must log OSM Buildings status');
+  });
+
+  test('depthTestAgainstTerrain is true for terrain-aware rendering', function () {
+    assert.ok(src.includes('depthTestAgainstTerrain = true'), 'depthTestAgainstTerrain must be enabled for terrain collision');
+  });
+
+  test('minimumZoomDistance is 10m to allow street-level approach', function () {
+    assert.ok(src.includes('ssc.minimumZoomDistance = 10'), 'minimumZoomDistance must be 10m to allow street-level zoom');
+  });
+
+  test('drone keyboard listener is registered for WASD+RF movement', function () {
+    assert.ok(src.includes("'keydown'"), 'keydown listener must be registered for drone movement');
+    assert.ok(src.includes("'keyup'"), 'keyup listener must be registered for drone key release');
+    const kdIdx = src.indexOf("addEventListener('keydown'");
+    const body = src.slice(kdIdx, kdIdx + 500);
+    assert.ok(body.includes('cesiumStreetLevelMode'), 'keyboard handler must guard on cesiumStreetLevelMode');
+    assert.ok(body.includes("'w'"), 'keyboard handler must include W key for forward movement');
+    assert.ok(body.includes('droneMoveLoop'), 'keyboard handler must start droneMoveLoop');
+  });
+
+  test('droneMoveLoop is defined for continuous smooth drone movement', function () {
+    assert.ok(src.includes('function droneMoveLoop'), 'droneMoveLoop must be defined');
+    const fnIdx = src.indexOf('function droneMoveLoop');
+    const body = src.slice(fnIdx, fnIdx + 1000);
+    assert.ok(body.includes('moveForward'), 'droneMoveLoop must call moveForward for W key');
+    assert.ok(body.includes('moveBackward'), 'droneMoveLoop must call moveBackward for S key');
+    assert.ok(body.includes('requestAnimationFrame'), 'droneMoveLoop must use requestAnimationFrame for smooth continuous motion');
+  });
+
+  test('activateFocusMode is defined and uses lookAt for orbit lock', function () {
+    assert.ok(src.includes('function activateFocusMode'), 'activateFocusMode must be defined');
+    const fnIdx = src.indexOf('function activateFocusMode');
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('lookAt'), 'activateFocusMode must use camera.lookAt for orbit-lock focus');
+    assert.ok(body.includes('HeadingPitchRange'), 'activateFocusMode must use HeadingPitchRange for controlled orbit');
+  });
+
+  test('deactivateFocusMode releases lookAt constraint', function () {
+    assert.ok(src.includes('function deactivateFocusMode'), 'deactivateFocusMode must be defined');
+    const fnIdx = src.indexOf('function deactivateFocusMode');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('lookAtTransform'), 'deactivateFocusMode must call lookAtTransform to release orbit lock');
+    assert.ok(body.includes('IDENTITY'), 'deactivateFocusMode must restore IDENTITY transform for free-orbit');
+  });
+
+  test('runFocusAction calls activateFocusMode for enhanced focus orbit', function () {
+    const fnIdx = src.indexOf('function runFocusAction');
+    assert.ok(fnIdx !== -1, 'runFocusAction must exist');
+    const body = src.slice(fnIdx, fnIdx + 600);
+    assert.ok(body.includes('activateFocusMode'), 'runFocusAction must call activateFocusMode for focus-lock orbit');
+  });
+
+  test('street-level view is an absolute overlay inside globe-shell', function () {
+    const globeIdx = src.indexOf('<div id="globe-shell">');
+    const slvIdx   = src.indexOf('<div id="street-level-view"');
+    assert.ok(globeIdx !== -1, 'globe-shell must exist');
+    assert.ok(slvIdx > globeIdx, 'street-level-view must appear after globe-shell opening tag');
+    const cssIdx = src.indexOf('#street-level-view {');
+    assert.ok(cssIdx !== -1, 'street-level-view CSS rule must exist');
+    const cssSnippet = src.slice(cssIdx, cssIdx + 150);
+    assert.ok(cssSnippet.includes('position: absolute'), 'street-level-view must use position:absolute to overlay globe');
+    assert.ok(cssSnippet.includes('inset: 0'), 'street-level-view must use inset:0 to fill globe-shell');
+    assert.ok(cssSnippet.includes('background: transparent'), 'street-level-view must be transparent so Cesium shows through');
+  });
+
+  test('street-view HUD overlay is transparent so Cesium renders through it', function () {
+    const cssIdx = src.indexOf('#street-view {');
+    assert.ok(cssIdx !== -1, 'street-view CSS rule must exist');
+    const snippet = src.slice(cssIdx, cssIdx + 200);
+    assert.ok(snippet.includes('background: transparent'), 'street-view must have transparent background so Cesium is visible');
   });
 });
