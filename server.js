@@ -327,6 +327,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   padding: 12px;
   border-top: 1px solid #0ff;
 }
+    /* ── Street-view overlay ─────────────────────────────────────────────────── */
+    #street-view { position: absolute; inset: 0; z-index: 50; background: #000; display: none; opacity: 0; transition: opacity 300ms ease; pointer-events: none; }
+    #street-view.visible { display: block; opacity: 1; pointer-events: auto; }
+    #street-view-close { position: absolute; top: 10px; right: 10px; z-index: 51; background: #09090dcc; color: #3ec9b8; border: 1px solid #1f5e5a; border-radius: 4px; font-size: .72rem; padding: 5px 12px; cursor: pointer; backdrop-filter: blur(4px); transition: background 160ms, color 160ms; }
+    #street-view-close:hover { background: #0a2422; color: #7fe0d4; }
+    #street-view-pano { width: 100%; height: 100%; }
   </style>
 </head>
 <body>
@@ -596,6 +602,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div class="vignette"></div>
   </div>
 
+  <!-- Street-view overlay panel (hidden until an entity is selected) -->
+  <div id="street-view" role="region" aria-label="Street View">
+    <button id="street-view-close" type="button" title="Close Street View and return to globe">✕ Globe</button>
+    <div id="street-view-pano"></div>
+  </div>
+
 </div>
 <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
@@ -627,6 +639,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const cesiumEntityRefs = { agents: {}, regions: {}, trails: {} };
   let cesiumSelectionHandler = null;
   let cesiumSafetyViewApplied = false;
+  let streetViewPanorama = null;
+  let streetViewVisible = false;
   let lastCesiumRenderCounts = {
     entities: 0,
     regions: 0,
@@ -1361,6 +1375,76 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
     }
     return nearestDistSq <= (CESIUM_PICK_RADIUS_PX * CESIUM_PICK_RADIUS_PX) ? nearest : null;
+  }
+
+  // ── Street-view helpers ───────────────────────────────────────────────────
+  function loadGoogleMapsApi(apiKey, callback) {
+    if (typeof google !== 'undefined' && google.maps && google.maps.StreetViewPanorama) {
+      callback();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(apiKey) + '&callback=__rwGmapsReady';
+    script.async = true;
+    script.defer = true;
+    window.__rwGmapsReady = function () {
+      delete window.__rwGmapsReady;
+      callback();
+    };
+    document.head.appendChild(script);
+  }
+
+  function initStreetView(lat, lng) {
+    const panoEl = document.getElementById('street-view-pano');
+    if (!panoEl) return;
+    if (!streetViewPanorama) {
+      streetViewPanorama = new google.maps.StreetViewPanorama(panoEl, {
+        position: { lat: lat, lng: lng },
+        pov: { heading: 0, pitch: 0 },
+        zoom: 1,
+        addressControl: false,
+        fullscreenControl: false,
+        motionTracking: false,
+        motionTrackingControl: false,
+      });
+    } else {
+      streetViewPanorama.setPosition({ lat: lat, lng: lng });
+      streetViewPanorama.setPov({ heading: 0, pitch: 0 });
+      streetViewPanorama.setZoom(1);
+    }
+  }
+
+  function showStreetView(lat, lng) {
+    if (!BOOTSTRAP.googleMapsApiKey) return;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    const streetViewEl = document.getElementById('street-view');
+    if (!streetViewEl) return;
+    function onReady() {
+      initStreetView(lat, lng);
+      streetViewEl.style.display = 'block';
+      requestAnimationFrame(function () {
+        streetViewEl.classList.add('visible');
+      });
+      streetViewVisible = true;
+    }
+    loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, onReady);
+  }
+
+  function hideStreetView() {
+    const streetViewEl = document.getElementById('street-view');
+    if (!streetViewEl) return;
+    streetViewEl.classList.remove('visible');
+    streetViewVisible = false;
+    streetViewEl.addEventListener('transitionend', function () {
+      if (!streetViewVisible) streetViewEl.style.display = 'none';
+    }, { once: true });
+  }
+
+  const streetViewCloseBtn = document.getElementById('street-view-close');
+  if (streetViewCloseBtn) {
+    streetViewCloseBtn.addEventListener('click', function () {
+      hideStreetView();
+    });
   }
 
   function toLatLngWithFallback(entity) {
@@ -2269,7 +2353,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (agentId) {
       openPanel('target');
       const fp = getSelectedFocusPoint();
-      if (fp) jumpToTarget(fp);
+      if (fp) {
+        jumpToTarget(fp);
+        if (Number.isFinite(fp.lat) && Number.isFinite(fp.lng)) showStreetView(fp.lat, fp.lng);
+      }
+    } else {
+      hideStreetView();
     }
     draw();
   }
@@ -2284,7 +2373,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (regionId) {
       openPanel('target');
       const fp = getSelectedFocusPoint();
-      if (fp) jumpToTarget(fp);
+      if (fp) {
+        jumpToTarget(fp);
+        if (Number.isFinite(fp.lat) && Number.isFinite(fp.lng)) showStreetView(fp.lat, fp.lng);
+      }
+    } else {
+      hideStreetView();
     }
     draw();
   }

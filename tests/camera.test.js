@@ -271,3 +271,128 @@ describe('jumpToTarget camera helpers', function () {
     assert.ok(body.includes('dataset.regionId'), 'event entries must expose regionId for click-to-jump');
   });
 });
+
+// ── Street-view panel ─────────────────────────────────────────────────────────
+describe('street-view panel', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  test('street-view div exists in HTML', function () {
+    assert.ok(src.includes('id="street-view"'), 'street-view overlay div must be present');
+  });
+
+  test('street-view-pano div exists inside street-view', function () {
+    const svIdx = src.indexOf('id="street-view"');
+    assert.ok(svIdx !== -1, 'street-view must exist');
+    const panoIdx = src.indexOf('id="street-view-pano"');
+    assert.ok(panoIdx > svIdx, 'street-view-pano must appear after street-view');
+  });
+
+  test('street-view-close button exists in HTML', function () {
+    assert.ok(src.includes('id="street-view-close"'), 'close button must be present');
+  });
+
+  test('street-view close button appears inside street-view div', function () {
+    const svIdx = src.indexOf('id="street-view"');
+    const closeIdx = src.indexOf('id="street-view-close"');
+    const panoIdx = src.indexOf('id="street-view-pano"');
+    assert.ok(svIdx !== -1, 'street-view must exist');
+    assert.ok(closeIdx > svIdx, 'close button must be inside street-view');
+    assert.ok(panoIdx > closeIdx, 'pano container must follow close button');
+  });
+
+  test('initStreetView is defined', function () {
+    assert.ok(src.includes('function initStreetView'), 'initStreetView must be defined');
+  });
+
+  test('initStreetView creates StreetViewPanorama with correct options', function () {
+    const fnIdx = src.indexOf('function initStreetView');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('StreetViewPanorama'), 'must create google.maps.StreetViewPanorama');
+    assert.ok(body.includes('pov'), 'must set pov');
+    assert.ok(body.includes('heading: 0'), 'pov heading must be 0');
+    assert.ok(body.includes('pitch: 0'), 'pov pitch must be 0');
+    assert.ok(body.includes('zoom: 1'), 'zoom must be 1');
+  });
+
+  test('showStreetView is defined and guards on valid coords', function () {
+    assert.ok(src.includes('function showStreetView'), 'showStreetView must be defined');
+    const fnIdx = src.indexOf('function showStreetView');
+    const body = src.slice(fnIdx, fnIdx + 500);
+    assert.ok(body.includes('googleMapsApiKey'), 'must check for googleMapsApiKey before showing');
+    assert.ok(body.includes('Number.isFinite'), 'must validate lat/lng with Number.isFinite');
+  });
+
+  test('hideStreetView is defined and removes visible class', function () {
+    assert.ok(src.includes('function hideStreetView'), 'hideStreetView must be defined');
+    const fnIdx = src.indexOf('function hideStreetView');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('classList.remove'), 'must remove visible class to hide the panel');
+    assert.ok(body.includes('visible'), 'must reference the visible class');
+  });
+
+  test('loadGoogleMapsApi is defined and injects script tag', function () {
+    assert.ok(src.includes('function loadGoogleMapsApi'), 'loadGoogleMapsApi must be defined');
+    const fnIdx = src.indexOf('function loadGoogleMapsApi');
+    const body = src.slice(fnIdx, fnIdx + 600);
+    assert.ok(body.includes('createElement'), 'must create a script element');
+    assert.ok(body.includes('maps.googleapis.com'), 'must point at Google Maps API');
+    assert.ok(body.includes('encodeURIComponent'), 'API key must be URL-encoded');
+  });
+
+  test('street-view close button is bound to hideStreetView', function () {
+    assert.ok(src.includes('street-view-close'), 'close button must be referenced in JS');
+    // Search for the JS binding (getElementById, not the HTML id=)
+    const bindIdx = src.indexOf("getElementById('street-view-close')");
+    assert.ok(bindIdx !== -1, 'close button must be fetched via getElementById in JS');
+    const snippet = src.slice(bindIdx, bindIdx + 400);
+    assert.ok(snippet.includes('hideStreetView'), 'close button click must call hideStreetView');
+  });
+
+  test('selectAgent calls showStreetView when an entity has coordinates', function () {
+    const fnIdx = src.indexOf('function selectAgent');
+    assert.ok(fnIdx !== -1, 'selectAgent must exist');
+    const body = src.slice(fnIdx, fnIdx + 700);
+    assert.ok(body.includes('showStreetView'), 'selectAgent must call showStreetView on selection');
+  });
+
+  test('selectAgent calls hideStreetView when deselecting', function () {
+    const fnIdx = src.indexOf('function selectAgent');
+    const body = src.slice(fnIdx, fnIdx + 700);
+    assert.ok(body.includes('hideStreetView'), 'selectAgent must call hideStreetView on deselect');
+  });
+
+  test('selectRegion calls showStreetView when a region has coordinates', function () {
+    const fnIdx = src.indexOf('function selectRegion');
+    assert.ok(fnIdx !== -1, 'selectRegion must exist');
+    const body = src.slice(fnIdx, fnIdx + 700);
+    assert.ok(body.includes('showStreetView'), 'selectRegion must call showStreetView on selection');
+  });
+
+  test('selectRegion calls hideStreetView when deselecting', function () {
+    const fnIdx = src.indexOf('function selectRegion');
+    const body = src.slice(fnIdx, fnIdx + 700);
+    assert.ok(body.includes('hideStreetView'), 'selectRegion must call hideStreetView on deselect');
+  });
+
+  test('street-view CSS has display:none default and visible class', function () {
+    assert.ok(src.includes('#street-view {'), 'street-view CSS rule must exist');
+    assert.ok(src.includes('#street-view.visible'), 'visible state CSS rule must exist');
+  });
+
+  test('street-view panel has z-index above Cesium (z-index 50+)', function () {
+    const cssIdx = src.indexOf('#street-view {');
+    const snippet = src.slice(cssIdx, cssIdx + 200);
+    const match = snippet.match(/z-index:\s*(\d+)/);
+    assert.ok(match, 'street-view must have z-index set');
+    assert.ok(Number(match[1]) >= 50, 'z-index must be >= 50 to overlay Cesium');
+  });
+
+  test('Cesium viewer is not destroyed when street-view is shown', function () {
+    // showStreetView must not call cesiumViewer.destroy()
+    const fnIdx = src.indexOf('function showStreetView');
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(!body.includes('destroy'), 'showStreetView must not destroy the Cesium viewer');
+  });
+});
