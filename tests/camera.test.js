@@ -396,3 +396,153 @@ describe('street-view panel', function () {
     assert.ok(!body.includes('destroy'), 'showStreetView must not destroy the Cesium viewer');
   });
 });
+
+// ── Street-level tab (dedicated mode switch) ──────────────────────────────────
+describe('street-level tab (dedicated mode switch)', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  test('street-level-view container exists in HTML', function () {
+    assert.ok(src.includes('id="street-level-view"'), 'dedicated street-level view container must exist');
+  });
+
+  test('street-level-view is hidden by default via CSS', function () {
+    const cssIdx = src.indexOf('#street-level-view {');
+    assert.ok(cssIdx !== -1, 'street-level-view CSS rule must exist');
+    const snippet = src.slice(cssIdx, cssIdx + 200);
+    assert.ok(snippet.includes('display: none'), 'street-level-view must be hidden by default');
+  });
+
+  test('street-level-view active class uses display:flex', function () {
+    assert.ok(src.includes('#street-level-view.active'), 'street-level-view active CSS rule must exist');
+    const cssIdx = src.indexOf('#street-level-view.active');
+    const snippet = src.slice(cssIdx, cssIdx + 80);
+    assert.ok(snippet.includes('display: flex'), 'active state must show with display:flex');
+  });
+
+  test('street-level tab button exists in HTML', function () {
+    assert.ok(src.includes('id="street-level-tab"'), 'street-level tab button must exist in HTML');
+  });
+
+  test('street-level tab button is labeled Street Level', function () {
+    const btnIdx = src.indexOf('id="street-level-tab"');
+    assert.ok(btnIdx !== -1);
+    const snippet = src.slice(btnIdx, btnIdx + 200);
+    assert.ok(snippet.includes('Street Level'), 'tab button must be labeled Street Level');
+  });
+
+  test('street-level-back-btn exists in HTML', function () {
+    assert.ok(src.includes('id="street-level-back-btn"'), 'back-to-globe button must exist in HTML');
+  });
+
+  test('street-level-back-btn appears inside street-level-view', function () {
+    const viewIdx = src.indexOf('id="street-level-view"');
+    const backIdx = src.indexOf('id="street-level-back-btn"');
+    assert.ok(viewIdx !== -1, 'street-level-view must exist');
+    assert.ok(backIdx > viewIdx, 'back button must appear after street-level-view in source');
+  });
+
+  test('street-level-pano div exists inside street-level-view', function () {
+    const viewIdx = src.indexOf('id="street-level-view"');
+    const panoIdx = src.indexOf('id="street-level-pano"');
+    assert.ok(viewIdx !== -1, 'street-level-view must exist');
+    assert.ok(panoIdx > viewIdx, 'street-level-pano must appear after street-level-view in source');
+  });
+
+  test('no-target message text is present in HTML', function () {
+    assert.ok(src.includes('Select a target on the globe first'), 'no-target message must exist in HTML');
+  });
+
+  test('openStreetLevelTab is defined', function () {
+    assert.ok(src.includes('function openStreetLevelTab'), 'openStreetLevelTab must be defined');
+  });
+
+  test('closeStreetLevelTab is defined', function () {
+    assert.ok(src.includes('function closeStreetLevelTab'), 'closeStreetLevelTab must be defined');
+  });
+
+  test('initStreetLevelPanorama is defined', function () {
+    assert.ok(src.includes('function initStreetLevelPanorama'), 'initStreetLevelPanorama must be defined');
+  });
+
+  test('initStreetLevelPanorama reuses existing panorama via setPosition', function () {
+    const fnIdx = src.indexOf('function initStreetLevelPanorama');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 700);
+    assert.ok(body.includes('streetLevelPanorama'), 'must use streetLevelPanorama for single-instance reuse');
+    assert.ok(body.includes('setPosition'), 'must call setPosition when reusing existing instance');
+  });
+
+  test('openStreetLevelTab checks selectedTargetCoords before loading panorama', function () {
+    const fnIdx = src.indexOf('function openStreetLevelTab');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 1400);
+    assert.ok(body.includes('selectedTargetCoords'), 'must check selectedTargetCoords');
+    assert.ok(body.includes('street-level-no-target'), 'must reference the no-target message element');
+    assert.ok(body.includes('loadGoogleMapsApi'), 'must load Google Maps API when coords available');
+  });
+
+  test('openStreetLevelTab hides globe-shell and activates street-level-view', function () {
+    const fnIdx = src.indexOf('function openStreetLevelTab');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 1000);
+    assert.ok(body.includes('globe-shell'), 'must reference globe-shell to hide it');
+    assert.ok(body.includes('classList.add'), 'must add active class to street-level-view');
+  });
+
+  test('closeStreetLevelTab restores globe-shell', function () {
+    const fnIdx = src.indexOf('function closeStreetLevelTab');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 500);
+    assert.ok(body.includes('globe-shell'), 'must restore globe-shell visibility');
+    assert.ok(body.includes('classList.remove'), 'must remove active class from street-level-view');
+  });
+
+  test('street-level-tab button is bound to openStreetLevelTab', function () {
+    // The event binding uses 'const streetLevelTabBtn' — find that variable assignment
+    const bindIdx = src.indexOf('const streetLevelTabBtn');
+    assert.ok(bindIdx !== -1, 'streetLevelTabBtn must be declared for the event binding');
+    const snippet = src.slice(bindIdx, bindIdx + 250);
+    assert.ok(snippet.includes('openStreetLevelTab'), 'street-level-tab click must call openStreetLevelTab');
+  });
+
+  test('street-level-back-btn is bound to closeStreetLevelTab', function () {
+    const bindIdx = src.indexOf("getElementById('street-level-back-btn')");
+    assert.ok(bindIdx !== -1, 'back button must be fetched via getElementById');
+    const snippet = src.slice(bindIdx, bindIdx + 250);
+    assert.ok(snippet.includes('closeStreetLevelTab'), 'back button click must call closeStreetLevelTab');
+  });
+
+  test('selectedTargetCoords is stored when selectAgent finds valid coordinates', function () {
+    const fnIdx = src.indexOf('function selectAgent');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('selectedTargetCoords'), 'selectAgent must store selectedTargetCoords');
+  });
+
+  test('selectedTargetCoords is cleared on deselect in selectAgent', function () {
+    const fnIdx = src.indexOf('function selectAgent');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('selectedTargetCoords = null'), 'selectAgent must null selectedTargetCoords on deselect');
+  });
+
+  test('selectedTargetCoords is stored when selectRegion finds valid coordinates', function () {
+    const fnIdx = src.indexOf('function selectRegion');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('selectedTargetCoords'), 'selectRegion must store selectedTargetCoords');
+  });
+
+  test('selectedTargetCoords is cleared on deselect in selectRegion', function () {
+    const fnIdx = src.indexOf('function selectRegion');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('selectedTargetCoords = null'), 'selectRegion must null selectedTargetCoords on deselect');
+  });
+
+  test('streetLevelActive and streetLevelPanorama state vars are declared', function () {
+    assert.ok(src.includes('streetLevelActive'), 'streetLevelActive must be declared as state');
+    assert.ok(src.includes('streetLevelPanorama'), 'streetLevelPanorama must be declared as state');
+  });
+});
