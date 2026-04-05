@@ -735,20 +735,59 @@ describe('Cesium street-level navigation', function () {
     assert.ok(src.includes('ssc.minimumZoomDistance = 10'), 'minimumZoomDistance must be 10m to allow street-level zoom');
   });
 
-  test('drone keyboard listener is registered for WASD+RF movement', function () {
+  test('drone keyboard listener is registered for WASD+QE movement in all Cesium modes', function () {
     assert.ok(src.includes("'keydown'"), 'keydown listener must be registered for drone movement');
     assert.ok(src.includes("'keyup'"), 'keyup listener must be registered for drone key release');
     const kdIdx = src.indexOf("addEventListener('keydown'");
-    const body = src.slice(kdIdx, kdIdx + 500);
-    assert.ok(body.includes('cesiumStreetLevelMode'), 'keyboard handler must guard on cesiumStreetLevelMode');
-    assert.ok(body.includes("'w'"), 'keyboard handler must include W key for forward movement');
+    const body = src.slice(kdIdx, kdIdx + 600);
+    assert.ok(body.includes('USE_CESIUM') && body.includes('cesiumViewer'), 'keyboard handler must guard on USE_CESIUM and cesiumViewer (global, not street-level only)');
+    assert.ok(body.includes('DRONE_FLIGHT_KEYS'), 'keyboard handler must use DRONE_FLIGHT_KEYS for unified key list');
     assert.ok(body.includes('droneMoveLoop'), 'keyboard handler must start droneMoveLoop');
+    // Verify DRONE_FLIGHT_KEYS includes WASD + Q/E keys
+    const keysIdx = src.indexOf('DRONE_FLIGHT_KEYS');
+    const keysDecl = src.slice(keysIdx, keysIdx + 120);
+    assert.ok(keysDecl.includes("'w'"), 'DRONE_FLIGHT_KEYS must include W key');
+    assert.ok(keysDecl.includes("'q'"), 'DRONE_FLIGHT_KEYS must include Q key for descend');
+    assert.ok(keysDecl.includes("'e'"), 'DRONE_FLIGHT_KEYS must include E key for ascend');
+    assert.ok(keysDecl.includes("'shift'"), 'DRONE_FLIGHT_KEYS must include shift key for boost');
+  });
+
+  test('droneMoveLoop supports Q key (descend) and E key (ascend)', function () {
+    const fnIdx = src.indexOf('function droneMoveLoop');
+    assert.ok(fnIdx !== -1, 'droneMoveLoop must be defined');
+    const body = src.slice(fnIdx, fnIdx + 1200);
+    assert.ok(body.includes("cesiumDroneKeys['e']") && body.includes('moveUp'), 'droneMoveLoop must move camera up when E (ascend) is pressed');
+    assert.ok(body.includes("cesiumDroneKeys['q']") && body.includes('moveDown'), 'droneMoveLoop must move camera down when Q (descend) is pressed');
+  });
+
+  test('droneMoveLoop supports Shift key for boost speed', function () {
+    const fnIdx = src.indexOf('function droneMoveLoop');
+    const body = src.slice(fnIdx, fnIdx + 1200);
+    assert.ok(body.includes("cesiumDroneKeys['shift']"), 'droneMoveLoop must read shift key state');
+    assert.ok(body.includes('DRONE_BOOST_MULTIPLIER'), 'droneMoveLoop must apply DRONE_BOOST_MULTIPLIER for Shift boost');
+  });
+
+  test('DRONE_BOOST_MULTIPLIER constant is declared for Shift speed boost', function () {
+    assert.ok(src.includes('const DRONE_BOOST_MULTIPLIER'), 'DRONE_BOOST_MULTIPLIER must be declared');
+    const match = src.match(/const DRONE_BOOST_MULTIPLIER\s*=\s*(\d+)/);
+    assert.ok(match, 'DRONE_BOOST_MULTIPLIER must have a numeric value');
+    const val = Number(match[1]);
+    assert.ok(val >= 2 && val <= 10, 'DRONE_BOOST_MULTIPLIER must be a reasonable multiplier (2-10, got ' + val + ')');
+  });
+
+  test('droneMoveLoop works globally in all Cesium modes (no cesiumStreetLevelMode guard)', function () {
+    const fnIdx = src.indexOf('function droneMoveLoop');
+    assert.ok(fnIdx !== -1, 'droneMoveLoop must be defined');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    // The loop must guard on cesiumViewer existence but NOT on cesiumStreetLevelMode
+    assert.ok(body.includes('cesiumViewer'), 'droneMoveLoop must check cesiumViewer');
+    assert.ok(!body.includes('cesiumStreetLevelMode'), 'droneMoveLoop must NOT be gated on cesiumStreetLevelMode so it works globally');
   });
 
   test('droneMoveLoop is defined for continuous smooth drone movement', function () {
     assert.ok(src.includes('function droneMoveLoop'), 'droneMoveLoop must be defined');
     const fnIdx = src.indexOf('function droneMoveLoop');
-    const body = src.slice(fnIdx, fnIdx + 1000);
+    const body = src.slice(fnIdx, fnIdx + 1500);
     assert.ok(body.includes('moveForward'), 'droneMoveLoop must call moveForward for W key');
     assert.ok(body.includes('moveBackward'), 'droneMoveLoop must call moveBackward for S key');
     assert.ok(body.includes('requestAnimationFrame'), 'droneMoveLoop must use requestAnimationFrame for smooth continuous motion');
