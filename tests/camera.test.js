@@ -450,7 +450,7 @@ describe('street-level tab (dedicated mode switch)', function () {
   });
 
   test('no-target message text is present in HTML', function () {
-    assert.ok(src.includes('Select a target on the globe first'), 'no-target message must exist in HTML');
+    assert.ok(src.includes('Select a target first'), 'no-target message must exist in HTML');
   });
 
   test('openStreetLevelTab is defined', function () {
@@ -544,5 +544,39 @@ describe('street-level tab (dedicated mode switch)', function () {
   test('streetLevelActive and streetLevelPanorama state vars are declared', function () {
     assert.ok(src.includes('streetLevelActive'), 'streetLevelActive must be declared as state');
     assert.ok(src.includes('streetLevelPanorama'), 'streetLevelPanorama must be declared as state');
+  });
+
+  test('rail-btn-street-level button exists in HTML', function () {
+    assert.ok(src.includes('id="rail-btn-street-level"'), 'Street Level rail button must exist in HTML');
+  });
+
+  test('rail-btn-street-level button appears inside the rail nav', function () {
+    const railIdx = src.indexOf('<nav id="rail"');
+    const btnIdx  = src.indexOf('id="rail-btn-street-level"');
+    assert.ok(railIdx !== -1, 'rail nav must exist');
+    assert.ok(btnIdx  >  railIdx, 'rail-btn-street-level must appear after the rail nav opening tag');
+  });
+
+  test('rail-btn-street-level is wired to openStreetLevelTab', function () {
+    const bindIdx = src.indexOf('streetLevelRailBtn');
+    assert.ok(bindIdx !== -1, 'streetLevelRailBtn variable must be declared for the event binding');
+    const snippet = src.slice(bindIdx, bindIdx + 250);
+    assert.ok(snippet.includes('openStreetLevelTab'), 'rail button click must call openStreetLevelTab');
+  });
+
+  test('openStreetLevelTab sets active state on rail-btn-street-level', function () {
+    const fnIdx = src.indexOf('function openStreetLevelTab');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 1400);
+    assert.ok(body.includes('rail-btn-street-level'), 'openStreetLevelTab must reference the rail button');
+    assert.ok(body.includes("classList.add('active')"), 'openStreetLevelTab must add active class');
+  });
+
+  test('closeStreetLevelTab clears active state on rail-btn-street-level', function () {
+    const fnIdx = src.indexOf('function closeStreetLevelTab');
+    assert.ok(fnIdx !== -1);
+    const body = src.slice(fnIdx, fnIdx + 600);
+    assert.ok(body.includes('rail-btn-street-level'), 'closeStreetLevelTab must reference the rail button');
+    assert.ok(body.includes("classList.remove('active')"), 'closeStreetLevelTab must remove active class');
   });
 });

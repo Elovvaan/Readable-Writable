@@ -372,6 +372,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <button class="rail-btn" type="button" data-panel="target" title="Selected Target" aria-label="Toggle Target panel">⊕</button>
     <button class="rail-btn" type="button" data-panel="stats"  title="Stats" aria-label="Toggle Stats panel">▦</button>
     <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel">◈</button>
+    <button class="rail-btn" id="rail-btn-street-level" type="button" title="Street Level" aria-label="Street Level" aria-pressed="false">⊞</button>
   </nav>
 
   <!-- Layers drawer (left) -->
@@ -631,7 +632,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <button id="street-level-back-btn" type="button" title="Return to globe view">← Back to Globe</button>
     <span id="street-level-target-label"></span>
   </div>
-  <div id="street-level-no-target">Select a target on the globe first.</div>
+  <div id="street-level-no-target">Select a target first.</div>
   <div id="street-level-pano"></div>
 </div>
 
@@ -1504,11 +1505,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const panoEl = document.getElementById('street-level-pano');
     const targetLabelEl = document.getElementById('street-level-target-label');
     const tabBtn = document.getElementById('street-level-tab');
+    const railBtn = document.getElementById('rail-btn-street-level');
     if (!streetLevelView) return;
     if (globeShell) globeShell.style.display = 'none';
     streetLevelView.classList.add('active');
     streetLevelActive = true;
     if (tabBtn) { tabBtn.classList.add('active'); tabBtn.setAttribute('aria-pressed', 'true'); }
+    if (railBtn) { railBtn.classList.add('active'); railBtn.setAttribute('aria-pressed', 'true'); }
     if (selectedTargetCoords && BOOTSTRAP.googleMapsApiKey) {
       if (noTargetEl) noTargetEl.style.display = 'none';
       if (panoEl) panoEl.classList.add('visible');
@@ -1529,15 +1532,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const globeShell = document.getElementById('globe-shell');
     const streetLevelView = document.getElementById('street-level-view');
     const tabBtn = document.getElementById('street-level-tab');
+    const railBtn = document.getElementById('rail-btn-street-level');
     if (streetLevelView) streetLevelView.classList.remove('active');
     if (globeShell) globeShell.style.display = '';
     streetLevelActive = false;
     if (tabBtn) { tabBtn.classList.remove('active'); tabBtn.setAttribute('aria-pressed', 'false'); }
+    if (railBtn) { railBtn.classList.remove('active'); railBtn.setAttribute('aria-pressed', 'false'); }
   }
 
   const streetLevelTabBtn = document.getElementById('street-level-tab');
   if (streetLevelTabBtn) {
     streetLevelTabBtn.addEventListener('click', openStreetLevelTab);
+  }
+
+  const streetLevelRailBtn = document.getElementById('rail-btn-street-level');
+  if (streetLevelRailBtn) {
+    streetLevelRailBtn.addEventListener('click', openStreetLevelTab);
   }
 
   const streetLevelBackBtn = document.getElementById('street-level-back-btn');
@@ -3649,7 +3659,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   panDownBtnEl.addEventListener('click', function () { panViewport(0, VIEWPORT_PAN_STEP); });
 
   // ── Rail + drawer event listeners ─────────────────────────────────────────
-  document.querySelectorAll('.rail-btn').forEach(function (btn) {
+  document.querySelectorAll('.rail-btn[data-panel]').forEach(function (btn) {
     btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
   });
   document.querySelectorAll('.drawer-close').forEach(function (btn) {
