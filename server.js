@@ -42,6 +42,7 @@ const worldview = {
 // Structured data model: every entity carries source, ts, confidence, eventHistory
 const liveEntityState = {
   vehicles: {},   // ground vehicles (cars, trucks, emergency)
+  aircraft: {},   // aircraft with full structured metadata (non-OpenSky, or bridged)
   vessels:  {},   // maritime vessels
   sensors:  {},   // fixed sensor nodes (CCTV, weather station, acoustic)
   weather:  {},   // weather cells (storm, rain, fog)
@@ -553,6 +554,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         </div>
         <button class="layer-toggle active" id="toggle-layer-vehicles" type="button" aria-pressed="true">ON</button>
       </div>
+      <div class="layer-row on" data-layer="aircraft">
+        <div class="layer-icon">✈</div>
+        <div class="layer-info">
+          <div class="layer-name">Aircraft (Live Entities)</div>
+          <div class="layer-provider">Simulated · ADS-B</div>
+          <div class="layer-freshness" id="layer-status-aircraft">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-aircraft" type="button" aria-pressed="true">ON</button>
+      </div>
       <div class="layer-row on" data-layer="vessels">
         <div class="layer-icon">⛵</div>
         <div class="layer-info">
@@ -636,6 +646,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-flight" checked><span>Flights</span></label>
       <label class="lp-toggle"><span class="lp-dot" style="background:#9a70d8"></span><input type="checkbox" id="toggle-type-satellite" checked><span>Sats</span></label>
       <label class="lp-toggle"><span class="lp-dot" style="background:#f0c040"></span><input type="checkbox" id="toggle-type-vehicle" checked><span>Vehicles</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-aircraft" checked><span>Aircraft</span></label>
       <label class="lp-toggle"><span class="lp-dot" style="background:#40c8f0"></span><input type="checkbox" id="toggle-type-vessel" checked><span>Vessels</span></label>
       <label class="lp-toggle"><span class="lp-dot" style="background:#ff8888"></span><input type="checkbox" id="toggle-type-sensor" checked><span>Sensors</span></label>
       <label class="lp-toggle"><span class="lp-dot" style="background:#aaddff"></span><input type="checkbox" id="toggle-type-weather" checked><span>Weather</span></label>
@@ -1167,6 +1178,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleLayerSatellitesEl  = document.getElementById('toggle-layer-satellites');
   const toggleLayerRegionsEl     = document.getElementById('toggle-layer-regions');
   const toggleLayerVehiclesEl    = document.getElementById('toggle-layer-vehicles');
+  const toggleLayerAircraftEl    = document.getElementById('toggle-layer-aircraft');
   const toggleLayerVesselsEl     = document.getElementById('toggle-layer-vessels');
   const toggleLayerSensorsEl     = document.getElementById('toggle-layer-sensors');
   const toggleLayerWeatherCellsEl= document.getElementById('toggle-layer-weatherCells');
@@ -1178,6 +1190,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleTypeFlightEl = document.getElementById('toggle-type-flight');
   const toggleTypeSatelliteEl = document.getElementById('toggle-type-satellite');
   const toggleTypeVehicleEl = document.getElementById('toggle-type-vehicle');
+  const toggleTypeAircraftEl = document.getElementById('toggle-type-aircraft');
   const toggleTypeVesselEl  = document.getElementById('toggle-type-vessel');
   const toggleTypeSensorEl  = document.getElementById('toggle-type-sensor');
   const toggleTypeWeatherEl = document.getElementById('toggle-type-weather');
@@ -1363,13 +1376,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let showAgents = true;
   let showRegions = true;
   let showTrails = true;
-  let visibleEntityTypes = { agent: true, flight: true, satellite: true, vehicle: true, vessel: true, sensor: true, weather: true, other: true };
+  let visibleEntityTypes = { agent: true, flight: true, satellite: true, vehicle: true, aircraft: true, vessel: true, sensor: true, weather: true, other: true };
   const layerState = {
     liveFlights:     true,   // OpenSky API + file source
     militaryFlights: false,  // UNAVAILABLE — no data source wired
     earthquakes:     false,  // UNAVAILABLE — no data source wired
     satellites:      true,   // Celestrak / TLE
     vehicles:        true,   // Ground vehicles (simulated)
+    aircraft:        true,   // Aircraft entities (simulated, structured metadata)
     vessels:         true,   // Maritime vessels (simulated AIS)
     sensors:         true,   // Sensor nodes (fixed infrastructure)
     weatherCells:    true,   // Weather cells (simulated NOAA)
@@ -1384,7 +1398,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const LAYER_AVAILABLE = {
     liveFlights: true, militaryFlights: false, earthquakes: false,
     satellites: true,
-    vehicles: true, vessels: true, sensors: true, weatherCells: true, trafficSim: true,
+    vehicles: true, aircraft: true, vessels: true, sensors: true, weatherCells: true, trafficSim: true,
     traffic: false, weather: false, cctvMesh: false, bikeshare: false,
   };
   // Timeline engine client state
@@ -1513,6 +1527,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     flight:   { fill: '#ffb77d', stroke: '#ffd2ad', trail: '#ffb77d55', trailSelected: '#ffe0c4cc' },
     satellite:{ fill: '#d0a3ff', stroke: '#e2c7ff', trail: '#d0a3ff55', trailSelected: '#ecdfffcc' },
     vehicle:  { fill: '#f0c040', stroke: '#ffe080', trail: '#f0c04055', trailSelected: '#ffeea0cc' },
+    aircraft: { fill: '#c8884a', stroke: '#ffb070', trail: '#c8884a55', trailSelected: '#ffd0a0cc' },
     vessel:   { fill: '#40c8f0', stroke: '#80e4ff', trail: '#40c8f055', trailSelected: '#a0eeffcc' },
     sensor:   { fill: '#ff8888', stroke: '#ffbbbb', trail: '#ff888855', trailSelected: '#ffcccccc' },
     weather:  { fill: '#aaddff', stroke: '#ccf0ff', trail: '#aaddff55', trailSelected: '#ddf5ffcc' },
@@ -1524,6 +1539,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       flight:   { fill: '#ffc38f', stroke: '#ffe2bd', trail: '#ffc38f57', trailSelected: '#ffedd6cc' },
       satellite:{ fill: '#d6b2ff', stroke: '#ead7ff', trail: '#d6b2ff57', trailSelected: '#f0e6ffcc' },
       vehicle:  { fill: '#f5cc48', stroke: '#ffe88a', trail: '#f5cc4857', trailSelected: '#fff2b0cc' },
+      aircraft: { fill: '#d09052', stroke: '#ffbb80', trail: '#d0905257', trailSelected: '#ffd8b4cc' },
       vessel:   { fill: '#48d0f5', stroke: '#8aeaff', trail: '#48d0f557', trailSelected: '#aaf2ffcc' },
       sensor:   { fill: '#ff9090', stroke: '#ffc5c5', trail: '#ff909057', trailSelected: '#ffd8d8cc' },
       weather:  { fill: '#b8e8ff', stroke: '#d8f4ff', trail: '#b8e8ff57', trailSelected: '#e8f8ffcc' },
@@ -1534,6 +1550,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       flight:   { fill: '#bcff70', stroke: '#e2ffc7', trail: '#bcff7052', trailSelected: '#f0ffd9d2' },
       satellite:{ fill: '#75ff95', stroke: '#c7ffd7', trail: '#75ff954c', trailSelected: '#e1ffe8d0' },
       vehicle:  { fill: '#d4ff60', stroke: '#eeffa8', trail: '#d4ff6052', trailSelected: '#f4ffd0d2' },
+      aircraft: { fill: '#e8d860', stroke: '#fff8a0', trail: '#e8d86052', trailSelected: '#fffad0d2' },
       vessel:   { fill: '#60f8d4', stroke: '#a8fff0', trail: '#60f8d452', trailSelected: '#d0ffecd2' },
       sensor:   { fill: '#ff9a70', stroke: '#ffcca8', trail: '#ff9a7052', trailSelected: '#ffd8c0d2' },
       weather:  { fill: '#a8d8ff', stroke: '#d0ecff', trail: '#a8d8ff52', trailSelected: '#dff0ffd2' },
@@ -1544,6 +1561,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       flight:   { fill: '#ff9348', stroke: '#ffbb8d', trail: '#ff934866', trailSelected: '#ffd4b8db' },
       satellite:{ fill: '#ff5f62', stroke: '#ff9b9d', trail: '#ff5f6266', trailSelected: '#ffc5c7db' },
       vehicle:  { fill: '#ffcc40', stroke: '#ffee90', trail: '#ffcc4066', trailSelected: '#fff4c0db' },
+      aircraft: { fill: '#ff9840', stroke: '#ffbf80', trail: '#ff984066', trailSelected: '#ffd8b0db' },
       vessel:   { fill: '#40d0ee', stroke: '#88e8f8', trail: '#40d0ee66', trailSelected: '#b0f0f8db' },
       sensor:   { fill: '#ff7070', stroke: '#ffaabb', trail: '#ff707066', trailSelected: '#ffccccdb' },
       weather:  { fill: '#c0e8ff', stroke: '#e0f4ff', trail: '#c0e8ff66', trailSelected: '#f0fbffdb' },
@@ -2976,8 +2994,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       regionsVisible++;
     }
 
-    // ── Live Entity Layers: vehicles, vessels, sensors, weather cells ─────────
-    const liveEntities = (state && state.liveEntities) || { vehicles: [], vessels: [], sensors: [], weather: [] };
+    // ── Live Entity Layers: vehicles, aircraft, vessels, sensors, weather cells ─
+    const liveEntities = (state && state.liveEntities) || { vehicles: [], aircraft: [], vessels: [], sensors: [], weather: [] };
 
     // Helper to add a live entity point to Cesium
     function addLiveEntityPoint(entity, color, pixelSize, altitude) {
@@ -2994,6 +3012,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
             outlineColor: Cesium.Color.fromCssColorString(color),
             outlineWidth: isSelected ? 3 : 1,
           },
+          label: entity.label ? {
+            text: entity.label,
+            font: '10px monospace',
+            fillColor: Cesium.Color.fromCssColorString(color),
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            pixelOffset: new Cesium.Cartesian2(0, -12),
+            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 4000000),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          } : undefined,
         });
         entitiesVisible++;
       } catch (_) { /* ignore single entity errors */ }
@@ -3002,6 +3032,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (layerState.vehicles && visibleEntityTypes.vehicle) {
       for (const v of liveEntities.vehicles) {
         addLiveEntityPoint(v, TYPE_STYLE.vehicle.fill, 9, 5);
+      }
+    }
+    if (layerState.aircraft !== false && visibleEntityTypes.aircraft !== false) {
+      for (const ac of (liveEntities.aircraft || [])) {
+        addLiveEntityPoint(ac, '#c8884a', 8, ac.altitude || 10000);
       }
     }
     if (layerState.vessels && visibleEntityTypes.vessel) {
@@ -3039,7 +3074,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
     }
 
-    // ── Traffic Layer: incidents and zone alerts ──────────────────────────────
+    // ── Traffic Layer: segments (color-coded polylines), incidents, zone alerts ─
     if (layerState.trafficSim) {
       const traffic = (state && state.traffic) || {};
       for (const inc of (traffic.incidents || [])) {
@@ -3074,6 +3109,50 @@ const FRONTEND_HTML = `<!DOCTYPE html>
               outlineColor: Cesium.Color.fromCssColorString('#ffaa00').withAlpha(0.55),
               outlineWidth: 1,
               height: 0,
+            },
+          });
+        } catch (_) { /* ignore */ }
+      }
+      // ── Road segments: color-coded polylines by congestion level ─────────────
+      for (const seg of (traffic.segments || [])) {
+        if (!Number.isFinite(seg.fromLat) || !Number.isFinite(seg.fromLng)
+            || !Number.isFinite(seg.toLat) || !Number.isFinite(seg.toLng)) continue;
+        try {
+          const segColor = seg.level === 'heavy' ? '#ff4444'
+            : seg.level === 'moderate' ? '#ffaa00'
+            : seg.level === 'light'    ? '#ffe044'
+            : '#44cc88';  // free
+          cesiumViewer.entities.add({
+            id: 'traffic-seg-' + seg.id,
+            rwMeta: { kind: 'traffic', id: seg.id },
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+                seg.fromLng, seg.fromLat, 10,
+                seg.toLng,   seg.toLat,   10,
+              ]),
+              width: seg.level === 'heavy' ? 5 : 3,
+              material: new Cesium.PolylineGlowMaterialProperty({
+                glowPower: 0.18,
+                color: Cesium.Color.fromCssColorString(segColor).withAlpha(0.72),
+              }),
+              clampToGround: false,
+            },
+          });
+        } catch (_) { /* ignore */ }
+      }
+      // ── Road closures: dashed white polylines ─────────────────────────────
+      for (const cl of (traffic.closures || [])) {
+        if (!Number.isFinite(cl.lat) || !Number.isFinite(cl.lng)) continue;
+        try {
+          cesiumViewer.entities.add({
+            id: 'traffic-clo-' + cl.id,
+            rwMeta: { kind: 'traffic', id: cl.id },
+            position: Cesium.Cartesian3.fromDegrees(cl.lng, cl.lat, 15),
+            point: {
+              pixelSize: 11,
+              color: Cesium.Color.fromCssColorString('#ffffff').withAlpha(0.85),
+              outlineColor: Cesium.Color.fromCssColorString('#cc2222'),
+              outlineWidth: 2,
             },
           });
         } catch (_) { /* ignore */ }
@@ -3592,7 +3671,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function buildLayerDiagnostics() {
     const allAgents = Object.values(state.agents || {});
-    const liveEntities = state.liveEntities || { vehicles: [], vessels: [], sensors: [], weather: [] };
+    const liveEntities = state.liveEntities || { vehicles: [], aircraft: [], vessels: [], sensors: [], weather: [] };
     const flightsInState = allAgents.filter(a => getEntityType(a) === 'flight').length;
     const satellitesInState = allAgents.filter(a => getEntityType(a) === 'satellite').length;
     const regionsInState = Object.keys(state.regions || {}).length;
@@ -3602,6 +3681,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       earthquakes:     'unavailable',
       satellites:      layerState.satellites ? (satellitesInState > 0 ? 'active' : 'no data') : 'off',
       vehicles:        layerState.vehicles ? (liveEntities.vehicles.length > 0 ? 'active' : 'no data') : 'off',
+      aircraft:        layerState.aircraft !== false ? ((liveEntities.aircraft || []).length > 0 ? 'active' : 'no data') : 'off',
       vessels:         layerState.vessels ? (liveEntities.vessels.length > 0 ? 'active' : 'no data') : 'off',
       sensors:         layerState.sensors ? (liveEntities.sensors.length > 0 ? 'active' : 'no data') : 'off',
       weatherCells:    layerState.weatherCells ? (liveEntities.weather.length > 0 ? 'active' : 'no data') : 'off',
@@ -3704,7 +3784,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   /** Find a live entity for use in the panel (without requiring getAllLiveEntities, safe before it's defined). */
   function findLiveEntityForPanel(entityId) {
     const le = (state && state.liveEntities) || {};
-    for (const list of [le.vehicles || [], le.vessels || [], le.sensors || [], le.weather || []]) {
+    for (const list of [le.vehicles || [], le.aircraft || [], le.vessels || [], le.sensors || [], le.weather || []]) {
       const found = list.find(e => e.id === entityId);
       if (found) return found;
     }
@@ -4907,11 +4987,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     closeEntityProfile();
   });
 
-  /** Return a flat lookup of all live entities (vehicles, vessels, sensors, weather) keyed by id. */
+  /** Return a flat lookup of all live entities (vehicles, aircraft, vessels, sensors, weather) keyed by id. */
   function getAllLiveEntities() {
     const result = {};
     const le = (state && state.liveEntities) || {};
-    for (const list of [le.vehicles || [], le.vessels || [], le.sensors || [], le.weather || []]) {
+    for (const list of [le.vehicles || [], le.aircraft || [], le.vessels || [], le.sensors || [], le.weather || []]) {
       for (const e of list) { result[e.id] = e; }
     }
     return result;
@@ -4920,7 +5000,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   /** Find a live entity by id across all layers. */
   function findLiveEntity(entityId) {
     const le = (state && state.liveEntities) || {};
-    for (const list of [le.vehicles || [], le.vessels || [], le.sensors || [], le.weather || []]) {
+    for (const list of [le.vehicles || [], le.aircraft || [], le.vessels || [], le.sensors || [], le.weather || []]) {
       const found = list.find(e => e.id === entityId);
       if (found) return found;
     }
@@ -5075,6 +5155,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
   }
   makeLayerToggle(toggleLayerVehiclesEl, 'vehicles');
+  makeLayerToggle(toggleLayerAircraftEl, 'aircraft');
   makeLayerToggle(toggleLayerVesselsEl, 'vessels');
   makeLayerToggle(toggleLayerSensorsEl, 'sensors');
   makeLayerToggle(toggleLayerWeatherCellsEl, 'weatherCells');
@@ -5082,6 +5163,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function onTypeToggleChangeExtended() {
     visibleEntityTypes.vehicle  = !!toggleTypeVehicleEl.checked;
+    visibleEntityTypes.aircraft = toggleTypeAircraftEl ? !!toggleTypeAircraftEl.checked : true;
     visibleEntityTypes.vessel   = !!toggleTypeVesselEl.checked;
     visibleEntityTypes.sensor   = !!toggleTypeSensorEl.checked;
     visibleEntityTypes.weather  = !!toggleTypeWeatherEl.checked;
@@ -5091,16 +5173,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     updateStats();
     draw();
   }
-  if (toggleTypeVehicleEl) toggleTypeVehicleEl.addEventListener('change', onTypeToggleChangeExtended);
-  if (toggleTypeVesselEl)  toggleTypeVesselEl.addEventListener('change', onTypeToggleChangeExtended);
-  if (toggleTypeSensorEl)  toggleTypeSensorEl.addEventListener('change', onTypeToggleChangeExtended);
-  if (toggleTypeWeatherEl) toggleTypeWeatherEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeVehicleEl)  toggleTypeVehicleEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeAircraftEl) toggleTypeAircraftEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeVesselEl)   toggleTypeVesselEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeSensorEl)   toggleTypeSensorEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeWeatherEl)  toggleTypeWeatherEl.addEventListener('change', onTypeToggleChangeExtended);
 
   /** Update layer status badges in the layers drawer. */
   function updateLayerStatusBadges() {
     const diag = buildLayerDiagnostics();
     const pairs = [
       ['layer-status-vehicles', diag.vehicles],
+      ['layer-status-aircraft', diag.aircraft],
       ['layer-status-vessels',  diag.vessels],
       ['layer-status-sensors',  diag.sensors],
       ['layer-status-weatherCells', diag.weatherCells],
@@ -5113,6 +5197,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     // sync toggle button states for new layers
     const layerBtns = [
       [toggleLayerVehiclesEl, 'vehicles'],
+      [toggleLayerAircraftEl, 'aircraft'],
       [toggleLayerVesselsEl,  'vessels'],
       [toggleLayerSensorsEl,  'sensors'],
       [toggleLayerWeatherCellsEl, 'weatherCells'],
@@ -5646,6 +5731,7 @@ function snapshot() {
     // ── Live entity layers ───────────────────────────────────────────────────
     liveEntities: {
       vehicles: Object.values(liveEntityState.vehicles),
+      aircraft: Object.values(liveEntityState.aircraft),
       vessels:  Object.values(liveEntityState.vessels),
       sensors:  Object.values(liveEntityState.sensors),
       weather:  Object.values(liveEntityState.weather),
@@ -5935,6 +6021,51 @@ function buildWeatherCellEntity(id, opts, previous) {
   return entity;
 }
 
+/**
+ * Build an aircraft entity with full structured metadata.
+ * Aircraft carry source (ads-b, opensky, sim), callsign, altitude, heading, speed,
+ * confidence, and event history.
+ * @param {string} id
+ * @param {object} opts
+ * @param {object|null} previous
+ * @returns {object|null}
+ */
+function buildAircraftEntity(id, opts, previous) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const trail = Array.isArray(previous && previous.trail) ? previous.trail.slice(-24) : [];
+  const moved = !previous
+    || !Number.isFinite(previous.lat) || !Number.isFinite(previous.lng)
+    || Math.abs(previous.lat - opts.lat) > 0.0001
+    || Math.abs(previous.lng - opts.lng) > 0.0001;
+  if (trail.length === 0 || moved) trail.push({ lat: opts.lat, lng: opts.lng, alt: opts.altitude || 0, ts: now });
+  const entity = {
+    id: 'aircraft-' + id,
+    type: 'aircraft',
+    label: opts.label || opts.callsign || id,
+    name: opts.label || opts.callsign || id,
+    callsign: opts.callsign || null,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: Number.isFinite(opts.altitude) ? opts.altitude : 10000,
+    heading: Number.isFinite(opts.heading) ? opts.heading : 0,
+    speed: Number.isFinite(opts.speed) ? opts.speed : 0,
+    subtype: opts.subtype || 'commercial',  // commercial | military | private | drone | helicopter
+    source: opts.source || 'sim',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.88,
+    eventHistory: (previous && Array.isArray(previous.eventHistory)) ? previous.eventHistory : [],
+    active: true,
+    state: opts.state || 'airborne',
+    trail: trail.slice(-24),
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
 // ─── Live Entity Layer Simulation ─────────────────────────────────────────────
 
 /** Seed a repeatable pseudo-random value from a string key and numeric slot. */
@@ -6025,6 +6156,33 @@ function refreshLiveEntityLayers() {
       confidence: 0.75 + seededRand(s.id, 11) * 0.15,
     }, prev);
     if (entity) liveEntityState.weather[s.id] = entity;
+  }
+
+  // ── Aircraft (simulated, non-OpenSky — representative global corridors) ─────
+  const aircraftSeeds = [
+    { id: 'ac001', baseLat: 51.48, baseLng: -0.45,   callsign: 'BAW001', subtype: 'commercial', altitude: 11000 },
+    { id: 'ac002', baseLat: 40.63, baseLng: -73.79,  callsign: 'AAL202', subtype: 'commercial', altitude: 9500  },
+    { id: 'ac003', baseLat: 35.55, baseLng: 139.78,  callsign: 'JAL301', subtype: 'commercial', altitude: 10500 },
+    { id: 'ac004', baseLat: -33.94, baseLng: 151.18, callsign: 'QFA410', subtype: 'commercial', altitude: 12000 },
+    { id: 'ac005', baseLat: 48.36, baseLng: 11.79,   callsign: 'DLH505', subtype: 'commercial', altitude: 10000 },
+    { id: 'ac006', baseLat: 25.25, baseLng: 55.36,   callsign: 'UAE771', subtype: 'commercial', altitude: 11500 },
+    { id: 'ac007', baseLat: 37.62, baseLng: -122.38, callsign: 'UAL891', subtype: 'commercial', altitude: 9000  },
+    { id: 'ac008', baseLat: 1.36,  baseLng: 103.99,  callsign: 'SIA312', subtype: 'commercial', altitude: 10800 },
+  ];
+  for (const s of aircraftSeeds) {
+    const drift = 0.03;
+    const lat = s.baseLat + (seededRand(s.id, now % 71) - 0.5) * drift;
+    const lng = s.baseLng + (seededRand(s.id, now % 107) - 0.5) * drift;
+    const heading = seededRand(s.id, now % 61) * 360;
+    const speed = 180 + seededRand(s.id, now % 47) * 100;  // m/s
+    const prev = liveEntityState.aircraft[s.id] || null;
+    const entity = buildAircraftEntity(s.id, {
+      lat, lng, heading, speed,
+      callsign: s.callsign, subtype: s.subtype, source: 'sim',
+      altitude: s.altitude + (seededRand(s.id, now % 29) - 0.5) * 200,
+      confidence: 0.88 + seededRand(s.id, 13) * 0.10,
+    }, prev);
+    if (entity) liveEntityState.aircraft[s.id] = entity;
   }
 }
 
@@ -7415,11 +7573,12 @@ function router(req, res) {
     return;
   }
 
-  // ── GET /api/live-entities  → live entity layers (vehicles, vessels, sensors, weather)
+  // ── GET /api/live-entities  → live entity layers (vehicles, aircraft, vessels, sensors, weather)
   if (req.method === 'GET' && url === '/api/live-entities') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       vehicles: Object.values(liveEntityState.vehicles),
+      aircraft: Object.values(liveEntityState.aircraft),
       vessels:  Object.values(liveEntityState.vessels),
       sensors:  Object.values(liveEntityState.sensors),
       weather:  Object.values(liveEntityState.weather),
@@ -7545,6 +7704,7 @@ module.exports = {
   onFlightAppeared,
   // ── Live entity layer exports ───────────────────────────────────────────────
   buildVehicleEntity,
+  buildAircraftEntity,
   buildVesselEntity,
   buildSensorEntity,
   buildWeatherCellEntity,

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 
 const {
   buildVehicleEntity,
+  buildAircraftEntity,
   buildVesselEntity,
   buildSensorEntity,
   buildWeatherCellEntity,
@@ -178,6 +179,87 @@ describe('buildWeatherCellEntity', () => {
   });
 });
 
+// ─── buildAircraftEntity ──────────────────────────────────────────────────────
+
+describe('buildAircraftEntity', () => {
+  test('returns null for missing id', () => {
+    assert.equal(buildAircraftEntity(null, { lat: 51.5, lng: -0.1 }, null), null);
+  });
+
+  test('returns null for non-finite lat', () => {
+    assert.equal(buildAircraftEntity('ac1', { lat: NaN, lng: -0.1 }, null), null);
+  });
+
+  test('returns null for non-finite lng', () => {
+    assert.equal(buildAircraftEntity('ac1', { lat: 51.5, lng: Infinity }, null), null);
+  });
+
+  test('builds a valid aircraft entity', () => {
+    const e = buildAircraftEntity('ac1', { lat: 51.48, lng: -0.45, callsign: 'BAW001', subtype: 'commercial', altitude: 11000, heading: 270, speed: 230, source: 'sim', confidence: 0.92 }, null);
+    assert.ok(e, 'entity should not be null');
+    assert.equal(e.id, 'aircraft-ac1');
+    assert.equal(e.type, 'aircraft');
+    assert.equal(e.callsign, 'BAW001');
+    assert.equal(e.subtype, 'commercial');
+    assert.equal(e.source, 'sim');
+    assert.equal(e.lat, 51.48);
+    assert.equal(e.lng, -0.45);
+    assert.equal(e.altitude, 11000);
+    assert.equal(e.heading, 270);
+    assert.equal(e.speed, 230);
+    assert.equal(e.confidence, 0.92);
+    assert.equal(e.active, true);
+    assert.equal(e.state, 'airborne');
+  });
+
+  test('defaults altitude to 10000 when missing', () => {
+    const e = buildAircraftEntity('ac2', { lat: 40.0, lng: -74.0 }, null);
+    assert.equal(e.altitude, 10000);
+  });
+
+  test('defaults subtype to commercial when missing', () => {
+    const e = buildAircraftEntity('ac3', { lat: 40.0, lng: -74.0 }, null);
+    assert.equal(e.subtype, 'commercial');
+  });
+
+  test('has trail array starting with one point', () => {
+    const e = buildAircraftEntity('ac4', { lat: 35.68, lng: 139.69, altitude: 10000 }, null);
+    assert.ok(Array.isArray(e.trail));
+    assert.equal(e.trail.length, 1);
+    assert.equal(e.trail[0].lat, 35.68);
+  });
+
+  test('appends trail point when position moves', () => {
+    const prev = { lat: 40.6, lng: -74.0, trail: [{ lat: 40.6, lng: -74.0, alt: 10000, ts: 1000 }], eventHistory: [] };
+    const e = buildAircraftEntity('ac5', { lat: 40.7, lng: -74.0, altitude: 10000 }, prev);
+    assert.ok(e.trail.length >= 2);
+  });
+
+  test('eventHistory defaults to empty array', () => {
+    const e = buildAircraftEntity('ac6', { lat: 10, lng: 10 }, null);
+    assert.deepEqual(e.eventHistory, []);
+  });
+
+  test('carries eventHistory from previous entity', () => {
+    const history = [{ ts: '2024-01-01T00:00:00.000Z', kind: 'move', msg: 'climbed' }];
+    const prev = { lat: 10, lng: 10, trail: [], eventHistory: history };
+    const e = buildAircraftEntity('ac7', { lat: 10.01, lng: 10.01 }, prev);
+    assert.deepEqual(e.eventHistory, history);
+  });
+
+  test('has lastUpdateMs as a finite number', () => {
+    const e = buildAircraftEntity('ac8', { lat: 0, lng: 0 }, null);
+    assert.ok(Number.isFinite(e.lastUpdateMs));
+  });
+
+  test('trail capped at 24 points', () => {
+    const longTrail = Array.from({ length: 30 }, (_, i) => ({ lat: i * 0.1, lng: i * 0.1, alt: 10000, ts: i }));
+    const prev = { lat: 50.0, lng: 3.0, trail: longTrail, eventHistory: [] };
+    const e = buildAircraftEntity('ac9', { lat: 51.0, lng: 4.0, altitude: 10000 }, prev);
+    assert.ok(e.trail.length <= 24);
+  });
+});
+
 // ─── refreshLiveEntityLayers ──────────────────────────────────────────────────
 
 describe('refreshLiveEntityLayers', () => {
@@ -192,6 +274,11 @@ describe('refreshLiveEntityLayers', () => {
     assert.ok(vessels.length > 0, 'should have at least one vessel');
   });
 
+  test('populates aircraft after refresh', () => {
+    const aircraft = Object.values(liveEntityState.aircraft);
+    assert.ok(aircraft.length > 0, 'should have at least one aircraft');
+  });
+
   test('all vehicles have type="vehicle"', () => {
     const vehicles = Object.values(liveEntityState.vehicles);
     for (const v of vehicles) assert.equal(v.type, 'vehicle');
@@ -202,11 +289,24 @@ describe('refreshLiveEntityLayers', () => {
     for (const v of vessels) assert.equal(v.type, 'vessel');
   });
 
+  test('all aircraft have type="aircraft"', () => {
+    const aircraft = Object.values(liveEntityState.aircraft);
+    for (const a of aircraft) assert.equal(a.type, 'aircraft');
+  });
+
   test('all vehicles have confidence in [0,1]', () => {
     const vehicles = Object.values(liveEntityState.vehicles);
     for (const v of vehicles) {
       assert.ok(v.confidence >= 0 && v.confidence <= 1,
         'vehicle confidence out of range: ' + v.confidence);
+    }
+  });
+
+  test('all aircraft have confidence in [0,1]', () => {
+    const aircraft = Object.values(liveEntityState.aircraft);
+    for (const a of aircraft) {
+      assert.ok(a.confidence >= 0 && a.confidence <= 1,
+        'aircraft confidence out of range: ' + a.confidence);
     }
   });
 
@@ -375,12 +475,20 @@ describe('snapshot live entity integration', () => {
     assert.ok(snap && typeof snap.liveEntities === 'object', 'liveEntities must be present');
   });
 
-  test('snapshot.liveEntities has vehicles, vessels, sensors, weather', () => {
+  test('snapshot.liveEntities has vehicles, aircraft, vessels, sensors, weather', () => {
     const snap = snapshot();
     assert.ok(Array.isArray(snap.liveEntities.vehicles));
+    assert.ok(Array.isArray(snap.liveEntities.aircraft));
     assert.ok(Array.isArray(snap.liveEntities.vessels));
     assert.ok(Array.isArray(snap.liveEntities.sensors));
     assert.ok(Array.isArray(snap.liveEntities.weather));
+  });
+
+  test('snapshot aircraft have type="aircraft"', () => {
+    const snap = snapshot();
+    for (const a of snap.liveEntities.aircraft) {
+      assert.equal(a.type, 'aircraft');
+    }
   });
 
   test('snapshot includes traffic field', () => {
