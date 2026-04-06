@@ -1399,4 +1399,154 @@ describe('globe boundary navigation', function () {
   test('sl-search-form still present in mode-drawer', function () {
     assert.ok(src.includes('id="sl-search-form"'), 'search form must still exist');
   });
+
+  // ── UI toggle for Boundaries ─────────────────────────────────────────────
+  test('#toggle-layer-boundaries button exists in layers panel HTML', function () {
+    assert.ok(src.includes('id="toggle-layer-boundaries"'),
+      '#toggle-layer-boundaries button must exist in the layers panel');
+  });
+
+  test('#toggle-layer-boundaries button starts active/ON', function () {
+    const idx = src.indexOf('id="toggle-layer-boundaries"');
+    assert.ok(idx !== -1, '#toggle-layer-boundaries must exist');
+    // Look in the surrounding 200 chars for "active" and aria-pressed="true"
+    const snippet = src.slice(Math.max(0, idx - 100), idx + 200);
+    assert.ok(snippet.includes('active') && snippet.includes('aria-pressed="true"'),
+      '#toggle-layer-boundaries must start as active with aria-pressed="true"');
+  });
+
+  test('boundaries in layerState defaults to true', function () {
+    const idx = src.indexOf('layerState');
+    assert.ok(idx !== -1, 'layerState must exist');
+    const body = src.slice(idx, idx + 1000);
+    assert.ok(body.includes('boundaries') && body.includes('true'),
+      'layerState must include boundaries: true');
+  });
+
+  test('boundaries in LAYER_AVAILABLE set to true', function () {
+    const idx = src.indexOf('LAYER_AVAILABLE');
+    assert.ok(idx !== -1, 'LAYER_AVAILABLE must exist');
+    const body = src.slice(idx, idx + 400);
+    assert.ok(body.includes('boundaries: true'),
+      'LAYER_AVAILABLE must include boundaries: true');
+  });
+
+  test('toggleBoundaryLayer function is defined', function () {
+    assert.ok(src.includes('function toggleBoundaryLayer'),
+      'toggleBoundaryLayer must be defined');
+  });
+
+  test('toggleBoundaryLayer calls setLayerOn', function () {
+    const fnIdx = src.indexOf('function toggleBoundaryLayer');
+    assert.ok(fnIdx !== -1, 'toggleBoundaryLayer must exist');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('setLayerOn'), 'toggleBoundaryLayer must call setLayerOn');
+  });
+
+  test('toggleBoundaryLayer controls globeBoundaryCountryDs.show', function () {
+    const fnIdx = src.indexOf('function toggleBoundaryLayer');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('globeBoundaryCountryDs'), 'toggleBoundaryLayer must control globeBoundaryCountryDs');
+  });
+
+  // ── Active-highlight on selection ─────────────────────────────────────────
+  test('BOUNDARY_COLOR_COUNTRY_ACTIVE constant is defined', function () {
+    assert.ok(src.includes('BOUNDARY_COLOR_COUNTRY_ACTIVE'),
+      'BOUNDARY_COLOR_COUNTRY_ACTIVE must be defined');
+  });
+
+  test('BOUNDARY_COLOR_STATE_ACTIVE constant is defined', function () {
+    assert.ok(src.includes('BOUNDARY_COLOR_STATE_ACTIVE'),
+      'BOUNDARY_COLOR_STATE_ACTIVE must be defined');
+  });
+
+  test('BOUNDARY_FILL_ACTIVE constant is defined', function () {
+    assert.ok(src.includes('BOUNDARY_FILL_ACTIVE'),
+      'BOUNDARY_FILL_ACTIVE must be defined');
+  });
+
+  test('lastSelectedBoundaryEntity state variable is declared', function () {
+    assert.ok(src.includes('lastSelectedBoundaryEntity'),
+      'lastSelectedBoundaryEntity state variable must be declared');
+  });
+
+  test('flyToBoundaryEntity applies active style and updates lastSelectedBoundaryEntity', function () {
+    const fnIdx = src.indexOf('function flyToBoundaryEntity');
+    assert.ok(fnIdx !== -1, 'flyToBoundaryEntity must exist');
+    const body = src.slice(fnIdx, fnIdx + 1500);
+    assert.ok(body.includes('active'), 'flyToBoundaryEntity must apply active style');
+    assert.ok(body.includes('lastSelectedBoundaryEntity'), 'flyToBoundaryEntity must set lastSelectedBoundaryEntity');
+  });
+
+  test('clearBoundarySelection function is defined', function () {
+    assert.ok(src.includes('function clearBoundarySelection'),
+      'clearBoundarySelection must be defined');
+  });
+
+  test('clearBoundarySelection resets lastSelectedBoundaryEntity to null', function () {
+    const fnIdx = src.indexOf('function clearBoundarySelection');
+    assert.ok(fnIdx !== -1, 'clearBoundarySelection must exist');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('lastSelectedBoundaryEntity') && body.includes('null'),
+      'clearBoundarySelection must null out lastSelectedBoundaryEntity');
+  });
+
+  // ── Sub-country drill-down ───────────────────────────────────────────────
+  test('showBoundaryDrillDown function is defined', function () {
+    assert.ok(src.includes('function showBoundaryDrillDown'),
+      'showBoundaryDrillDown must be defined');
+  });
+
+  test('showBoundaryDrillDown filters entities by isoA3', function () {
+    const fnIdx = src.indexOf('function showBoundaryDrillDown');
+    assert.ok(fnIdx !== -1, 'showBoundaryDrillDown must exist');
+    const body = src.slice(fnIdx, fnIdx + 600);
+    assert.ok(body.includes('isoA3') || body.includes('_boundaryIsoA3'),
+      'showBoundaryDrillDown must filter by ISO A3 country code');
+  });
+
+  test('ensureBoundaryAdmin1 lazy-loads admin_1 dataset from jsDelivr', function () {
+    assert.ok(src.includes('ensureBoundaryAdmin1'),
+      'ensureBoundaryAdmin1 must be defined');
+    const fnIdx = src.indexOf('function ensureBoundaryAdmin1');
+    assert.ok(fnIdx !== -1, 'ensureBoundaryAdmin1 must be a function');
+    const body = src.slice(fnIdx, fnIdx + 500);
+    assert.ok(body.includes('admin_1') || body.includes('admin1'),
+      'ensureBoundaryAdmin1 must load admin_1 data');
+  });
+
+  test('globeBoundaryAdmin1Ds state variable is declared', function () {
+    assert.ok(src.includes('globeBoundaryAdmin1Ds'),
+      'globeBoundaryAdmin1Ds must be declared as a state variable');
+  });
+
+  test('styleBoundaryDataSource captures _boundaryIsoA3 for each entity', function () {
+    const fnIdx = src.indexOf('function styleBoundaryDataSource');
+    assert.ok(fnIdx !== -1, 'styleBoundaryDataSource must exist');
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('_boundaryIsoA3'),
+      'styleBoundaryDataSource must set _boundaryIsoA3 on each entity');
+  });
+
+  test('flyToBoundaryEntity triggers showBoundaryDrillDown for country entities', function () {
+    const fnIdx = src.indexOf('function flyToBoundaryEntity');
+    const body = src.slice(fnIdx, fnIdx + 2000);
+    assert.ok(body.includes('showBoundaryDrillDown'),
+      'flyToBoundaryEntity must call showBoundaryDrillDown for country entities');
+  });
+
+  test('updateBoundaryLod respects layerState.boundaries', function () {
+    const fnIdx = src.indexOf('function updateBoundaryLod');
+    assert.ok(fnIdx !== -1, 'updateBoundaryLod must exist');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('layerState.boundaries'),
+      'updateBoundaryLod must respect the layerState.boundaries flag');
+  });
+
+  test('hover handler restores active style when leaving selected entity', function () {
+    const fnIdx = src.indexOf('async function initGlobeBoundaries');
+    const body = src.slice(fnIdx, fnIdx + 4000);
+    assert.ok(body.includes('lastSelectedBoundaryEntity'),
+      'hover handler must be aware of lastSelectedBoundaryEntity to preserve active style');
+  });
 });
