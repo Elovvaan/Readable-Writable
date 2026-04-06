@@ -3203,6 +3203,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     let flightsDrawn = 0;
     let flightsErrored = 0;
     let satellitesRendered = 0;
+    let vehiclesDrawn = 0;
+    let vesselsDrawn = 0;
+    let aircraftLiveDrawn = 0;
     const allAgents = Object.values(state.agents || {});
     const flights = allAgents.filter(function (a) { return getEntityType(a) === 'flight'; });
     flightsMerged = flights.length;
@@ -3434,16 +3437,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       for (const v of liveEntities.vehicles) {
         addLiveEntityPoint(v, TYPE_STYLE.vehicle.fill, 9, 5);
       }
+      vehiclesDrawn = liveEntities.vehicles.length;
     }
     if (layerState.aircraft !== false && visibleEntityTypes.aircraft !== false) {
       for (const ac of (liveEntities.aircraft || [])) {
         addLiveEntityPoint(ac, TYPE_STYLE.aircraft.fill, 8, ac.altitude || 10000);
       }
+      aircraftLiveDrawn = (liveEntities.aircraft || []).length;
     }
     if (layerState.vessels && visibleEntityTypes.vessel) {
       for (const v of liveEntities.vessels) {
         addLiveEntityPoint(v, TYPE_STYLE.vessel.fill, 10, 0);
       }
+      vesselsDrawn = liveEntities.vessels.length;
     }
     if (layerState.sensors && visibleEntityTypes.sensor) {
       for (const s of liveEntities.sensors) {
@@ -3564,6 +3570,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       regions: regionsVisible,
       satellites: satellitesRendered,
       flightsDrawn,
+      vehiclesDrawn,
+      vesselsDrawn,
+      aircraftLiveDrawn,
       earthInitialized: !!cesiumViewer,
       tilesLoaded: !!cesiumGoogleTileset,
       tilesState: lastCesiumRenderCounts.tilesState,
@@ -3576,6 +3585,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         earthInitialized: !!cesiumViewer,
         tilesLoaded: !!cesiumGoogleTileset,
         entities: entitiesVisible,
+        vehiclesDrawn,
+        vesselsDrawn,
+        aircraftLiveDrawn,
         satellites: satellitesRendered,
         regions: regionsVisible,
         flightsFetched: lastApiFetchedCount > 0 ? lastApiFetchedCount : (Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0),
@@ -3586,6 +3598,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         layers: {
           liveFlights: layerState.liveFlights,
           satellites: layerState.satellites,
+          vehicles: layerState.vehicles,
+          vessels: layerState.vessels,
+          aircraft: layerState.aircraft,
           regions: layerState.regions,
           traffic: layerState.traffic,
           weather: layerState.weather,
@@ -7098,10 +7113,14 @@ function refreshLiveEntityLayers() {
     { id: 'v006', baseLat: 19.43, baseLng: -99.13, label: 'TRK-06',  subtype: 'truck' },
   ];
   for (const s of vehicleSeeds) {
-    const drift = 0.004;
-    const lat = s.baseLat + (seededRand(s.id, now % 97) - 0.5) * drift;
-    const lng = s.baseLng + (seededRand(s.id, now % 113) - 0.5) * drift;
-    const heading = (seededRand(s.id, now % 67) * 360);
+    // Orbital motion: radius ~2 km, one full lap per 30 s — visibly moves on globe
+    const orbitR  = 0.018;
+    const orbitMs = 30000;
+    const phase0  = seededRand(s.id, 5) * 2 * Math.PI;
+    const orbitPhase = (now % orbitMs) / orbitMs * 2 * Math.PI + phase0;
+    const lat = s.baseLat + Math.sin(orbitPhase) * orbitR;
+    const lng = s.baseLng + Math.cos(orbitPhase) * orbitR;
+    const heading = (Math.atan2(-Math.sin(orbitPhase), Math.cos(orbitPhase)) * 180 / Math.PI + 360) % 360;
     const speed = 5 + seededRand(s.id, now % 41) * 25;
     const prev = liveEntityState.vehicles[s.id] || null;
     const entity = buildVehicleEntity(s.id, {
@@ -7120,10 +7139,14 @@ function refreshLiveEntityLayers() {
     { id: 'sh004', baseLat: 29.98, baseLng: 32.56,  label: 'CARGO-4',  subtype: 'cargo',  mmsi: '636091000' },
   ];
   for (const s of vesselSeeds) {
-    const drift = 0.02;
-    const lat = s.baseLat + (seededRand(s.id, now % 89) - 0.5) * drift;
-    const lng = s.baseLng + (seededRand(s.id, now % 101) - 0.5) * drift;
-    const heading = seededRand(s.id, now % 53) * 360;
+    // Orbital motion: radius ~5 km, one full lap per 90 s — visible in port/coastal view
+    const orbitR  = 0.045;
+    const orbitMs = 90000;
+    const phase0  = seededRand(s.id, 7) * 2 * Math.PI;
+    const orbitPhase = (now % orbitMs) / orbitMs * 2 * Math.PI + phase0;
+    const lat = s.baseLat + Math.sin(orbitPhase) * orbitR;
+    const lng = s.baseLng + Math.cos(orbitPhase) * orbitR;
+    const heading = (Math.atan2(-Math.sin(orbitPhase), Math.cos(orbitPhase)) * 180 / Math.PI + 360) % 360;
     const speed = 3 + seededRand(s.id, now % 37) * 15;
     const prev = liveEntityState.vessels[s.id] || null;
     const entity = buildVesselEntity(s.id, {
@@ -7170,10 +7193,14 @@ function refreshLiveEntityLayers() {
     { id: 'ac008', baseLat: 1.36,  baseLng: 103.99,  callsign: 'SIA312', subtype: 'commercial', altitude: 10800 },
   ];
   for (const s of aircraftSeeds) {
-    const drift = 0.03;
-    const lat = s.baseLat + (seededRand(s.id, now % 71) - 0.5) * drift;
-    const lng = s.baseLng + (seededRand(s.id, now % 107) - 0.5) * drift;
-    const heading = seededRand(s.id, now % 61) * 360;
+    // Orbital motion: radius ~7 km, one full lap per 20 s — matches flight-path scale
+    const orbitR  = 0.06;
+    const orbitMs = 20000;
+    const phase0  = seededRand(s.id, 3) * 2 * Math.PI;
+    const orbitPhase = (now % orbitMs) / orbitMs * 2 * Math.PI + phase0;
+    const lat = s.baseLat + Math.sin(orbitPhase) * orbitR;
+    const lng = s.baseLng + Math.cos(orbitPhase) * orbitR;
+    const heading = (Math.atan2(-Math.sin(orbitPhase), Math.cos(orbitPhase)) * 180 / Math.PI + 360) % 360;
     const speed = 180 + seededRand(s.id, now % 47) * 100;  // m/s
     const prev = liveEntityState.aircraft[s.id] || null;
     const entity = buildAircraftEntity(s.id, {
@@ -7184,6 +7211,11 @@ function refreshLiveEntityLayers() {
     }, prev);
     if (entity) liveEntityState.aircraft[s.id] = entity;
   }
+  console.info('[RW Live] entities refreshed — vehicles=%d vessels=%d aircraft=%d sensors=%d',
+    Object.keys(liveEntityState.vehicles).length,
+    Object.keys(liveEntityState.vessels).length,
+    Object.keys(liveEntityState.aircraft).length,
+    Object.keys(liveEntityState.sensors).length);
 }
 
 /** Seed static sensor nodes once at startup. */
