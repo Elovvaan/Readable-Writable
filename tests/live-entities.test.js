@@ -9,6 +9,7 @@ const {
   buildVesselEntity,
   buildSensorEntity,
   buildWeatherCellEntity,
+  sanitizeEntityForRender,
   liveEntityState,
   trafficState,
   timelineState,
@@ -453,10 +454,10 @@ describe('appendEntityEvent', () => {
     assert.ok(typeof history[0].ts === 'string');
   });
 
-  test('caps history at 50 entries', () => {
+  test('caps history at 10 entries', () => {
     const id = 'test-entity-cap';
-    for (let i = 0; i < 55; i++) appendEntityEvent(id, 'test', 'msg ' + i);
-    assert.ok(entityEventHistory[id].length <= 50);
+    for (let i = 0; i < 15; i++) appendEntityEvent(id, 'test', 'msg ' + i);
+    assert.ok(entityEventHistory[id].length <= 10);
   });
 
   test('ignores null entityId', () => {
@@ -464,6 +465,58 @@ describe('appendEntityEvent', () => {
     appendEntityEvent(null, 'move', 'test');
     const after = Object.keys(entityEventHistory).length;
     assert.equal(before, after);
+  });
+});
+
+// ─── sanitizeEntityForRender ──────────────────────────────────────────────────
+
+describe('sanitizeEntityForRender', () => {
+  test('returns null for null input', () => {
+    assert.equal(sanitizeEntityForRender(null), null);
+  });
+
+  test('returns null for non-object inputs', () => {
+    assert.equal(sanitizeEntityForRender('string'), null);
+    assert.equal(sanitizeEntityForRender(42), null);
+    assert.equal(sanitizeEntityForRender(undefined), null);
+  });
+
+  test('returns null for objects with more than 1000 keys', () => {
+    const big = {};
+    for (let i = 0; i < 1001; i++) big['k' + i] = i;
+    assert.equal(sanitizeEntityForRender(big), null);
+  });
+
+  test('strips eventHistory from entity', () => {
+    const entity = { id: 'v1', type: 'vehicle', lat: 40, lng: -74, altitude: 0, state: 'moving', confidence: 0.9, eventHistory: [{ ts: '2024', kind: 'move', msg: 'moved' }], trail: [{ lat: 40, lng: -74, ts: 1 }] };
+    const result = sanitizeEntityForRender(entity);
+    assert.ok(!('eventHistory' in result), 'eventHistory should be stripped');
+  });
+
+  test('strips trail from entity', () => {
+    const entity = { id: 'v1', type: 'vehicle', lat: 40, lng: -74, altitude: 0, state: 'moving', confidence: 0.9, trail: [{ lat: 40, lng: -74, ts: 1 }] };
+    const result = sanitizeEntityForRender(entity);
+    assert.ok(!('trail' in result), 'trail should be stripped');
+  });
+
+  test('keeps required render fields', () => {
+    const entity = { id: 'ac1', type: 'aircraft', lat: 51.5, lng: -0.1, altitude: 10000, state: 'airborne', confidence: 0.92, callsign: 'BAW001', heading: 270, speed: 230 };
+    const result = sanitizeEntityForRender(entity);
+    assert.equal(result.id, 'ac1');
+    assert.equal(result.type, 'aircraft');
+    assert.equal(result.lat, 51.5);
+    assert.equal(result.lng, -0.1);
+    assert.equal(result.alt, 10000);
+    assert.equal(result.status, 'airborne');
+    assert.equal(result.confidence, 0.92);
+  });
+
+  test('does not include extra fields beyond the allowed set', () => {
+    const entity = { id: 'v1', type: 'vehicle', lat: 40, lng: -74, altitude: 0, state: 'moving', confidence: 0.9, heading: 90, speed: 15, subtype: 'car', label: 'UNIT-1' };
+    const result = sanitizeEntityForRender(entity);
+    const keys = Object.keys(result);
+    const allowed = new Set(['id', 'type', 'lat', 'lng', 'alt', 'status', 'confidence']);
+    for (const k of keys) assert.ok(allowed.has(k), 'unexpected key: ' + k);
   });
 });
 
@@ -488,6 +541,36 @@ describe('snapshot live entity integration', () => {
     const snap = snapshot();
     for (const a of snap.liveEntities.aircraft) {
       assert.equal(a.type, 'aircraft');
+    }
+  });
+
+  test('snapshot live entities do not contain eventHistory', () => {
+    const snap = snapshot();
+    for (const layer of ['vehicles', 'aircraft', 'vessels', 'sensors', 'weather']) {
+      for (const e of snap.liveEntities[layer]) {
+        assert.ok(!('eventHistory' in e), layer + ' entity should not have eventHistory');
+      }
+    }
+  });
+
+  test('snapshot live entities do not contain trail', () => {
+    const snap = snapshot();
+    for (const layer of ['vehicles', 'aircraft', 'vessels', 'sensors', 'weather']) {
+      for (const e of snap.liveEntities[layer]) {
+        assert.ok(!('trail' in e), layer + ' entity should not have trail');
+      }
+    }
+  });
+
+  test('snapshot live entity has only allowed render fields', () => {
+    const snap = snapshot();
+    const allowed = new Set(['id', 'type', 'lat', 'lng', 'alt', 'status', 'confidence']);
+    for (const layer of ['vehicles', 'aircraft', 'vessels']) {
+      for (const e of snap.liveEntities[layer]) {
+        for (const k of Object.keys(e)) {
+          assert.ok(allowed.has(k), layer + ' entity has unexpected field: ' + k);
+        }
+      }
     }
   });
 

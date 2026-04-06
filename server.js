@@ -68,7 +68,7 @@ const timelineState = {
 };
 
 // ─── Entity Event History Store ───────────────────────────────────────────────
-// entityEventHistory[entityId] = [ { ts, kind, msg } ] (max 50 per entity)
+// entityEventHistory[entityId] = [ { ts, kind, msg } ] (max 10 per entity)
 const entityEventHistory = {};
 
 const spatialIndex = {};   // key: regionId, value: { id, x, y, agents: [] }
@@ -5777,8 +5777,37 @@ function normalizeStateBatch(states, previous, sourceOverride) {
   return { flights, count };
 }
 
+/**
+ * Strip heavy fields from a live entity before sending to the frontend.
+ * Keeps only the fields needed for Cesium rendering to prevent large payload
+ * sizes and potential RangeError / circular-reference crashes.
+ * @param {object} entity
+ * @returns {object|null}
+ */
+function sanitizeEntityForRender(entity) {
+  if (!entity || typeof entity !== 'object') return null;
+  if (Object.keys(entity).length > 1000) return null;
+  return {
+    id:         entity.id,
+    type:       entity.type,
+    lat:        entity.lat,
+    lng:        entity.lng,
+    alt:        entity.altitude !== undefined ? entity.altitude : entity.alt,
+    status:     entity.state || entity.status || null,
+    confidence: entity.confidence,
+  };
+}
+
+const BROADCAST_MAX_BYTES = 1024 * 1024; // 1 MB
+
 function broadcast(type, data) {
   const msg = JSON.stringify({ type, data });
+  const byteLen = Buffer.byteLength(msg, 'utf8');
+  if (byteLen > BROADCAST_MAX_BYTES) {
+    console.warn('[RW Worldview] broadcast payload too large (' + byteLen + ' bytes), skipping type=' + type);
+    return;
+  }
+  console.log('[RW Worldview] broadcast type=' + type + ' size=' + byteLen + 'B');
   for (const client of wsClients) {
     if (!client.destroyed && client.writable) {
       wsSend(client, msg);
@@ -5867,11 +5896,11 @@ function snapshot() {
     },
     // ── Live entity layers ───────────────────────────────────────────────────
     liveEntities: {
-      vehicles: Object.values(liveEntityState.vehicles),
-      aircraft: Object.values(liveEntityState.aircraft),
-      vessels:  Object.values(liveEntityState.vessels),
-      sensors:  Object.values(liveEntityState.sensors),
-      weather:  Object.values(liveEntityState.weather),
+      vehicles: Object.values(liveEntityState.vehicles).map(sanitizeEntityForRender).filter(Boolean),
+      aircraft: Object.values(liveEntityState.aircraft).map(sanitizeEntityForRender).filter(Boolean),
+      vessels:  Object.values(liveEntityState.vessels).map(sanitizeEntityForRender).filter(Boolean),
+      sensors:  Object.values(liveEntityState.sensors).map(sanitizeEntityForRender).filter(Boolean),
+      weather:  Object.values(liveEntityState.weather).map(sanitizeEntityForRender).filter(Boolean),
     },
     // ── Traffic layer ────────────────────────────────────────────────────────
     traffic: {
@@ -6443,12 +6472,12 @@ function recordTimelineSnapshot() {
   timelineState.replayEnd = now;
 }
 
-/** Record an event into an entity's event history (capped at 50). */
+/** Record an event into an entity's event history (capped at 10). */
 function appendEntityEvent(entityId, kind, msg) {
   if (!entityId) return;
   if (!entityEventHistory[entityId]) entityEventHistory[entityId] = [];
   entityEventHistory[entityId].push({ ts: new Date().toISOString(), kind, msg });
-  if (entityEventHistory[entityId].length > 50) entityEventHistory[entityId].shift();
+  if (entityEventHistory[entityId].length > 10) entityEventHistory[entityId].shift();
 }
 
 async function pollOpenSkyFlights() {
@@ -7714,11 +7743,11 @@ function router(req, res) {
   if (req.method === 'GET' && url === '/api/live-entities') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      vehicles: Object.values(liveEntityState.vehicles),
-      aircraft: Object.values(liveEntityState.aircraft),
-      vessels:  Object.values(liveEntityState.vessels),
-      sensors:  Object.values(liveEntityState.sensors),
-      weather:  Object.values(liveEntityState.weather),
+      vehicles: Object.values(liveEntityState.vehicles).map(sanitizeEntityForRender).filter(Boolean),
+      aircraft: Object.values(liveEntityState.aircraft).map(sanitizeEntityForRender).filter(Boolean),
+      vessels:  Object.values(liveEntityState.vessels).map(sanitizeEntityForRender).filter(Boolean),
+      sensors:  Object.values(liveEntityState.sensors).map(sanitizeEntityForRender).filter(Boolean),
+      weather:  Object.values(liveEntityState.weather).map(sanitizeEntityForRender).filter(Boolean),
       ts: Date.now(),
     }));
     return;
@@ -7845,6 +7874,7 @@ module.exports = {
   buildVesselEntity,
   buildSensorEntity,
   buildWeatherCellEntity,
+  sanitizeEntityForRender,
   liveEntityState,
   trafficState,
   timelineState,
