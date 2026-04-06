@@ -24,6 +24,8 @@ const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
 const CESIUM_ACCESS_TOKEN = process.env.CESIUM_ACCESS_TOKEN || '';
 const OPENSKY_FILE_PATH = path.resolve(process.env.OPENSKY_FILE_PATH || 'opensky.json');
 const OPENSKY_FILE_POLL_MS = 5000;
+const AVIATIONSTACK_KEY = process.env.AVIATIONSTACK_KEY || '';
+const AVIATIONSTACK_POLL_INTERVAL_MS = 20000;
 // Anything above this speed (m/s) is flagged as physically impossible for civil aircraft.
 // Commercial jets cruise at ~240–280 m/s; 600 m/s ≈ Mach 1.8.
 const ANOMALY_MAX_SPEED_MS = 600;
@@ -35,6 +37,39 @@ const worldview = {
   tick: 0,
   started: new Date().toISOString(),
 };
+
+// ─── Live Entity Layer State ──────────────────────────────────────────────────
+// Structured data model: every entity carries source, ts, confidence, eventHistory
+const liveEntityState = {
+  vehicles: {},   // ground vehicles (cars, trucks, emergency)
+  aircraft: {},   // aircraft with full structured metadata (non-OpenSky, or bridged)
+  vessels:  {},   // maritime vessels
+  sensors:  {},   // fixed sensor nodes (CCTV, weather station, acoustic)
+  weather:  {},   // weather cells (storm, rain, fog)
+};
+
+// ─── Traffic Layer State ──────────────────────────────────────────────────────
+const trafficState = {
+  segments:   [],    // road segments with speed/congestion data
+  incidents:  [],    // traffic incidents
+  closures:   [],    // road closures
+  zoneAlerts: [],    // congestion zone alerts
+  lastUpdateAt: null,
+};
+
+// ─── Timeline Engine State ────────────────────────────────────────────────────
+const timelineState = {
+  mode: 'live',           // 'live' | 'replay'
+  replayTs: null,         // current replay timestamp (ms epoch)
+  replayStart: null,      // replay window start
+  replayEnd: null,        // replay window end
+  snapshots: [],          // rolling event snapshots for replay (max 300)
+  lastSnapshotAt: null,
+};
+
+// ─── Entity Event History Store ───────────────────────────────────────────────
+// entityEventHistory[entityId] = [ { ts, kind, msg } ] (max 10 per entity)
+const entityEventHistory = {};
 
 const spatialIndex = {};   // key: regionId, value: { id, x, y, agents: [] }
 const wsClients = new Set();
@@ -65,6 +100,15 @@ const openSkyFileState = {
   lastErrorAt: null,
   lastContentHash: null,
   anomalies: [],
+};
+
+const aviationstackState = {
+  flights: [],          // normalized flight objects { id, lat, lon, altitude, velocity }
+  lastPollAt: null,
+  lastErrorAt: null,
+  lastErrorMessage: null,
+  lastFetchedCount: 0,
+  pollingRunning: false,
 };
 
 // ─── Planner / Worker / Task Runtime Stores ───────────────────────────────────
@@ -103,8 +147,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RW Worldview</title>
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #08090b; color: #8fa8bb; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
     /* ── Header ──────────────────────────────────────────────────────────── */
     header { background: #09090d; border-bottom: 1px solid #141820; padding: 5px 14px; display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-height: 40px; }
@@ -351,6 +397,168 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .orch-ctrl-btn:hover { background: #0e1e2e; border-color: #254056; color: #7ab8cc; }
     .orch-ctrl-btn.active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
     .orch-status-pill { font-size: .6rem; color: #4e7888; padding: 2px 8px; border-radius: 999px; border: 1px solid #141e28; background: #08090e; }
+    /* ── Street-view overlay (transparent HUD over Cesium) ──────────────────── */
+    #street-view { position: absolute; inset: 0; z-index: 50; background: transparent; display: none; opacity: 0; transition: opacity 300ms ease; pointer-events: none; }
+    #street-view.visible { display: block; opacity: 1; pointer-events: auto; }
+    #street-view-close { position: absolute; top: 10px; right: 10px; z-index: 51; background: #09090dcc; color: #3ec9b8; border: 1px solid #1f5e5a; border-radius: 4px; font-size: .72rem; padding: 5px 12px; cursor: pointer; backdrop-filter: blur(4px); transition: background 160ms, color 160ms; }
+    #street-view-close:hover { background: #0a2422; color: #7fe0d4; }
+    #street-view-pano { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: auto; }
+    .sv-nav-row { display: flex; gap: 6px; justify-content: center; }
+    .sv-nav-btn { border: 1px solid #1f5e5a; background: #09090dcc; color: #3ec9b8; border-radius: 4px; font-size: .72rem; padding: 6px 12px; cursor: pointer; backdrop-filter: blur(4px); transition: background 160ms, color 160ms; user-select: none; }
+    .sv-nav-btn:hover { background: #0a2422; color: #7fe0d4; }
+    .sv-nav-btn:active { background: #0e3530; transform: scale(0.96); }
+    .sv-alt-text { font-size: .6rem; font-family: 'Cascadia Code', 'Fira Code', monospace; color: #4e9888; background: #09090dcc; border: 1px solid #141820; border-radius: 4px; padding: 3px 8px; backdrop-filter: blur(4px); white-space: nowrap; }
+    #sv-mode-hint { font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; color: #3ec9b8; background: #09090dcc; border: 1px solid #1f5e5a; border-radius: 4px; padding: 3px 8px; backdrop-filter: blur(4px); white-space: nowrap; }
+    /* ── Street-level tab — absolute overlay inside globe-shell ──────────────── */
+    /* pointer-events: none lets wheel/pinch events fall through to the Cesium canvas.
+       Interactive children (left/right panels, bottom bar, states drawer) restore auto. */
+    #street-level-view { position: absolute; inset: 0; z-index: 9; background: transparent; display: none; flex-direction: row; overflow: hidden; pointer-events: none; }
+    #street-level-view.active { display: flex; }
+    #street-level-header { display: flex; align-items: center; padding: 8px 14px; background: #09090d; border-bottom: 1px solid #141820; gap: 10px; flex-shrink: 0; }
+    #street-level-back-btn { border: 1px solid #1f5e5a; background: #0a2422; color: #3ec9b8; border-radius: 4px; font-size: .62rem; padding: 4px 6px; cursor: pointer; transition: background 160ms, color 160ms; width: 36px; text-align: center; }
+    #street-level-back-btn:hover { background: #0d2f2c; color: #7fe0d4; }
+    #street-level-target-label { font-size: .58rem; color: #4e7888; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 2px 0; text-align: center; word-break: break-all; }
+    #street-level-no-target { display: flex; align-items: center; justify-content: center; flex: 1; color: #2e4050; font-size: .82rem; font-style: italic; pointer-events: none; }
+    #street-level-pano { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); display: none; flex-direction: column; align-items: center; gap: 6px; pointer-events: auto; }
+    #street-level-pano.visible { display: flex; }
+    /* ── Street-level redesigned left panel ──────────────────────────────── */
+    #sl-left-panel { width: 52px; flex-shrink: 0; background: #07080cdd; border-right: 1px solid #141820; display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; overflow-y: auto; pointer-events: auto; }
+    .sl-world-btn { width: 36px; min-height: 36px; border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 5px; font-size: .52rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; text-align: center; line-height: 1.2; padding: 2px; transition: background 160ms, border-color 160ms, color 160ms; user-select: none; }
+    .sl-world-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; }
+    .sl-world-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+    /* ── Street-level center viewport ────────────────────────────────────── */
+    #sl-viewport { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; min-width: 0; background: transparent; pointer-events: none; }
+    /* ── Street-level bottom bar (locations/landmarks) ───────────────────── */
+    #sl-bottom-bar { flex-shrink: 0; background: #07080ccc; border-top: 1px solid #141820; padding: 4px 10px; display: flex; align-items: center; gap: 6px; backdrop-filter: blur(4px); pointer-events: auto; }
+    .sl-bottom-label { font-size: .52rem; letter-spacing: .1em; text-transform: uppercase; color: #2a3e4a; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    #sl-landmarks { display: flex; gap: 4px; overflow-x: auto; flex: 1; scrollbar-width: none; }
+    #sl-landmarks::-webkit-scrollbar { display: none; }
+    .sl-landmark-btn { border: 1px solid #161e2a; background: #0a1018; color: #4e7888; border-radius: 999px; font-size: .58rem; padding: 2px 8px; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: background 160ms, border-color 160ms, color 160ms; }
+    .sl-landmark-btn:hover { background: #0e1e2e; border-color: #1e3a50; color: #7abcc8; }
+    .sl-landmark-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+    /* ── Location search form (inside bottom bar) ────────────────────────── */
+    #sl-search-form { display: flex; gap: 3px; flex-shrink: 0; align-items: center; }
+    #sl-location-input { border: 1px solid #1c2a36; background: #0a1018; color: #8ab8cc; border-radius: 4px; font-size: .62rem; padding: 3px 6px; width: 154px; outline: none; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    #sl-location-input::placeholder { color: #2a3e4a; }
+    #sl-location-input:focus { border-color: #1f5e5a; background: #0c1820; }
+    #sl-go-btn { border: 1px solid #1f5e5a; background: #0a2422; color: #3ec9b8; border-radius: 4px; font-size: .58rem; font-weight: 700; letter-spacing: .08em; padding: 3px 7px; cursor: pointer; white-space: nowrap; transition: background 160ms, color 160ms; }
+    #sl-go-btn:hover { background: #0d3530; color: #7fe0d4; }
+    .sl-search-sep { width: 1px; height: 14px; background: #1a2030; flex-shrink: 0; margin: 0 2px; }
+    /* Google Places autocomplete dropdown overrides to match dark theme */
+    .pac-container { background: #09090d !important; border: 1px solid #1f5e5a !important; border-radius: 4px !important; font-size: .62rem !important; z-index: 9999 !important; box-shadow: 0 4px 12px rgba(0,0,0,.7) !important; }
+    .pac-item { padding: 4px 8px !important; color: #4e7888 !important; cursor: pointer !important; border-top: 1px solid #141820 !important; background: transparent !important; }
+    .pac-item:hover, .pac-item-selected { background: #0c1820 !important; color: #8ab8cc !important; }
+    .pac-item-query { color: #3ec9b8 !important; }
+    .pac-matched { color: #7fe0d4 !important; font-weight: 700 !important; }
+    .pac-logo::after { display: none !important; }
+    /* ── States pop-up drawer (bottom, inside #sl-viewport) ─────────────── */
+    #sl-states-drawer { position: absolute; left: 0; right: 0; bottom: 0; background: #09090dee; border-top: 1px solid #1f5e5a; transform: translateY(100%); transition: transform 260ms cubic-bezier(.4,0,.2,1); z-index: 10; display: flex; flex-direction: column; max-height: 60%; pointer-events: auto; }
+    #sl-states-drawer.open { transform: translateY(0); }
+    #sl-states-hdr { display: flex; align-items: center; padding: 6px 12px; border-bottom: 1px solid #141820; flex-shrink: 0; gap: 8px; }
+    .sl-states-title { font-size: .58rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; }
+    #sl-states-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; line-height: 1; transition: color 160ms; flex-shrink: 0; }
+    #sl-states-close:hover { color: #6898aa; }
+    #sl-states-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 4px; padding: 8px 12px; overflow-y: auto; flex: 1; }
+
+    /* ── Street-level right tactical panel (dark CRT console) ───────────── */
+    #sl-right-panel { width: 118px; flex-shrink: 0; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow-y: auto; pointer-events: auto; }
+    .sl-mono { font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    /* Monitor module */
+    #sl-monitor { border-bottom: 1px solid #1a2030; padding: 7px 8px; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+    #sl-monitor-hdr { display: flex; align-items: center; gap: 4px; font-size: .55rem; }
+    #sl-rec-dot { color: #c05050; font-size: .66rem; animation: rec-pulse 1.4s ease-in-out infinite; }
+    #sl-monitor-hdr .sl-mono { font-size: .55rem; letter-spacing: .1em; color: #3ec9b8; }
+    #sl-timestamp { color: #4e9888; font-size: .5rem; margin-left: auto; }
+    #sl-monitor-status { font-size: .5rem; letter-spacing: .08em; text-transform: uppercase; color: #b89040; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    #sl-monitor-window { width: 100%; aspect-ratio: 16/9; background: #030408; border: 1px solid #141e2a; border-radius: 2px; overflow: hidden; position: relative; }
+    #sl-monitor-window::after { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(to bottom, rgba(180,255,240,.04) 0, rgba(180,255,240,.04) 1px, transparent 1px, transparent 3px); pointer-events: none; }
+    /* Tactical controls */
+    #sl-tac-panel { display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; }
+    .sl-tac-btn { border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 3px; font-size: .54rem; font-weight: 700; letter-spacing: .09em; padding: 6px 4px; cursor: pointer; text-align: center; transition: background 160ms, border-color 160ms, color 160ms; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .sl-tac-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; }
+    .sl-tac-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
+    /* ── First-person mode toggle button and crosshair ──────────────────── */
+    #sl-fp-btn { font-size:.6rem; padding:3px 7px; background:#0a1922; border:1px solid #1c4a40; color:#3ec9b8; border-radius:3px; cursor:pointer; white-space:nowrap; transition:background 160ms,border-color 160ms,color 160ms; width:100%; text-align:center; }
+    #sl-fp-btn:hover { background:#0d2a23; color:#7fe0d4; border-color:#2a6a5a; }
+    #sl-fp-btn.active { background:#0d2a23; border-color:#3ec9b8; color:#7fe0d4; }
+    #sl-fp-crosshair { position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:22px;height:22px;pointer-events:none;display:none;z-index:15; }
+    #sl-fp-crosshair.visible { display:block; }
+    #sl-fp-crosshair::before,#sl-fp-crosshair::after { content:'';position:absolute;background:#3ec9b8;opacity:0.85; }
+    #sl-fp-crosshair::before { width:100%;height:1px;top:50%;transform:translateY(-50%);left:0; }
+    #sl-fp-crosshair::after { width:1px;height:100%;left:50%;transform:translateX(-50%);top:0; }
+    #cesium-world.fp-mode { cursor:none; }
+    /* ── Traffic density indicator ───────────────────────────────────────── */
+    #sl-traffic-indicator { font-size:.5rem; letter-spacing:.07em; text-transform:uppercase; color:#b89040; font-family:'Cascadia Code','Fira Code',monospace; padding:0 6px; white-space:nowrap; }
+    /* ── Header tab button ───────────────────────────────────────────────── */
+    .header-tab { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; transition: background 160ms, border-color 160ms, color 160ms; }
+    .header-tab:hover { background: #111e2a; border-color: #254056; color: #8abccc; }
+    .header-tab.active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
+    /* ── Timeline Engine bar ─────────────────────────────────────────────── */
+    #timeline-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 44px; background: #07080cee; border-top: 1px solid #141820; z-index: 25; display: flex; align-items: center; padding: 0 10px; gap: 10px; backdrop-filter: blur(6px); }
+    #timeline-controls { display: flex; gap: 4px; flex-shrink: 0; }
+    .tl-btn { border: 1px solid #1c2a36; background: #0e1520; color: #4e7888; border-radius: 3px; font-size: .62rem; font-weight: 700; letter-spacing: .08em; padding: 4px 8px; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; }
+    .tl-btn:hover { background: #111e2a; border-color: #254056; color: #7abcc8; }
+    .tl-btn.tl-btn-active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
+    .tl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #timeline-scrub-area { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .tl-time-label { font-size: .55rem; color: #3a5060; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; flex-shrink: 0; }
+    .tl-scrubber { flex: 1; height: 4px; cursor: pointer; accent-color: #3ec9b8; }
+    .tl-scrubber:disabled { opacity: 0.3; cursor: not-allowed; }
+    #timeline-info { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+    .tl-mode { font-size: .6rem; font-weight: 700; letter-spacing: .12em; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .tl-ts { font-size: .54rem; color: #3a5060; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; }
+    .tl-snap { font-size: .52rem; color: #2a3a48; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; }
+    /* ── Entity Profile panel (inside right drawer) ──────────────────────── */
+    .entity-profile { margin-top: 10px; border: 1px solid #141820; border-radius: 4px; background: #07080c; overflow: hidden; }
+    .entity-profile.hidden { display: none; }
+    .profile-header { display: flex; align-items: center; padding: 6px 10px; border-bottom: 1px solid #141820; gap: 6px; background: #09090f; }
+    .profile-title { font-size: .64rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .profile-close { border: none; background: none; color: #2e4050; font-size: .9rem; cursor: pointer; padding: 0; line-height: 1; transition: color 160ms; flex-shrink: 0; }
+    .profile-close:hover { color: #6898aa; }
+    #profile-meta { padding: 6px 10px; font-size: .58rem; color: #4e7888; font-family: 'Cascadia Code', 'Fira Code', monospace; line-height: 1.6; }
+    .profile-section-title { padding: 4px 10px; font-size: .55rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3a48; border-top: 1px solid #141820; border-bottom: 1px solid #141820; background: #08090d; }
+    .profile-history { max-height: 160px; overflow-y: auto; padding: 4px 0; }
+    .profile-history-entry { padding: 3px 10px; font-size: .56rem; color: #3a5060; font-family: 'Cascadia Code', 'Fira Code', monospace; border-bottom: 1px solid #0e1420; line-height: 1.4; }
+    .profile-history-entry:last-child { border-bottom: none; }
+    .profile-history-entry .phe-ts { color: #2a3840; margin-right: 5px; }
+    .profile-history-entry .phe-kind { color: #3ec9b8; margin-right: 5px; }
+    /* ── Adjust globe shell bottom to make room for timeline ─────────────── */
+    #globe-shell { padding-bottom: 44px; }
+    /* ── Mode Drawer: right-side slide-in console (Street Level / Ground Level) ── */
+    #mode-drawer { position: absolute; right: 0; top: 0; bottom: 44px; width: 268px; z-index: 18; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; transform: translateX(268px); opacity: 0; pointer-events: none; transition: transform 260ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
+    #mode-drawer.open { transform: translateX(0); opacity: 1; pointer-events: auto; }
+    #mode-drawer-hdr { display: flex; align-items: center; padding: 6px 10px; border-bottom: 1px solid #1f5e5a; flex-shrink: 0; gap: 6px; background: #07080c; }
+    #mode-drawer-indicator { color: #c05050; font-size: .66rem; animation: rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0; }
+    #mode-drawer-title { font-size: .58rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; }
+    #mode-drawer-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; line-height: 1; transition: color 160ms; flex-shrink: 0; }
+    #mode-drawer-close:hover { color: #3ec9b8; }
+    .mode-drawer-section { display: flex; flex-direction: column; flex: 1; overflow-y: auto; min-height: 0; }
+    .mode-drawer-section.hidden { display: none; }
+    .mode-section-lbl { font-size: .5rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #2a3e4a; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 5px 10px 3px; border-bottom: 1px solid #111820; background: #07080c; flex-shrink: 0; }
+    #mode-nav-group { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 10px 8px; background: #060709; border-bottom: 1px solid #111820; flex-shrink: 0; }
+    #mode-search-wrap { padding: 7px 10px; border-bottom: 1px solid #111820; flex-shrink: 0; }
+    #mode-search-wrap #sl-search-form { display: flex; gap: 3px; align-items: center; width: 100%; }
+    #mode-search-wrap #sl-location-input { flex: 1; width: auto; }
+    #mode-landmarks-wrap { padding: 6px 8px; border-bottom: 1px solid #111820; flex-shrink: 0; }
+    #mode-landmarks-wrap #sl-landmarks { flex-wrap: wrap; gap: 4px; }
+    #mode-no-target { padding: 12px 10px; color: #2e4050; font-size: .72rem; font-style: italic; text-align: center; display: none; flex-shrink: 0; }
+    #mode-target-label { font-size: .54rem; color: #4e9888; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 3px 10px; border-bottom: 1px solid #111820; flex-shrink: 0; display: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #mode-target-label.visible { display: block; }
+    #mode-monitor-bar { display: flex; align-items: center; gap: 5px; padding: 4px 10px; border-bottom: 1px solid #111820; flex-shrink: 0; background: #06070a; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .52rem; }
+    #mode-monitor-bar #sl-rec-dot { font-size: .6rem; }
+    #mode-monitor-bar #sl-timestamp { color: #4e9888; margin-left: auto; }
+    #mode-monitor-bar #sl-monitor-status { letter-spacing: .08em; text-transform: uppercase; color: #b89040; }
+    .gl-section { padding: 7px 10px; border-bottom: 1px solid #111820; display: flex; flex-direction: column; gap: 5px; flex-shrink: 0; }
+    .gl-section-title { font-size: .5rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .gl-toggle-row { display: flex; align-items: center; gap: 7px; font-size: .62rem; color: #4e7888; cursor: pointer; user-select: none; }
+    .gl-toggle-row input { width: 11px; height: 11px; accent-color: #2ab8a4; cursor: pointer; flex-shrink: 0; }
+    .gl-select { border: 1px solid #1c2a36; background: #0a1018; color: #7ab8c8; border-radius: 4px; font-size: .62rem; padding: 3px 6px; width: 100%; font-family: 'Cascadia Code', 'Fira Code', monospace; outline: none; }
+    .gl-select:focus { border-color: #1f5e5a; background: #0c1820; }
+    /* Reposition the right drawer so it doesn't overlap mode drawer */
+    #mode-drawer.open ~ #drawer-right, .mode-drawer-open #drawer-right { right: 268px; }
+    /* ── Globe Boundary Navigation ─────────────────────────────────────────── */
+    #globe-boundary-label { position: absolute; pointer-events: none; z-index: 25; background: #07080cee; border: 1px solid #1f5e5a; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 4px 8px; border-radius: 3px; white-space: nowrap; display: none; box-shadow: 0 0 8px #1f5e5a88, 0 0 2px #3ec9b844; transition: opacity 120ms; }
+    #globe-boundary-label.visible { display: block; }
   </style>
 </head>
 <body>
@@ -377,6 +585,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel">◈</button>
     <div class="rail-sep"></div>
     <button class="rail-btn" id="orch-rail-btn" type="button" title="Orchestration Overlay" aria-label="Toggle Orchestration Overlay">⬡</button>
+    <button class="rail-btn" type="button" data-panel="tactical" title="Tactical Controls" aria-label="Toggle Tactical panel">⊙</button>
+    <button class="rail-btn" id="rail-btn-street-level" type="button" title="Street Level" aria-label="Street Level" aria-pressed="false">⊞</button>
+    <button class="rail-btn" id="rail-btn-ground-level" type="button" title="Ground Level" aria-label="Ground Level" aria-pressed="false">▣</button>
   </nav>
 
   <!-- Layers drawer (left) -->
@@ -419,10 +630,73 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         </div>
         <button class="layer-toggle active" id="toggle-layer-satellites" type="button" aria-pressed="true">ON</button>
       </div>
+      <div class="layer-row on" data-layer="vehicles">
+        <div class="layer-icon">🚗</div>
+        <div class="layer-info">
+          <div class="layer-name">Ground Vehicles</div>
+          <div class="layer-provider">Simulated · AIS Fusion</div>
+          <div class="layer-freshness" id="layer-status-vehicles">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-vehicles" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="aircraft">
+        <div class="layer-icon">✈</div>
+        <div class="layer-info">
+          <div class="layer-name">Aircraft (Live Entities)</div>
+          <div class="layer-provider">Simulated · ADS-B</div>
+          <div class="layer-freshness" id="layer-status-aircraft">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-aircraft" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="vessels">
+        <div class="layer-icon">⛵</div>
+        <div class="layer-info">
+          <div class="layer-name">Maritime Vessels</div>
+          <div class="layer-provider">AIS Network</div>
+          <div class="layer-freshness" id="layer-status-vessels">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-vessels" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="sensors">
+        <div class="layer-icon">📡</div>
+        <div class="layer-info">
+          <div class="layer-name">Sensor Nodes</div>
+          <div class="layer-provider">Infra · NOAA</div>
+          <div class="layer-freshness" id="layer-status-sensors">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-sensors" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="weatherCells">
+        <div class="layer-icon">⛈</div>
+        <div class="layer-info">
+          <div class="layer-name">Weather Cells</div>
+          <div class="layer-provider">NOAA / NWS</div>
+          <div class="layer-freshness" id="layer-status-weatherCells">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-weatherCells" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="trafficSim">
+        <div class="layer-icon">≡</div>
+        <div class="layer-info">
+          <div class="layer-name">Traffic Layer</div>
+          <div class="layer-provider">Simulated · HERE</div>
+          <div class="layer-freshness" id="layer-status-trafficSim">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-trafficSim" type="button" aria-pressed="true">ON</button>
+      </div>
+      <div class="layer-row on" data-layer="boundaries">
+        <div class="layer-icon">◻</div>
+        <div class="layer-info">
+          <div class="layer-name">Boundaries</div>
+          <div class="layer-provider">Natural Earth</div>
+          <div class="layer-freshness" id="layer-status-boundaries">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-boundaries" type="button" aria-pressed="true">ON</button>
+      </div>
       <div class="layer-row unavailable" data-layer="traffic">
         <div class="layer-icon">≡</div>
         <div class="layer-info">
-          <div class="layer-name">Street Traffic</div>
+          <div class="layer-name">Street Traffic (Live)</div>
           <div class="layer-provider">HERE / TomTom</div>
           <div class="layer-freshness" id="layer-status-traffic">UNAVAILABLE</div>
         </div>
@@ -431,7 +705,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <div class="layer-row unavailable" data-layer="weather">
         <div class="layer-icon">☁</div>
         <div class="layer-info">
-          <div class="layer-name">Weather Radar</div>
+          <div class="layer-name">Weather Radar (Live)</div>
           <div class="layer-provider">NOAA / NWS</div>
           <div class="layer-freshness" id="layer-status-weather">UNAVAILABLE</div>
         </div>
@@ -465,6 +739,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <label class="lp-toggle"><span class="lp-dot" style="background:#3ec9b8"></span><input type="checkbox" id="toggle-type-agent" checked><span>Agents</span></label>
       <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-flight" checked><span>Flights</span></label>
       <label class="lp-toggle"><span class="lp-dot" style="background:#9a70d8"></span><input type="checkbox" id="toggle-type-satellite" checked><span>Sats</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#f0c040"></span><input type="checkbox" id="toggle-type-vehicle" checked><span>Vehicles</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#c8884a"></span><input type="checkbox" id="toggle-type-aircraft" checked><span>Aircraft</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#40c8f0"></span><input type="checkbox" id="toggle-type-vessel" checked><span>Vessels</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#ff8888"></span><input type="checkbox" id="toggle-type-sensor" checked><span>Sensors</span></label>
+      <label class="lp-toggle"><span class="lp-dot" style="background:#aaddff"></span><input type="checkbox" id="toggle-type-weather" checked><span>Weather</span></label>
       <div class="lp-divider"></div>
       <div class="lp-title">Region Layer</div>
       <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
@@ -481,6 +760,23 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       </div>
       <div class="orch-ctrl-row">
         <span class="orch-status-pill" id="orch-status-pill">idle</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tactical drawer (left) -->
+  <div id="drawer-tactical" class="drawer drawer-left" role="region" aria-label="Tactical Controls">
+    <div class="drawer-header"><span class="drawer-title">Tactical</span><button class="drawer-close" type="button" aria-label="Close">✕</button></div>
+    <div class="drawer-body">
+      <div class="lp-divider"></div>
+      <div class="lp-title">TACTICAL</div>
+      <div id="sl-tac-panel">
+        <button class="sl-tac-btn" data-tac="move">MOVE</button>
+        <button class="sl-tac-btn" data-tac="bloom">BLOOM</button>
+        <button class="sl-tac-btn" data-tac="sharpen">SHARPEN</button>
+        <button class="sl-tac-btn" data-tac="hud">HUD</button>
+        <button class="sl-tac-btn" data-tac="panoptic">PANOPTIC</button>
+        <button class="sl-tac-btn" data-tac="cleanui">CLEAN UI</button>
       </div>
     </div>
   </div>
@@ -518,9 +814,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           <button id="action-ping" class="action-btn" type="button">Ping</button>
           <button id="action-flag" class="action-btn" type="button">Flag</button>
         </div>
+        <div class="action-row">
+          <button id="action-jump" class="action-btn" type="button" title="Jump camera to target">Jump</button>
+          <button id="action-inspect" class="action-btn" type="button" title="Inspect entity details">Inspect</button>
+          <button id="action-profile" class="action-btn" type="button" title="Open entity profile with history">Profile</button>
+        </div>
         <div class="action-row secondary">
           <label class="ctrl-toggle"><input type="checkbox" id="toggle-follow-target">Follow Target</label>
         </div>
+      </div>
+      <!-- Entity profile panel (shown when "Profile" is clicked) -->
+      <div id="entity-profile-panel" class="entity-profile hidden" role="region" aria-label="Entity Profile">
+        <div class="profile-header">
+          <span class="profile-title" id="profile-entity-id">—</span>
+          <button id="profile-close-btn" class="profile-close" type="button" aria-label="Close profile">✕</button>
+        </div>
+        <div id="profile-meta"></div>
+        <div class="profile-section-title">Event History</div>
+        <div id="profile-history" class="profile-history"></div>
       </div>
     </div>
     <div id="rtab-stats" class="rtab-content hidden">
@@ -647,11 +958,217 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
     <div class="oi-body" id="orch-inspector-body">
       <div class="oi-field"><span class="oi-field-label">Select a node</span></div>
+  <!-- Timeline Engine bar -->
+  <div id="timeline-bar" role="region" aria-label="Timeline Engine">
+    <div id="timeline-controls">
+      <button id="tl-live-btn" class="tl-btn tl-btn-active" type="button" title="Switch to live mode" aria-pressed="true">⬤ LIVE</button>
+      <button id="tl-replay-btn" class="tl-btn" type="button" title="Switch to replay mode" aria-pressed="false">⏪ REPLAY</button>
+      <button id="tl-play-btn" class="tl-btn" type="button" title="Play / pause replay" aria-label="Play replay" disabled>▶</button>
+    </div>
+    <div id="timeline-scrub-area">
+      <span id="tl-start-label" class="tl-time-label">—</span>
+      <input id="tl-scrubber" type="range" min="0" max="100" value="100"
+             class="tl-scrubber" title="Scrub timeline" aria-label="Timeline scrubber" disabled>
+      <span id="tl-end-label" class="tl-time-label">LIVE</span>
+    </div>
+    <div id="timeline-info">
+      <span id="tl-mode-label" class="tl-mode">LIVE</span>
+      <span id="tl-ts-label" class="tl-ts">—</span>
+      <span id="tl-snap-count" class="tl-snap"></span>
+    </div>
+  </div>
+
+  <!-- Street-view overlay panel (hidden until an entity is selected) -->
+  <div id="street-view" role="region" aria-label="Street View">
+    <button id="street-view-close" type="button" title="Close Street View and return to globe">✕ Globe</button>
+    <div id="street-view-pano">
+      <span id="sv-mode-hint">STREET LEVEL · WASD move · R/F altitude</span>
+      <div class="sv-nav-row">
+        <button id="sv-fwd-btn" class="sv-nav-btn" type="button" title="Forward (W)">↑ FWD</button>
+      </div>
+      <div class="sv-nav-row">
+        <button id="sv-left-btn" class="sv-nav-btn" type="button" title="Strafe left (A)">← LEFT</button>
+        <button id="sv-back-btn" class="sv-nav-btn" type="button" title="Backward (S)">↓ BACK</button>
+        <button id="sv-right-btn" class="sv-nav-btn" type="button" title="Strafe right (D)">RIGHT →</button>
+      </div>
+      <div class="sv-nav-row">
+        <button id="sv-asc-btn" class="sv-nav-btn" type="button" title="Ascend (R)">▲ ASC</button>
+        <span id="sv-alt-readout" class="sv-alt-text">—m</span>
+        <button id="sv-desc-btn" class="sv-nav-btn" type="button" title="Descend (F)">▼ DES</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Street-level tab view — minimal transparent overlay (panels are in #mode-drawer) -->
+  <div id="street-level-view" role="region" aria-label="Street Level View" style="position:absolute;inset:0;z-index:9;display:none;pointer-events:none;">
+    <!-- First-person crosshair, shown only in FP look mode -->
+    <div id="sl-fp-crosshair" aria-hidden="true"></div>
+  </div>
+
+  <!-- Globe boundary hover label -->
+  <div id="globe-boundary-label" aria-live="polite" aria-hidden="true"></div>
+
+  <!-- Mode Drawer: right-side slide-in console for Street Level and Ground Level modes -->
+  <div id="mode-drawer" role="dialog" aria-label="Mode Controls" aria-hidden="true">
+    <div id="mode-drawer-hdr">
+      <span id="mode-drawer-indicator" aria-hidden="true">●</span>
+      <span id="mode-drawer-title">TARGETING</span>
+      <button id="mode-drawer-close" type="button" aria-label="Close mode panel">✕</button>
+    </div>
+
+    <!-- Street Level section -->
+    <div id="mode-drawer-street" class="mode-drawer-section hidden">
+      <div class="mode-section-lbl">NAVIGATION</div>
+      <div id="mode-nav-group">
+        <div class="sv-nav-row">
+          <button id="sl-fwd-btn" class="sv-nav-btn" type="button" title="Forward (W)">↑ FWD</button>
+        </div>
+        <div class="sv-nav-row">
+          <button id="sl-left-btn" class="sv-nav-btn" type="button" title="Left (A)">← LEFT</button>
+          <button id="sl-back-btn" class="sv-nav-btn" type="button" title="Back (S)">↓ BACK</button>
+          <button id="sl-right-btn" class="sv-nav-btn" type="button" title="Right (D)">RIGHT →</button>
+        </div>
+        <div class="sv-nav-row">
+          <button id="sl-asc-btn" class="sv-nav-btn" type="button" title="Ascend (R)">▲ ASC</button>
+          <span id="sl-alt-readout" class="sv-alt-text">—m</span>
+          <button id="sl-desc-btn" class="sv-nav-btn" type="button" title="Descend (F)">▼ DES</button>
+        </div>
+        <div class="sv-nav-row" style="margin-top:4px;">
+          <button id="sl-fp-btn" type="button" title="First-person look — click viewport then move mouse to look around (Esc to exit)">👁 FP LOOK</button>
+        </div>
+      </div>
+      <div id="mode-monitor-bar">
+        <span id="sl-rec-dot" aria-label="REC indicator">●</span>
+        <span class="sl-mono" style="font-size:.55rem;letter-spacing:.1em;color:#3ec9b8;">REC</span>
+        <span id="sl-monitor-status" class="sl-mono">STANDBY</span>
+        <span id="sl-timestamp" class="sl-mono">00:00:00Z</span>
+        <span id="sl-traffic-indicator" style="margin-left:auto;display:none;">🚗 TRAFFIC</span>
+      </div>
+      <div id="mode-target-label" aria-live="polite"></div>
+      <div id="mode-no-target">Select a target to navigate.</div>
+      <div class="mode-section-lbl">LOCATE</div>
+      <div id="mode-search-wrap">
+        <form id="sl-search-form" role="search" aria-label="Fly to location" autocomplete="off">
+          <input id="sl-location-input" type="text" placeholder="Search address or landmark…" aria-label="Location search" spellcheck="false" />
+          <button id="sl-go-btn" type="submit" title="Fly to location">GO</button>
+        </form>
+      </div>
+      <div class="mode-section-lbl">NEARBY PLACES</div>
+      <div id="mode-landmarks-wrap">
+        <div id="sl-landmarks">
+          <button class="sl-landmark-btn" data-lat="40.7128" data-lng="-74.006">New York</button>
+          <button class="sl-landmark-btn" data-lat="34.0522" data-lng="-118.2437">Los Angeles</button>
+          <button class="sl-landmark-btn" data-lat="41.8781" data-lng="-87.6298">Chicago</button>
+          <button class="sl-landmark-btn" data-lat="29.7604" data-lng="-95.3698">Houston</button>
+          <button class="sl-landmark-btn" data-lat="33.4484" data-lng="-112.074">Phoenix</button>
+          <button class="sl-landmark-btn" data-lat="39.9526" data-lng="-75.1652">Philadelphia</button>
+          <button class="sl-landmark-btn" data-lat="29.4241" data-lng="-98.4936">San Antonio</button>
+          <button class="sl-landmark-btn" data-lat="32.7767" data-lng="-96.797">Dallas</button>
+          <button class="sl-landmark-btn" data-lat="37.7749" data-lng="-122.4194">San Francisco</button>
+          <button class="sl-landmark-btn" data-lat="47.6062" data-lng="-122.3321">Seattle</button>
+          <button class="sl-landmark-btn" data-lat="42.3601" data-lng="-71.0589">Boston</button>
+          <button class="sl-landmark-btn" data-lat="25.7617" data-lng="-80.1918">Miami</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ground Level section -->
+    <div id="mode-drawer-ground" class="mode-drawer-section hidden">
+      <div class="mode-section-lbl">REGION</div>
+      <div class="gl-section">
+        <div class="gl-section-title">SELECT REGION</div>
+        <select id="gl-region-select" class="gl-select" aria-label="Region">
+          <option value="">— All Regions —</option>
+          <option value="northeast">Northeast</option>
+          <option value="southeast">Southeast</option>
+          <option value="midwest">Midwest</option>
+          <option value="southwest">Southwest</option>
+          <option value="west">West</option>
+          <option value="northwest">Northwest</option>
+        </select>
+      </div>
+      <div class="mode-section-lbl">STATE / CITY</div>
+      <div class="gl-section">
+        <div class="gl-section-title">JUMP TO STATE</div>
+        <select id="gl-state-select" class="gl-select" aria-label="State">
+          <option value="">— State —</option>
+          <option value="32.3617,-86.2792">Alabama</option>
+          <option value="64.2008,-153.4937">Alaska</option>
+          <option value="34.0489,-111.0937">Arizona</option>
+          <option value="34.7999,-92.1996">Arkansas</option>
+          <option value="36.7783,-119.4179">California</option>
+          <option value="39.5501,-105.7821">Colorado</option>
+          <option value="41.6032,-73.0877">Connecticut</option>
+          <option value="38.9108,-75.5277">Delaware</option>
+          <option value="27.9944,-81.7603">Florida</option>
+          <option value="32.1656,-82.9001">Georgia</option>
+          <option value="19.8968,-155.5828">Hawaii</option>
+          <option value="44.0682,-114.7421">Idaho</option>
+          <option value="40.6331,-89.3985">Illinois</option>
+          <option value="40.2672,-86.1349">Indiana</option>
+          <option value="41.8780,-93.0977">Iowa</option>
+          <option value="39.0119,-98.4842">Kansas</option>
+          <option value="37.8393,-84.2700">Kentucky</option>
+          <option value="31.2448,-92.1451">Louisiana</option>
+          <option value="45.2538,-69.4455">Maine</option>
+          <option value="39.0458,-76.6413">Maryland</option>
+          <option value="42.4072,-71.3824">Massachusetts</option>
+          <option value="44.3148,-85.6024">Michigan</option>
+          <option value="46.7296,-94.6859">Minnesota</option>
+          <option value="32.3547,-89.3985">Mississippi</option>
+          <option value="37.9643,-91.8318">Missouri</option>
+          <option value="46.8797,-110.3626">Montana</option>
+          <option value="41.4925,-99.9018">Nebraska</option>
+          <option value="38.8026,-116.4194">Nevada</option>
+          <option value="43.1939,-71.5724">New Hampshire</option>
+          <option value="40.0583,-74.4057">New Jersey</option>
+          <option value="34.5199,-105.8701">New Mexico</option>
+          <option value="42.1657,-74.9481">New York</option>
+          <option value="35.7596,-79.0193">North Carolina</option>
+          <option value="47.5515,-101.002">North Dakota</option>
+          <option value="40.4173,-82.9071">Ohio</option>
+          <option value="35.4676,-97.5164">Oklahoma</option>
+          <option value="43.8041,-120.5542">Oregon</option>
+          <option value="41.2033,-77.1945">Pennsylvania</option>
+          <option value="41.5801,-71.4774">Rhode Island</option>
+          <option value="33.8361,-81.1637">South Carolina</option>
+          <option value="44.2998,-99.4388">South Dakota</option>
+          <option value="35.5175,-86.5804">Tennessee</option>
+          <option value="31.9686,-99.9018">Texas</option>
+          <option value="39.3210,-111.0937">Utah</option>
+          <option value="44.5588,-72.5778">Vermont</option>
+          <option value="37.4316,-78.6569">Virginia</option>
+          <option value="47.7511,-120.7401">Washington</option>
+          <option value="38.5976,-80.4549">West Virginia</option>
+          <option value="43.7844,-88.7879">Wisconsin</option>
+          <option value="43.0760,-107.2903">Wyoming</option>
+        </select>
+        <input id="gl-city-input" class="gl-select" type="text" placeholder="City or zip code…" aria-label="City search" spellcheck="false" />
+      </div>
+      <div class="mode-section-lbl">TRAFFIC</div>
+      <div class="gl-section">
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-traffic-toggle"> Live Traffic</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-incidents-toggle"> Incidents</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-flow-toggle"> Flow Overlay</label>
+      </div>
+      <div class="mode-section-lbl">SENSORS</div>
+      <div class="gl-section">
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-cctv-toggle"> CCTV Mesh</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-acoustic-toggle"> Acoustic</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-weather-toggle"> Weather Stations</label>
+      </div>
+      <div class="mode-section-lbl">LOCAL FEED</div>
+      <div class="gl-section">
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-feeds-toggle" checked> Live Feeds</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-bikeshare-toggle"> Bike Share</label>
+        <label class="gl-toggle-row"><input type="checkbox" id="gl-transit-toggle"> Transit</label>
+      </div>
     </div>
   </div>
 
 </div>
-<link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
+
+
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
 <script id="rw-bootstrap" type="application/json">__RW_BOOTSTRAP__</script>
 <script>
@@ -681,6 +1198,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const cesiumEntityRefs = { agents: {}, regions: {}, trails: {} };
   let cesiumSelectionHandler = null;
   let cesiumSafetyViewApplied = false;
+  let streetViewPanorama = null;
+  let streetViewVisible = false;
+  let streetLevelPanorama = null;
+  let streetLevelActive = false;
+  let cesiumStreetLevelMode = false;
+  let cesiumPreStreetLevelPos = null;
+  let cesiumFocusModeActive = false;
+  let cesiumFpMode = false;             // first-person pointer-lock camera mode
+  let slTrafficEntities = [];           // [{entity, lat, lng, heading, speed}]
+  let slTrafficLoopId   = null;         // rAF handle for traffic animation loop
+  let slTrafficPrevTime = 0;            // last timestamp for traffic dt
+  const cesiumDroneKeys = {};
+  let droneMoveFrameId = null;
   let lastCesiumRenderCounts = {
     entities: 0,
     regions: 0,
@@ -699,7 +1229,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const focusActionBtn = document.getElementById('action-focus');
   const pingActionBtn = document.getElementById('action-ping');
   const flagActionBtn = document.getElementById('action-flag');
+  const jumpActionBtn = document.getElementById('action-jump');
+  const inspectActionBtn = document.getElementById('action-inspect');
+  const profileActionBtn = document.getElementById('action-profile');
   const followTargetToggleEl = document.getElementById('toggle-follow-target');
+  const entityProfilePanelEl = document.getElementById('entity-profile-panel');
+  const profileEntityIdEl = document.getElementById('profile-entity-id');
+  const profileMetaEl = document.getElementById('profile-meta');
+  const profileHistoryEl = document.getElementById('profile-history');
+  const profileCloseBtnEl = document.getElementById('profile-close-btn');
   const statusEl = document.getElementById('status');
   const toggleAgentsEl = document.getElementById('toggle-agents');
   const toggleRegionsEl = document.getElementById('toggle-regions');
@@ -708,12 +1246,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleLayerFlightsEl     = document.getElementById('toggle-layer-flights');
   const toggleLayerSatellitesEl  = document.getElementById('toggle-layer-satellites');
   const toggleLayerRegionsEl     = document.getElementById('toggle-layer-regions');
+  const toggleLayerVehiclesEl    = document.getElementById('toggle-layer-vehicles');
+  const toggleLayerAircraftEl    = document.getElementById('toggle-layer-aircraft');
+  const toggleLayerVesselsEl     = document.getElementById('toggle-layer-vessels');
+  const toggleLayerSensorsEl     = document.getElementById('toggle-layer-sensors');
+  const toggleLayerWeatherCellsEl= document.getElementById('toggle-layer-weatherCells');
+  const toggleLayerTrafficSimEl  = document.getElementById('toggle-layer-trafficSim');
+  const toggleLayerBoundariesEl  = document.getElementById('toggle-layer-boundaries');
   // kept for title-init compatibility; these are disabled buttons in unavailable state
   const toggleLayerTrafficEl     = document.getElementById('toggle-layer-traffic');
   const toggleLayerWeatherEl     = document.getElementById('toggle-layer-weather');
   const toggleTypeAgentEl = document.getElementById('toggle-type-agent');
   const toggleTypeFlightEl = document.getElementById('toggle-type-flight');
   const toggleTypeSatelliteEl = document.getElementById('toggle-type-satellite');
+  const toggleTypeVehicleEl = document.getElementById('toggle-type-vehicle');
+  const toggleTypeAircraftEl = document.getElementById('toggle-type-aircraft');
+  const toggleTypeVesselEl  = document.getElementById('toggle-type-vessel');
+  const toggleTypeSensorEl  = document.getElementById('toggle-type-sensor');
+  const toggleTypeWeatherEl = document.getElementById('toggle-type-weather');
+  // Timeline elements
+  const timelineLiveBtnEl    = document.getElementById('tl-live-btn');
+  const timelineReplayBtnEl  = document.getElementById('tl-replay-btn');
+  const timelinePlayBtnEl    = document.getElementById('tl-play-btn');
+  const timelineScrubberEl   = document.getElementById('tl-scrubber');
+  const timelineStartLabelEl = document.getElementById('tl-start-label');
+  const timelineEndLabelEl   = document.getElementById('tl-end-label');
+  const timelineModeLabelEl  = document.getElementById('tl-mode-label');
+  const timelineTsLabelEl    = document.getElementById('tl-ts-label');
+  const timelineSnapCountEl  = document.getElementById('tl-snap-count');
   const pauseBtnEl = document.getElementById('pause-btn');
   const speedSelectEl = document.getElementById('speed-select');
   const zoomOutBtnEl = document.getElementById('zoom-out-btn');
@@ -858,6 +1418,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const CESIUM_PICK_RADIUS_PX = 18;
   const CESIUM_FOLLOW_LERP = 0.16;
   const CESIUM_FOCUS_LERP = 0.24;
+  const STREET_LEVEL_ALTITUDE_M = 60;
+  const STREET_LEVEL_PITCH_DEG = -10;
+  const STREET_LEVEL_AUTO_TILT_ALT = 250;
+  const SL_FP_MOUSE_SENSITIVITY  = 0.003;  // radians per pixel for first-person look
+  const SL_MIN_ABOVE_GROUND      = 1.5;    // m: minimum camera height above ellipsoid
+  const SL_MAX_TRAFFIC_CARS      = 40;     // maximum simulated traffic cars in scene
+  const SL_TRAFFIC_DENSITY       = 0.7;    // fraction of SL_MAX_TRAFFIC_CARS to spawn (0–1)
+  const SL_TRAFFIC_SPEED_MPS     = 14;     // m/s base speed (~50 km/h)
+  const SL_TRAFFIC_RADIUS_M      = 600;    // metres: car visibility radius around camera
+  const SL_TRAFFIC_ALTITUDE_MAX  = 800;    // m: traffic entities hidden above this altitude
   const REGION_ACTIVITY_WINDOW_TICKS = 24;
   const REGION_ACTIVE_EVENT_THRESHOLD = 2;
   const REGION_HOT_EVENT_THRESHOLD = 5;
@@ -870,19 +1440,27 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let flightTrackingById = {};
   let selectedAgentId = null;
   let selectedRegionId = null;
+  let selectedTargetCoords = null;
   let latestSelectedEvent = null;
   let ws, wsRetryDelay = 1000;
   let showAgents = true;
   let showRegions = true;
   let showTrails = true;
-  let visibleEntityTypes = { agent: true, flight: true, satellite: true, other: true };
+  let visibleEntityTypes = { agent: true, flight: true, satellite: true, vehicle: true, aircraft: true, vessel: true, sensor: true, weather: true, other: true };
   const layerState = {
     liveFlights:     true,   // OpenSky API + file source
     militaryFlights: false,  // UNAVAILABLE — no data source wired
     earthquakes:     false,  // UNAVAILABLE — no data source wired
     satellites:      true,   // Celestrak / TLE
-    traffic:         false,  // UNAVAILABLE — incompatible with Cesium 3D Tiles renderer
-    weather:         false,  // UNAVAILABLE — stub only, not configured
+    vehicles:        true,   // Ground vehicles (simulated)
+    aircraft:        true,   // Aircraft entities (simulated, structured metadata)
+    vessels:         true,   // Maritime vessels (simulated AIS)
+    sensors:         true,   // Sensor nodes (fixed infrastructure)
+    weatherCells:    true,   // Weather cells (simulated NOAA)
+    trafficSim:      true,   // Traffic layer (simulated)
+    boundaries:      true,   // Geographic boundaries (Natural Earth GeoJSON)
+    traffic:         false,  // UNAVAILABLE — live feed not configured
+    weather:         false,  // UNAVAILABLE — live radar not configured
     cctvMesh:        false,  // UNAVAILABLE — no data source wired
     bikeshare:       false,  // UNAVAILABLE — no data source wired
     regions:         true,   // region overlay
@@ -890,7 +1468,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   // Which layers have a real data pipeline (others show UNAVAILABLE and cannot be toggled)
   const LAYER_AVAILABLE = {
     liveFlights: true, militaryFlights: false, earthquakes: false,
-    satellites: true,  traffic: false, weather: false, cctvMesh: false, bikeshare: false,
+    satellites: true,
+    vehicles: true, aircraft: true, vessels: true, sensors: true, weatherCells: true, trafficSim: true,
+    boundaries: true,
+    traffic: false, weather: false, cctvMesh: false, bikeshare: false,
+  };
+  // Timeline engine client state
+  const timelineEngine = {
+    mode: 'live',          // 'live' | 'replay'
+    replayTs: null,
+    replayStart: null,
+    replayEnd: null,
+    snapshotCount: 0,
+    playing: false,
+    playIntervalId: null,
+    snapshots: [],          // received from server
   };
   let paused = false;
   let simulationSpeed = 1;
@@ -1003,29 +1595,49 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   const TYPE_STYLE = {
-    agent: { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
-    flight: { fill: '#ffb77d', stroke: '#ffd2ad', trail: '#ffb77d55', trailSelected: '#ffe0c4cc' },
-    satellite: { fill: '#d0a3ff', stroke: '#e2c7ff', trail: '#d0a3ff55', trailSelected: '#ecdfffcc' },
-    other: { fill: '#8ea0b4', stroke: '#bac7d6', trail: '#8ea0b455', trailSelected: '#d6deebcc' },
+    agent:    { fill: '#7cc4ff', stroke: '#abd8ff', trail: '#7cc4ff55', trailSelected: '#bfe4ffcc' },
+    flight:   { fill: '#ffb77d', stroke: '#ffd2ad', trail: '#ffb77d55', trailSelected: '#ffe0c4cc' },
+    satellite:{ fill: '#d0a3ff', stroke: '#e2c7ff', trail: '#d0a3ff55', trailSelected: '#ecdfffcc' },
+    vehicle:  { fill: '#f0c040', stroke: '#ffe080', trail: '#f0c04055', trailSelected: '#ffeea0cc' },
+    aircraft: { fill: '#c8884a', stroke: '#ffb070', trail: '#c8884a55', trailSelected: '#ffd0a0cc' },
+    vessel:   { fill: '#40c8f0', stroke: '#80e4ff', trail: '#40c8f055', trailSelected: '#a0eeffcc' },
+    sensor:   { fill: '#ff8888', stroke: '#ffbbbb', trail: '#ff888855', trailSelected: '#ffcccccc' },
+    weather:  { fill: '#aaddff', stroke: '#ccf0ff', trail: '#aaddff55', trailSelected: '#ddf5ffcc' },
+    other:    { fill: '#8ea0b4', stroke: '#bac7d6', trail: '#8ea0b455', trailSelected: '#d6deebcc' },
   };
   const TYPE_STYLE_BY_MODE = {
     crt: {
-      agent: { fill: '#8fd6ff', stroke: '#c5e9ff', trail: '#8fd6ff57', trailSelected: '#d4efffcc' },
-      flight: { fill: '#ffc38f', stroke: '#ffe2bd', trail: '#ffc38f57', trailSelected: '#ffedd6cc' },
-      satellite: { fill: '#d6b2ff', stroke: '#ead7ff', trail: '#d6b2ff57', trailSelected: '#f0e6ffcc' },
-      other: { fill: '#93a6b8', stroke: '#c2cfdb', trail: '#93a6b857', trailSelected: '#dde4ebcc' },
+      agent:    { fill: '#8fd6ff', stroke: '#c5e9ff', trail: '#8fd6ff57', trailSelected: '#d4efffcc' },
+      flight:   { fill: '#ffc38f', stroke: '#ffe2bd', trail: '#ffc38f57', trailSelected: '#ffedd6cc' },
+      satellite:{ fill: '#d6b2ff', stroke: '#ead7ff', trail: '#d6b2ff57', trailSelected: '#f0e6ffcc' },
+      vehicle:  { fill: '#f5cc48', stroke: '#ffe88a', trail: '#f5cc4857', trailSelected: '#fff2b0cc' },
+      aircraft: { fill: '#d09052', stroke: '#ffbb80', trail: '#d0905257', trailSelected: '#ffd8b4cc' },
+      vessel:   { fill: '#48d0f5', stroke: '#8aeaff', trail: '#48d0f557', trailSelected: '#aaf2ffcc' },
+      sensor:   { fill: '#ff9090', stroke: '#ffc5c5', trail: '#ff909057', trailSelected: '#ffd8d8cc' },
+      weather:  { fill: '#b8e8ff', stroke: '#d8f4ff', trail: '#b8e8ff57', trailSelected: '#e8f8ffcc' },
+      other:    { fill: '#93a6b8', stroke: '#c2cfdb', trail: '#93a6b857', trailSelected: '#dde4ebcc' },
     },
     nvg: {
-      agent: { fill: '#93ff79', stroke: '#d5ffc5', trail: '#93ff7958', trailSelected: '#e7ffd9d9' },
-      flight: { fill: '#bcff70', stroke: '#e2ffc7', trail: '#bcff7052', trailSelected: '#f0ffd9d2' },
-      satellite: { fill: '#75ff95', stroke: '#c7ffd7', trail: '#75ff954c', trailSelected: '#e1ffe8d0' },
-      other: { fill: '#6cb484', stroke: '#bde6c8', trail: '#6cb4844f', trailSelected: '#d9efe0c6' },
+      agent:    { fill: '#93ff79', stroke: '#d5ffc5', trail: '#93ff7958', trailSelected: '#e7ffd9d9' },
+      flight:   { fill: '#bcff70', stroke: '#e2ffc7', trail: '#bcff7052', trailSelected: '#f0ffd9d2' },
+      satellite:{ fill: '#75ff95', stroke: '#c7ffd7', trail: '#75ff954c', trailSelected: '#e1ffe8d0' },
+      vehicle:  { fill: '#d4ff60', stroke: '#eeffa8', trail: '#d4ff6052', trailSelected: '#f4ffd0d2' },
+      aircraft: { fill: '#e8d860', stroke: '#fff8a0', trail: '#e8d86052', trailSelected: '#fffad0d2' },
+      vessel:   { fill: '#60f8d4', stroke: '#a8fff0', trail: '#60f8d452', trailSelected: '#d0ffecd2' },
+      sensor:   { fill: '#ff9a70', stroke: '#ffcca8', trail: '#ff9a7052', trailSelected: '#ffd8c0d2' },
+      weather:  { fill: '#a8d8ff', stroke: '#d0ecff', trail: '#a8d8ff52', trailSelected: '#dff0ffd2' },
+      other:    { fill: '#6cb484', stroke: '#bde6c8', trail: '#6cb4844f', trailSelected: '#d9efe0c6' },
     },
     flir: {
-      agent: { fill: '#ffe88f', stroke: '#fff5c5', trail: '#ffe88f66', trailSelected: '#fff9dddb' },
-      flight: { fill: '#ff9348', stroke: '#ffbb8d', trail: '#ff934866', trailSelected: '#ffd4b8db' },
-      satellite: { fill: '#ff5f62', stroke: '#ff9b9d', trail: '#ff5f6266', trailSelected: '#ffc5c7db' },
-      other: { fill: '#5c5474', stroke: '#9f94c8', trail: '#5c54745a', trailSelected: '#c8c0e2c9' },
+      agent:    { fill: '#ffe88f', stroke: '#fff5c5', trail: '#ffe88f66', trailSelected: '#fff9dddb' },
+      flight:   { fill: '#ff9348', stroke: '#ffbb8d', trail: '#ff934866', trailSelected: '#ffd4b8db' },
+      satellite:{ fill: '#ff5f62', stroke: '#ff9b9d', trail: '#ff5f6266', trailSelected: '#ffc5c7db' },
+      vehicle:  { fill: '#ffcc40', stroke: '#ffee90', trail: '#ffcc4066', trailSelected: '#fff4c0db' },
+      aircraft: { fill: '#ff9840', stroke: '#ffbf80', trail: '#ff984066', trailSelected: '#ffd8b0db' },
+      vessel:   { fill: '#40d0ee', stroke: '#88e8f8', trail: '#40d0ee66', trailSelected: '#b0f0f8db' },
+      sensor:   { fill: '#ff7070', stroke: '#ffaabb', trail: '#ff707066', trailSelected: '#ffccccdb' },
+      weather:  { fill: '#c0e8ff', stroke: '#e0f4ff', trail: '#c0e8ff66', trailSelected: '#f0fbffdb' },
+      other:    { fill: '#5c5474', stroke: '#9f94c8', trail: '#5c54745a', trailSelected: '#c8c0e2c9' },
     },
   };
 
@@ -1148,7 +1760,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     telemetryModeEl.textContent = styleMode.toUpperCase();
     telemetryRecEl.classList.toggle('live', !paused);
     const anchor = (selectedAgentId && state.agents[selectedAgentId]) || Object.values(state.agents || {})[0] || null;
-    const point = anchor ? getAgentBasePoint(anchor) : null;
+    const point = anchor ? toLatLngWithFallback(anchor) : null;
     telemetryCoordsEl.textContent = point && Number.isFinite(point.lat) && Number.isFinite(point.lng)
       ? (point.lat.toFixed(3) + ', ' + point.lng.toFixed(3))
       : '--.--, --.--';
@@ -1273,30 +1885,48 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   async function initCesium() {
     if (!USE_CESIUM || typeof Cesium === 'undefined') return;
     if (BOOTSTRAP.cesiumAccessToken) Cesium.Ion.defaultAccessToken = BOOTSTRAP.cesiumAccessToken;
+    // Build terrain provider: use Cesium World Terrain when Ion token available for realistic elevation
+    let terrainProvider;
+    if (BOOTSTRAP.cesiumAccessToken) {
+      try {
+        terrainProvider = await Cesium.createWorldTerrainAsync({ requestVertexNormals: false, requestWaterMask: false });
+        console.info('[RW Cesium] World Terrain loaded');
+      } catch (terrainErr) {
+        console.warn('[RW Cesium] World Terrain unavailable, using ellipsoid', terrainErr);
+      }
+    }
     cesiumViewer = new Cesium.Viewer('cesium-world', {
       animation: false, timeline: false, baseLayerPicker: false, geocoder: false, homeButton: false,
       navigationHelpButton: false, sceneModePicker: false, infoBox: false, selectionIndicator: false,
       shouldAnimate: true,
+      terrainProvider: terrainProvider || new Cesium.EllipsoidTerrainProvider(),
+    });
+    // Immediately anchor the camera to a valid global view so the Earth fills the viewport
+    // before any async tile loading; this prevents the camera from starting off-screen.
+    cesiumViewer.trackedEntity = undefined;
+    cesiumViewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
     });
     cesiumViewer.scene.skyBox.show = true;
     cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#04050a');
     cesiumViewer.scene.globe.show = true;
     cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#080e1a');
-    cesiumViewer.scene.globe.depthTestAgainstTerrain = false;
+    cesiumViewer.scene.globe.depthTestAgainstTerrain = true;
     cesiumViewer.scene.globe.enableLighting = false;
     cesiumViewer.scene.skyAtmosphere.show = true;
     cesiumViewer.scene.skyAtmosphere.atmosphereLightIntensity = 6.0;
     cesiumViewer.scene.sun.show = true;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
-    // Full orbital camera: rotate, tilt, and scroll/pinch zoom all enabled natively
+    // Camera controls: full orbit, tilt, zoom, and first-person look for street-level navigation
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
     ssc.enableTilt   = true;
     ssc.enableZoom   = true;
     ssc.enableTranslate = true;
-    ssc.enableLook   = false;
-    ssc.minimumZoomDistance = 150;
+    ssc.enableLook   = true;
+    ssc.minimumZoomDistance = 10;
     ssc.maximumZoomDistance = 40000000;
     try {
       if (BOOTSTRAP.googleMapsApiKey) {
@@ -1327,10 +1957,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastCesiumRenderCounts.tilesLoaded = true;
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
-        cesiumViewer.camera.flyTo({
+        cesiumViewer.camera.setView({
           destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
-          duration: 0,
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
         });
       } else {
         console.warn('[RW Cesium] No Google Maps API key — using built-in Natural Earth imagery');
@@ -1347,22 +1976,58 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         } catch (imgErr) {
           console.warn('[RW Cesium] Natural Earth fallback failed, keeping default imagery', imgErr);
         }
-        cesiumViewer.camera.flyTo({
+        cesiumViewer.camera.setView({
           destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-82), roll: 0 },
-          duration: 0,
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
         });
       }
       lastCesiumRenderCounts.earthInitialized = true;
       lastCesiumRenderCounts.tilesLoaded = !!cesiumGoogleTileset;
       console.info('[RW Cesium] initialized');
+      const _cp = cesiumViewer.camera.positionCartographic;
+      console.info('[RW Cesium] camera init: lat=' + Cesium.Math.toDegrees(_cp.latitude).toFixed(2) + ' lng=' + Cesium.Math.toDegrees(_cp.longitude).toFixed(2) + ' alt=' + (_cp.height / 1000).toFixed(0) + 'km pitch=' + Cesium.Math.toDegrees(cesiumViewer.camera.pitch).toFixed(1) + 'deg');
     } catch (err) {
       console.error('[RW Cesium] init failed', err);
       lastCesiumRenderCounts.tilesLoaded = false;
       lastCesiumRenderCounts.tilesState = 'failed';
       lastCesiumRenderCounts.tilesError = (err && err.message) ? err.message : String(err || 'unknown');
     }
+    // OSM Buildings: adds 3D building geometry when Cesium Ion token available
+    if (BOOTSTRAP.cesiumAccessToken) {
+      try {
+        const osmBuildings = await Cesium.createOsmBuildingsAsync();
+        cesiumViewer.scene.primitives.add(osmBuildings);
+        console.info('[RW Cesium] OSM Buildings loaded');
+      } catch (osmErr) {
+        console.warn('[RW Cesium] OSM Buildings unavailable', osmErr);
+      }
+    }
+    // Auto-tilt: when user finishes zooming below STREET_LEVEL_AUTO_TILT_ALT and camera
+    // is pointing near-nadir, smoothly pitch forward for a human-perspective ground view
+    cesiumViewer.camera.moveEnd.addEventListener(function () {
+      if (cesiumCameraMoveInternal || cesiumStreetLevelMode) return;
+      const alt = cesiumViewer.camera.positionCartographic.height;
+      if (alt < STREET_LEVEL_AUTO_TILT_ALT && cesiumViewer.camera.pitch < Cesium.Math.toRadians(-60)) {
+        cesiumCameraMoveInternal = true;
+        cesiumFollowDisengageMutedUntil = Date.now() + 1500;
+        cesiumViewer.camera.flyTo({
+          destination: cesiumViewer.camera.position,
+          orientation: {
+            heading: cesiumViewer.camera.heading,
+            pitch: Cesium.Math.toRadians(STREET_LEVEL_PITCH_DEG),
+            roll: 0,
+          },
+          duration: 0.8,
+          complete: function () { cesiumCameraMoveInternal = false; },
+          cancel:   function () { cesiumCameraMoveInternal = false; },
+        });
+      }
+    });
     bindCesiumSelection();
+    // Lazy-load boundaries after globe is stable (deferred past the initial render cycle)
+    setTimeout(function () { initGlobeBoundaries(); }, 0);
+    registerTerrainClamp();
+    cesiumViewer.resize();
     draw();
   }
 
@@ -1416,6 +2081,1111 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     return nearestDistSq <= (CESIUM_PICK_RADIUS_PX * CESIUM_PICK_RADIUS_PX) ? nearest : null;
   }
+
+  // ── Globe Boundary Navigation: LOD-based geographic boundaries ───────────
+  // Fetches country/state GeoJSON from public CDNs and renders them as
+  // interactive Cesium entities with CRT glow styling and hover/click behavior.
+  //
+  // LOD tiers (camera altitude):
+  //   > 3 000 km  → countries only  (Natural Earth 110m)
+  //   300–3 000 km → countries + US states  (Natural Earth 110m + Census states)
+  //   < 300 km    → states layer still shown; street-level is handled by Cesium terrain
+  //
+  // GeoJSON sources:
+  //   Countries: https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_110m_admin_0_countries.geojson
+  //   US States: https://cdn.jsdelivr.net/gh/PublicaMundi/MappingAPI@a4c1b2e/data/geojson/us-states.json
+
+  const BOUNDARIES_ENABLED        = true;      // feature flag: set false to disable all boundary rendering
+  const BOUNDARY_ALT_COUNTRY      = 3000000;   // 3 000 km — show only countries above this
+  const BOUNDARY_ALT_STATE        = 300000;    // 300 km — show states below this
+  const BOUNDARY_FLY_ALT_COUNTRY  = 3000000;   // fly altitude when zooming to a country
+  const BOUNDARY_FLY_ALT_STATE    = 600000;    // fly altitude when zooming to a US state
+  const BOUNDARY_MAX_POSITIONS    = 20000;     // skip entities with more positions to prevent RangeError
+  const GEOJSON_MAX_BYTES         = 1048576;   // 1 MB — reject oversized datasets before loading
+
+  // CRT palette
+  const BOUNDARY_COLOR_COUNTRY_IDLE    = new Cesium.Color(0.12, 0.6, 0.55, 0.55);
+  const BOUNDARY_COLOR_COUNTRY_HOVER   = new Cesium.Color(0.24, 0.79, 0.72, 0.95);
+  const BOUNDARY_COLOR_COUNTRY_ACTIVE  = new Cesium.Color(0.35, 0.95, 0.85, 1.00);
+  const BOUNDARY_COLOR_STATE_IDLE      = new Cesium.Color(0.08, 0.45, 0.42, 0.40);
+  const BOUNDARY_COLOR_STATE_HOVER     = new Cesium.Color(0.20, 0.70, 0.65, 0.90);
+  const BOUNDARY_COLOR_STATE_ACTIVE    = new Cesium.Color(0.30, 0.88, 0.78, 0.98);
+  const BOUNDARY_FILL_IDLE             = new Cesium.Color(0.12, 0.60, 0.55, 0.04);
+  const BOUNDARY_FILL_HOVER            = new Cesium.Color(0.24, 0.79, 0.72, 0.12);
+  const BOUNDARY_FILL_ACTIVE           = new Cesium.Color(0.30, 0.88, 0.78, 0.20);
+
+  let globeBoundaryCountryDs  = null;
+  let globeBoundaryStateDs    = null;
+  let globeBoundaryAdmin1Ds   = null;   // world admin_1 (lazy-loaded for drill-down)
+  let lastSelectedBoundaryEntity = null;  // currently active/selected boundary entity
+
+  function boundaryFeatureName(props) {
+    if (!props) return '';
+    return props.NAME || props.name || props.NAME_EN || props.NAME_LONG ||
+           props.GEOUNIT || props.ADMIN || props.name_en || '';
+  }
+
+  function boundaryIsoA3(props) {
+    if (!props) return '';
+    return props.ADM0_A3 || props.ISO_A3 || props.ISO_A3_EH || props.adm0_a3 || '';
+  }
+
+  function boundaryFlyAltitude(isState) {
+    return isState ? BOUNDARY_FLY_ALT_STATE : BOUNDARY_FLY_ALT_COUNTRY;
+  }
+
+  function setBoundaryHoverStyle(entity, state, isState) {
+    // state: 'idle' | 'hover' | 'active'
+    // Outline-only mode: no polygon fill to avoid heavy triangulation.
+    if (!entity || !entity.polygon) return;
+    let outlineColor, outlineWidth;
+    if (state === 'active') {
+      outlineColor  = isState ? BOUNDARY_COLOR_STATE_ACTIVE  : BOUNDARY_COLOR_COUNTRY_ACTIVE;
+      outlineWidth  = 3.0;
+    } else if (state === 'hover') {
+      outlineColor  = isState ? BOUNDARY_COLOR_STATE_HOVER   : BOUNDARY_COLOR_COUNTRY_HOVER;
+      outlineWidth  = 2.5;
+    } else {
+      outlineColor  = isState ? BOUNDARY_COLOR_STATE_IDLE    : BOUNDARY_COLOR_COUNTRY_IDLE;
+      outlineWidth  = 1.0;
+    }
+    entity.polygon.outline      = true;
+    entity.polygon.outlineColor = outlineColor;
+    entity.polygon.outlineWidth = outlineWidth;
+    entity.polygon.fill         = false;   // outline-only: no triangulation cost
+    entity._boundaryState       = state;
+  }
+
+  function clearBoundarySelection() {
+    if (!lastSelectedBoundaryEntity) return;
+    const ent = lastSelectedBoundaryEntity;
+    lastSelectedBoundaryEntity = null;
+    setBoundaryHoverStyle(ent, 'idle', ent._boundaryIsState);
+    // Hide drill-down sub-boundaries when selection cleared
+    if (globeBoundaryAdmin1Ds) globeBoundaryAdmin1Ds.show = false;
+  }
+
+  function flyToBoundaryEntity(entity, isState) {
+    if (!cesiumViewer || !entity) return;
+    // Use precomputed centroid — avoids traversing large polygon hierarchies which
+    // can crash the renderer for complex multi-polygon countries.
+    if (!entity._boundaryCenter) return;
+    const lng = entity._boundaryCenter[0];
+    const lat = entity._boundaryCenter[1];
+
+    const alt = boundaryFlyAltitude(isState);
+    cesiumCameraMoveInternal = true;
+    cesiumFollowDisengageMutedUntil = Date.now() + 2500;
+    cesiumViewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lng, lat, alt),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-55), roll: 0 },
+      duration: 1.8,
+      complete: function () { cesiumCameraMoveInternal = false; },
+      cancel:   function () { cesiumCameraMoveInternal = false; },
+    });
+
+    // Clear previous selection then mark this one as active
+    if (lastSelectedBoundaryEntity && lastSelectedBoundaryEntity !== entity) {
+      setBoundaryHoverStyle(lastSelectedBoundaryEntity, 'idle', lastSelectedBoundaryEntity._boundaryIsState);
+    }
+    setBoundaryHoverStyle(entity, 'active', isState);
+    lastSelectedBoundaryEntity = entity;
+
+    // Progressive drill-down: load sub-country boundaries for selected country
+    if (!isState && entity._boundaryIsoA3) {
+      showBoundaryDrillDown(entity._boundaryIsoA3);
+    }
+
+    const name = entity._boundaryName || '';
+    if (name) {
+      const targetLabelEl = document.getElementById('mode-target-label');
+      if (targetLabelEl) {
+        targetLabelEl.textContent = name;
+        targetLabelEl.classList.add('visible');
+      }
+    }
+  }
+
+  function showBoundaryLabel(name, x, y) {
+    const el = document.getElementById('globe-boundary-label');
+    if (!el) return;
+    if (!name) { el.classList.remove('visible'); el.setAttribute('aria-hidden', 'true'); return; }
+    el.textContent = name;
+    el.style.left = (x + 14) + 'px';
+    el.style.top  = (y - 8) + 'px';
+    el.classList.add('visible');
+    el.setAttribute('aria-hidden', 'false');
+  }
+
+  function styleBoundaryDataSource(ds, isState) {
+    if (!ds) return;
+    const entities = ds.entities.values;
+    for (let i = 0; i < entities.length; i++) {
+      const e = entities[i];
+      if (!e.polygon) continue;
+      e.polygon.outline      = true;
+      e.polygon.outlineColor = isState ? BOUNDARY_COLOR_STATE_IDLE : BOUNDARY_COLOR_COUNTRY_IDLE;
+      e.polygon.outlineWidth = 1.0;
+      e.polygon.fill         = false;   // outline-only: prevents heavy triangulation/subdivision
+      e.polygon.granularity  = Cesium.Math.toRadians(5);
+      e.polygon.arcType      = Cesium.ArcType.RHUMB;
+      const props = e.properties ? e.properties.getValue(Cesium.JulianDate.now()) : null;
+      e._boundaryName    = boundaryFeatureName(props) || (e.name || '');
+      e._boundaryIsoA3   = boundaryIsoA3(props);
+      e._boundaryIsState = isState;
+      e._boundaryState   = 'idle';
+      // Precompute centroid once at load time (sampled for efficiency) so that
+      // flyToBoundaryEntity never needs to traverse the full polygon hierarchy.
+      const hier = e.polygon.hierarchy ? e.polygon.hierarchy.getValue(Cesium.JulianDate.now()) : null;
+      if (hier && hier.positions && hier.positions.length > 0) {
+        // Safety guard: skip entities with excessive positions to prevent RangeError crashes
+        if (hier.positions.length > BOUNDARY_MAX_POSITIONS) {
+          console.warn('[RW Boundary] entity "' + (e._boundaryName || '') + '" has ' +
+            hier.positions.length + ' positions — skipped to prevent RangeError (limit: ' +
+            BOUNDARY_MAX_POSITIONS + ')');
+          e.polygon.show = false;
+        } else {
+          const pts  = hier.positions;
+          const step = Math.max(1, Math.floor(pts.length / 48)); // sample up to 48 pts for O(1) centroid
+          let cx = 0, cy = 0, cz = 0, n = 0;
+          for (let j = 0; j < pts.length; j += step) { cx += pts[j].x; cy += pts[j].y; cz += pts[j].z; n++; }
+          const carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(
+            new Cesium.Cartesian3(cx / n, cy / n, cz / n)
+          );
+          if (carto) {
+            e._boundaryCenter = [
+              Cesium.Math.toDegrees(carto.longitude),
+              Cesium.Math.toDegrees(carto.latitude),
+            ];
+          }
+        }
+      }
+    }
+  }
+
+  function updateBoundaryLod() {
+    if (!cesiumViewer) return;
+    const on  = layerState.boundaries !== false;
+    const alt = cesiumViewer.camera.positionCartographic.height;
+    if (globeBoundaryCountryDs) {
+      globeBoundaryCountryDs.show = on;
+    }
+    if (globeBoundaryStateDs) {
+      globeBoundaryStateDs.show = on && (alt < BOUNDARY_ALT_COUNTRY);
+    }
+    if (globeBoundaryAdmin1Ds) {
+      // Admin-1 is only shown when a country is selected and boundaries are on
+      globeBoundaryAdmin1Ds.show = on && !!lastSelectedBoundaryEntity && !lastSelectedBoundaryEntity._boundaryIsState;
+    }
+  }
+
+  function toggleBoundaryLayer(on) {
+    setLayerOn('boundaries', on);
+    if (globeBoundaryCountryDs) globeBoundaryCountryDs.show = on;
+    if (globeBoundaryStateDs)   globeBoundaryStateDs.show   = on;
+    if (globeBoundaryAdmin1Ds)  globeBoundaryAdmin1Ds.show  = on && !!lastSelectedBoundaryEntity;
+    if (!on) {
+      showBoundaryLabel('', 0, 0);
+      // Clear selection state but keep entity ref for re-enable
+      if (lastSelectedBoundaryEntity) {
+        setBoundaryHoverStyle(lastSelectedBoundaryEntity, 'idle', lastSelectedBoundaryEntity._boundaryIsState);
+        lastSelectedBoundaryEntity = null;
+      }
+    }
+  }
+
+  function loadBoundaryGeoJson(url, name) {
+    return fetch(url).then(function (res) {
+      return res.text();
+    }).then(function (txt) {
+      if (txt.length > GEOJSON_MAX_BYTES) {
+        console.warn('[RW Boundary] ' + name + ' rejected: ' + txt.length +
+          ' bytes exceeds safe limit of ' + GEOJSON_MAX_BYTES + ' bytes (1 MB)');
+        return null;
+      }
+      return Cesium.GeoJsonDataSource.load(JSON.parse(txt), {
+        stroke: Cesium.Color.TRANSPARENT,
+        fill:   Cesium.Color.TRANSPARENT,
+        strokeWidth: 1,
+        markerSize: 0,
+        clampToGround: true,
+      });
+    }).then(function (ds) {
+      if (!ds) return null;
+      ds.name = name;
+      return ds;
+    }).catch(function (err) {
+      console.warn('[RW Boundary] Failed to load ' + name + ':', err);
+      return null;
+    });
+  }
+
+  // Lazy-load world admin_1 (provinces/states for all countries) and filter to
+  // the selected country. The dataset is fetched only once; subsequent calls
+  // just update entity visibility.
+  let _admin1LoadPromise = null;
+  const ADMIN1_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_110m_admin_1_states_provinces.geojson';
+
+  function ensureBoundaryAdmin1() {
+    if (_admin1LoadPromise) return _admin1LoadPromise;
+    _admin1LoadPromise = loadBoundaryGeoJson(ADMIN1_URL, 'admin1').then(function (ds) {
+      if (!ds) return null;
+      styleBoundaryDataSource(ds, true);
+      ds.show = false;  // hidden until a country is selected
+      cesiumViewer.dataSources.add(ds);
+      globeBoundaryAdmin1Ds = ds;
+      console.info('[RW Boundary] Admin-1 loaded (' + ds.entities.values.length + ' polygons)');
+      return ds;
+    });
+    return _admin1LoadPromise;
+  }
+
+  function showBoundaryDrillDown(isoA3) {
+    if (!cesiumViewer || !isoA3 || !layerState.boundaries) return;
+    ensureBoundaryAdmin1().then(function (ds) {
+      if (!ds) return;
+      const entities = ds.entities.values;
+      let matched = 0;
+      for (let i = 0; i < entities.length; i++) {
+        const e = entities[i];
+        const show = e._boundaryIsoA3 === isoA3;
+        if (e.polygon) e.polygon.show = show;
+        if (show) matched++;
+      }
+      ds.show = matched > 0;
+      if (matched > 0) {
+        console.info('[RW Boundary] Drill-down: ' + matched + ' sub-regions for ' + isoA3);
+      }
+    });
+  }
+
+  async function initGlobeBoundaries() {
+    if (!BOUNDARIES_ENABLED) {
+      console.info('[RW Boundary] disabled via BOUNDARIES_ENABLED flag');
+      return;
+    }
+    if (!cesiumViewer || typeof Cesium === 'undefined') return;
+
+    const COUNTRY_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_110m_admin_0_countries.geojson';
+    const STATE_URL   = 'https://cdn.jsdelivr.net/gh/PublicaMundi/MappingAPI@a4c1b2e/data/geojson/us-states.json';
+
+    try {
+      const [countryDs, stateDs] = await Promise.all([
+        loadBoundaryGeoJson(COUNTRY_URL, 'countries'),
+        loadBoundaryGeoJson(STATE_URL,   'us-states'),
+      ]);
+
+      if (countryDs) {
+        styleBoundaryDataSource(countryDs, false);
+        cesiumViewer.dataSources.add(countryDs);
+        globeBoundaryCountryDs = countryDs;
+        console.info('[RW Boundary] Countries loaded (' + countryDs.entities.values.length + ' polygons)');
+      }
+
+      if (stateDs) {
+        styleBoundaryDataSource(stateDs, true);
+        cesiumViewer.dataSources.add(stateDs);
+        globeBoundaryStateDs = stateDs;
+        console.info('[RW Boundary] US States loaded (' + stateDs.entities.values.length + ' polygons)');
+      }
+
+      if (!countryDs && !stateDs) return;
+
+      updateBoundaryLod();
+
+      cesiumViewer.camera.moveEnd.addEventListener(updateBoundaryLod);
+
+      const boundaryHoverHandler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
+      let lastHoveredEntity = null;
+
+      boundaryHoverHandler.setInputAction(function (movement) {
+        const picked = cesiumViewer.scene.pick(movement.endPosition);
+        const entity = picked && picked.id instanceof Cesium.Entity ? picked.id : null;
+
+        if (lastHoveredEntity && lastHoveredEntity !== entity) {
+          // Restore to active if it's the selected entity, else idle
+          const restoreState = (lastHoveredEntity === lastSelectedBoundaryEntity) ? 'active' : 'idle';
+          setBoundaryHoverStyle(lastHoveredEntity, restoreState, lastHoveredEntity._boundaryIsState);
+        }
+
+        if (entity && entity.polygon && entity._boundaryName !== undefined) {
+          if (entity !== lastHoveredEntity) {
+            // Only elevate to hover if it's not already active
+            if (entity !== lastSelectedBoundaryEntity) {
+              setBoundaryHoverStyle(entity, 'hover', entity._boundaryIsState);
+            }
+          }
+          const screenPos = movement.endPosition;
+          showBoundaryLabel(entity._boundaryName, screenPos.x, screenPos.y);
+          cesiumViewer.scene.canvas.style.cursor = 'pointer';
+          lastHoveredEntity = entity;
+        } else {
+          showBoundaryLabel('', 0, 0);
+          if (lastHoveredEntity) {
+            cesiumViewer.scene.canvas.style.cursor = '';
+            lastHoveredEntity = null;
+          }
+        }
+      }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+      boundaryHoverHandler.setInputAction(function (click) {
+        const picked = cesiumViewer.scene.pick(click.position);
+        const entity = picked && picked.id instanceof Cesium.Entity ? picked.id : null;
+        if (entity && entity.polygon && entity._boundaryName !== undefined) {
+          flyToBoundaryEntity(entity, entity._boundaryIsState);
+        }
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    } catch (err) {
+      console.warn('[RW Boundary] initGlobeBoundaries error:', err);
+    }
+  }
+
+  // ── Cesium street-level navigation helpers ──────────────────────────────────
+  // loadGoogleMapsApi — replaced by Cesium street-level; kept as a compat stub
+  // so existing callers (openStreetLevelTab, slNavigateTo) continue to work.
+  function loadGoogleMapsApi(apiKey, callback) {
+    // Google Maps Street View replaced by Cesium street-level navigation.
+    // Invoke callback immediately so callers proceed with Cesium-based init.
+    if (typeof callback === 'function') callback();
+  }
+
+  // initStreetView — fly Cesium camera to street-level at the given coordinates
+  function initStreetView(lat, lng) {
+    if (!cesiumViewer) return;
+    enterCesiumStreetLevel(lat, lng);
+  }
+
+  // showStreetView — enter Cesium street-level mode and show the HUD overlay
+  function showStreetView(lat, lng) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    if (!cesiumViewer) return;
+    const streetViewEl = document.getElementById('street-view');
+    if (!streetViewEl) return;
+    initStreetView(lat, lng);
+    streetViewEl.style.display = 'block';
+    requestAnimationFrame(function () {
+      streetViewEl.classList.add('visible');
+    });
+    streetViewVisible = true;
+  }
+
+  // hideStreetView — exit Cesium street-level mode and hide the HUD overlay
+  function hideStreetView() {
+    const streetViewEl = document.getElementById('street-view');
+    if (!streetViewEl) return;
+    streetViewEl.classList.remove('visible');
+    streetViewVisible = false;
+    exitCesiumStreetLevel();
+    streetViewEl.addEventListener('transitionend', function () {
+      if (!streetViewVisible) streetViewEl.style.display = 'none';
+    }, { once: true });
+  }
+
+  const streetViewCloseBtn = document.getElementById('street-view-close');
+  if (streetViewCloseBtn) {
+    streetViewCloseBtn.addEventListener('click', function () {
+      hideStreetView();
+    });
+  }
+
+  // ── Street-level tab — Cesium-powered ground-mode view ───────────────────────
+  // initStreetLevelPanorama — fly Cesium to street-level at the given coords
+  function initStreetLevelPanorama(lat, lng) {
+    if (!cesiumViewer) return;
+    enterCesiumStreetLevel(lat, lng);
+  }
+
+  // ── Mode Drawer: open/close helpers ────────────────────────────────────
+  function openModeDrawer(mode) {
+    const drawer = document.getElementById('mode-drawer');
+    const streetSection = document.getElementById('mode-drawer-street');
+    const groundSection = document.getElementById('mode-drawer-ground');
+    const titleEl = document.getElementById('mode-drawer-title');
+    if (!drawer) return;
+    if (mode === 'street') {
+      if (streetSection) streetSection.classList.remove('hidden');
+      if (groundSection) groundSection.classList.add('hidden');
+      if (titleEl) titleEl.textContent = 'STREET LEVEL';
+    } else {
+      if (streetSection) streetSection.classList.add('hidden');
+      if (groundSection) groundSection.classList.remove('hidden');
+      if (titleEl) titleEl.textContent = 'GROUND LEVEL';
+    }
+    drawer.classList.add('open');
+    drawer.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeModeDrawer() {
+    const drawer = document.getElementById('mode-drawer');
+    if (drawer) { drawer.classList.remove('open'); drawer.setAttribute('aria-hidden', 'true'); }
+  }
+
+  function openStreetLevelTab() {
+    const railBtn = document.getElementById('rail-btn-street-level');
+    streetLevelActive = true;
+    if (railBtn) { railBtn.classList.add('active'); railBtn.setAttribute('aria-pressed', 'true'); }
+    openModeDrawer('street');
+    startSlMonitor();
+    const noTargetEl = document.getElementById('mode-no-target');
+    const targetLabelEl = document.getElementById('mode-target-label');
+    if (selectedTargetCoords) {
+      if (noTargetEl) noTargetEl.style.display = 'none';
+      if (targetLabelEl) {
+        targetLabelEl.textContent = selectedTargetCoords.lat.toFixed(4) + ', ' + selectedTargetCoords.lng.toFixed(4);
+        targetLabelEl.classList.add('visible');
+      }
+      loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, function () {
+        initStreetLevelPanorama(selectedTargetCoords.lat, selectedTargetCoords.lng);
+      });
+    } else {
+      if (noTargetEl) noTargetEl.style.display = 'block';
+      if (targetLabelEl) { targetLabelEl.textContent = ''; targetLabelEl.classList.remove('visible'); }
+    }
+  }
+
+  function closeStreetLevelTab() {
+    const railBtn = document.getElementById('rail-btn-street-level');
+    streetLevelActive = false;
+    exitCesiumStreetLevel();
+    stopSlMonitor();
+    if (railBtn) { railBtn.classList.remove('active'); railBtn.setAttribute('aria-pressed', 'false'); }
+    if (!groundLevelActive) { closeModeDrawer(); }
+  }
+
+  // ── Ground Level mode ────────────────────────────────────────────────────
+  let groundLevelActive = false;
+
+  function openGroundLevelMode() {
+    const railBtn = document.getElementById('rail-btn-ground-level');
+    groundLevelActive = true;
+    if (railBtn) { railBtn.classList.add('active'); railBtn.setAttribute('aria-pressed', 'true'); }
+    openModeDrawer('ground');
+    if (!cesiumStreetLevelMode && cesiumViewer) {
+      const cPos = cesiumViewer.camera.positionCartographic;
+      const lat = Cesium.Math.toDegrees(cPos.latitude);
+      const lng = Cesium.Math.toDegrees(cPos.longitude);
+      enterCesiumStreetLevel(lat, lng);
+    }
+  }
+
+  function closeGroundLevelMode() {
+    const railBtn = document.getElementById('rail-btn-ground-level');
+    groundLevelActive = false;
+    if (railBtn) { railBtn.classList.remove('active'); railBtn.setAttribute('aria-pressed', 'false'); }
+    if (!streetLevelActive) { exitCesiumStreetLevel(); }
+    closeModeDrawer();
+  }
+
+  const streetLevelRailBtn = document.getElementById('rail-btn-street-level');
+  if (streetLevelRailBtn) {
+    streetLevelRailBtn.addEventListener('click', function () {
+      if (streetLevelActive) { closeStreetLevelTab(); } else { openStreetLevelTab(); }
+    });
+  }
+
+  const groundLevelRailBtn = document.getElementById('rail-btn-ground-level');
+  if (groundLevelRailBtn) {
+    groundLevelRailBtn.addEventListener('click', function () {
+      if (groundLevelActive) { closeGroundLevelMode(); } else { openGroundLevelMode(); }
+    });
+  }
+
+  const modeDrawerCloseBtn = document.getElementById('mode-drawer-close');
+  if (modeDrawerCloseBtn) {
+    modeDrawerCloseBtn.addEventListener('click', function () {
+      if (streetLevelActive) { closeStreetLevelTab(); }
+      else if (groundLevelActive) { closeGroundLevelMode(); }
+      else { closeModeDrawer(); }
+    });
+  }
+
+  // ── Ground Level: state select navigation ───────────────────────────────
+  const glStateSelect = document.getElementById('gl-state-select');
+  if (glStateSelect) {
+    glStateSelect.addEventListener('change', function () {
+      const val = glStateSelect.value;
+      if (!val) return;
+      const parts = val.split(',');
+      const lat = parseFloat(parts[0]);
+      const lng = parseFloat(parts[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      if (cesiumViewer) {
+        cesiumCameraMoveInternal = true;
+        cesiumFollowDisengageMutedUntil = Date.now() + 2000;
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(lng, lat, 50000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+          duration: 2.0,
+          complete: function () { cesiumCameraMoveInternal = false; },
+          cancel:   function () { cesiumCameraMoveInternal = false; },
+        });
+      }
+    });
+  }
+
+  // ── Street-level: state/landmark navigation ────────────────────────────
+  function slNavigateTo(lat, lng, label) {
+    const noTargetEl = document.getElementById('mode-no-target');
+    const targetLabelEl = document.getElementById('mode-target-label');
+    const monitorStatus = document.getElementById('sl-monitor-status');
+    if (targetLabelEl) {
+      targetLabelEl.textContent = label || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+      targetLabelEl.classList.add('visible');
+    }
+    if (monitorStatus) monitorStatus.textContent = label ? label.toUpperCase() : 'LIVE';
+    if (noTargetEl) noTargetEl.style.display = 'none';
+    loadGoogleMapsApi(BOOTSTRAP.googleMapsApiKey, function () {
+      initStreetLevelPanorama(lat, lng);
+    });
+    document.querySelectorAll('.sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
+  }
+
+  document.querySelectorAll('.sl-landmark-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const lat = parseFloat(btn.dataset.lat);
+      const lng = parseFloat(btn.dataset.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      btn.classList.add('active');
+      slNavigateTo(lat, lng, btn.textContent);
+    });
+  });
+
+  // ── Street-level: location search — unified camera navigation ─────────────
+  // slFlyToCoords: fly camera to lat/lng in both globe mode and city/street-level mode.
+  function slFlyToCoords(lat, lng, label) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    const targetLabelEl = document.getElementById('mode-target-label');
+    const monitorStatus = document.getElementById('sl-monitor-status');
+    if (targetLabelEl) {
+      targetLabelEl.textContent = label || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+      targetLabelEl.classList.add('visible');
+    }
+    if (monitorStatus && monitorStatus.textContent === 'STANDBY') monitorStatus.textContent = 'LIVE';
+    document.querySelectorAll('.sl-landmark-btn').forEach(function (b) { b.classList.remove('active'); });
+    if (streetLevelActive || groundLevelActive) {
+      // In street/ground level mode: fly to the location
+      const noTargetEl = document.getElementById('mode-no-target');
+      if (noTargetEl) noTargetEl.style.display = 'none';
+      initStreetLevelPanorama(lat, lng);
+    } else if (cesiumViewer) {
+      // In globe mode: fly to city-view altitude so the user can see the area
+      cesiumCameraMoveInternal = true;
+      cesiumFollowDisengageMutedUntil = Date.now() + 2000;
+      cesiumViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(lng, lat, 50000),
+        orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+        duration: 2.0,
+        complete: function () { cesiumCameraMoveInternal = false; },
+        cancel:   function () { cesiumCameraMoveInternal = false; },
+      });
+    }
+  }
+
+  // loadGooglePlacesApi: loads the Google Maps JS API with the Places library.
+  // This is a real loader (unlike the Cesium-compat loadGoogleMapsApi stub) and
+  // is used exclusively for address search/autocomplete functionality.
+  var _rwPlacesLoadCbs = [];
+  var _rwPlacesApiState = 'idle'; // 'idle' | 'loading' | 'ready' | 'failed'
+  window.rwPlacesReady = function () {
+    _rwPlacesApiState = 'ready';
+    var pending = _rwPlacesLoadCbs.splice(0);
+    pending.forEach(function (fn) { try { fn(); } catch (e) { console.warn('[RW Places]', e); } });
+  };
+  function loadGooglePlacesApi(apiKey, callback) {
+    if (!apiKey) { if (typeof callback === 'function') callback(new Error('no key')); return; }
+    if (_rwPlacesApiState === 'ready') { if (typeof callback === 'function') callback(); return; }
+    if (typeof callback === 'function') _rwPlacesLoadCbs.push(callback);
+    if (_rwPlacesApiState === 'loading') return;
+    _rwPlacesApiState = 'loading';
+    var script = document.createElement('script');
+    script.async = true;
+    script.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(apiKey) + '&libraries=places&callback=rwPlacesReady';
+    script.onerror = function () {
+      _rwPlacesApiState = 'failed';
+      var cbs = _rwPlacesLoadCbs.splice(0);
+      cbs.forEach(function (fn) { try { fn(new Error('Google Places API load failed')); } catch (e) {} });
+    };
+    document.head.appendChild(script);
+  }
+
+  // initPlacesAutocomplete: wire Google Places Autocomplete to the search input.
+  var _slPlacesAc = null;
+  function initPlacesAutocomplete() {
+    if (typeof google === 'undefined' || !google.maps || !google.maps.places) return;
+    var inputEl = document.getElementById('sl-location-input');
+    if (!inputEl || _slPlacesAc) return;
+    _slPlacesAc = new google.maps.places.Autocomplete(inputEl, {
+      types: ['geocode', 'establishment'],
+      fields: ['name', 'geometry.location'],
+    });
+    _slPlacesAc.addListener('place_changed', function () {
+      var place = _slPlacesAc.getPlace();
+      if (!place || !place.geometry || !place.geometry.location) return;
+      var lat = place.geometry.location.lat();
+      var lng = place.geometry.location.lng();
+      var label = place.name || inputEl.value || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+      slFlyToCoords(lat, lng, label);
+      inputEl.blur();
+    });
+  }
+
+  // Search form "Go" handler: geocode the typed address and fly the camera there.
+  // Works with or without a Places autocomplete suggestion being selected.
+  var slSearchForm = document.getElementById('sl-search-form');
+  var slLocationInput = document.getElementById('sl-location-input');
+  if (slSearchForm) {
+    slSearchForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var query = slLocationInput ? slLocationInput.value.trim() : '';
+      if (!query) return;
+      if (typeof google !== 'undefined' && google.maps && google.maps.Geocoder) {
+        var geocoder = new google.maps.Geocoder();
+        geocoder.geocode({ address: query }, function (results, status) {
+          if (status === 'OK' && results && results.length > 0) {
+            var loc = results[0].geometry.location;
+            var label = results[0].formatted_address || query;
+            slFlyToCoords(loc.lat(), loc.lng(), label);
+          } else {
+            console.warn('[RW] Geocoder: no results for "' + query + '" (status=' + status + ')');
+          }
+        });
+      } else {
+        console.warn('[RW] Google Places API not available; cannot geocode "' + query + '"');
+      }
+    });
+  }
+
+  // Load the Google Places API (with Geocoder) when an API key is configured.
+  if (BOOTSTRAP.googleMapsApiKey) {
+    loadGooglePlacesApi(BOOTSTRAP.googleMapsApiKey, function (err) {
+      if (!err) initPlacesAutocomplete();
+    });
+  }
+
+  // ── Street-level: tactical button toggles ─────────────────────────────
+  document.querySelectorAll('.sl-tac-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      btn.classList.toggle('active');
+    });
+  });
+
+  // ── Street-level: monitor timestamp ───────────────────────────────────
+  var slTimestampInterval = null;
+  function updateSlTimestamp() {
+    var el = document.getElementById('sl-timestamp');
+    if (!el) return;
+    var now = new Date();
+    el.textContent = now.toUTCString().slice(17, 25) + 'Z';
+  }
+  function startSlMonitor() {
+    updateSlTimestamp();
+    if (!slTimestampInterval) { slTimestampInterval = setInterval(updateSlTimestamp, 1000); }
+    var status = document.getElementById('sl-monitor-status');
+    if (status && status.textContent === 'STANDBY') status.textContent = 'LIVE';
+  }
+  function stopSlMonitor() {
+    if (slTimestampInterval) { clearInterval(slTimestampInterval); slTimestampInterval = null; }
+    var status = document.getElementById('sl-monitor-status');
+    if (status) status.textContent = 'STANDBY';
+  }
+
+  // ── Cesium street-level: enter / exit / focus / drone controls ────────────────
+
+  // enterCesiumStreetLevel — fly Cesium camera to street-level altitude at lat/lng
+  // with a forward-facing pitch for a human-perspective ground view.
+  function enterCesiumStreetLevel(lat, lng) {
+    if (!cesiumViewer) return;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    // Save current orbit position so we can return to it on exit
+    const cPos = cesiumViewer.camera.positionCartographic;
+    cesiumPreStreetLevelPos = {
+      lng: Cesium.Math.toDegrees(cPos.longitude),
+      lat: Cesium.Math.toDegrees(cPos.latitude),
+      height: cPos.height,
+      heading: cesiumViewer.camera.heading,
+      pitch: cesiumViewer.camera.pitch,
+    };
+    cesiumStreetLevelMode = true;
+    cesiumCameraMoveInternal = true;
+    cesiumFollowDisengageMutedUntil = Date.now() + 3000;
+    // Tighten LOD quality for Google tileset while at street level
+    if (cesiumGoogleTileset) { cesiumGoogleTileset.maximumScreenSpaceError = 4; }
+    cesiumViewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lng, lat, STREET_LEVEL_ALTITUDE_M),
+      orientation: {
+        heading: cesiumViewer.camera.heading,
+        pitch: Cesium.Math.toRadians(STREET_LEVEL_PITCH_DEG),
+        roll: 0,
+      },
+      duration: 2.0,
+      complete: function () {
+        cesiumCameraMoveInternal = false;
+        spawnSlTraffic();
+      },
+      cancel: function () { cesiumCameraMoveInternal = false; },
+    });
+  }
+
+  // exitCesiumStreetLevel — return camera to the pre-street-level orbit position
+  function exitCesiumStreetLevel() {
+    if (!cesiumViewer) return;
+    cesiumStreetLevelMode = false;
+    exitCesiumFpMode();   // exit first-person pointer-lock if active
+    clearSlTraffic();     // remove simulated traffic entities
+    // Restore default LOD quality for globe view
+    if (cesiumGoogleTileset) { cesiumGoogleTileset.maximumScreenSpaceError = 16; }
+    // Release lookAt constraint if focus mode was active
+    if (cesiumFocusModeActive) {
+      cesiumFocusModeActive = false;
+      cesiumViewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+    }
+    if (cesiumPreStreetLevelPos) {
+      const pos = cesiumPreStreetLevelPos;
+      cesiumCameraMoveInternal = true;
+      cesiumFollowDisengageMutedUntil = Date.now() + 2500;
+      cesiumViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(pos.lng, pos.lat, pos.height),
+        orientation: {
+          heading: pos.heading,
+          // Clamp to valid orbital range: ensure camera points at Earth on return (-90° nadir to -20° low-angle)
+          pitch: Cesium.Math.clamp(pos.pitch, Cesium.Math.toRadians(-90), Cesium.Math.toRadians(-20)),
+          roll: 0,
+        },
+        duration: 2.0,
+        complete: function () { cesiumCameraMoveInternal = false; },
+        cancel:   function () { cesiumCameraMoveInternal = false; },
+      });
+      cesiumPreStreetLevelPos = null;
+    }
+  }
+
+  // activateFocusMode — lock camera onto target for orbit/tilt/approach navigation
+  function activateFocusMode(target) {
+    if (!cesiumViewer) return;
+    const ll = resolveTargetLatLng(target);
+    if (!ll) return;
+    const dist = getTargetOrbitDistance(target);
+    cesiumFocusModeActive = true;
+    cesiumViewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, dist),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+      duration: 1.8,
+      complete: function () {
+        if (!cesiumFocusModeActive) return;
+        // Lock lookAt so orbit/tilt revolves around the target
+        const center = Cesium.Cartesian3.fromDegrees(ll.lng, ll.lat, 0);
+        cesiumViewer.camera.lookAt(
+          center,
+          new Cesium.HeadingPitchRange(cesiumViewer.camera.heading, Cesium.Math.toRadians(-45), dist)
+        );
+      },
+      cancel: function () {},
+    });
+  }
+
+  // deactivateFocusMode — release lookAt constraint and restore free-orbit
+  function deactivateFocusMode() {
+    if (!cesiumViewer || !cesiumFocusModeActive) return;
+    cesiumFocusModeActive = false;
+    cesiumViewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+  }
+
+  // ── First-person camera mode (pointer lock + mouse look) ─────────────────────
+  // enterCesiumFpMode — requests pointer lock on the Cesium canvas so mouse
+  // movement drives camera look (yaw + pitch) without moving the cursor.
+  function enterCesiumFpMode() {
+    if (!cesiumViewer || !cesiumStreetLevelMode) return;
+    const canvas = cesiumViewer.scene.canvas;
+    if (canvas && canvas.requestPointerLock) {
+      canvas.requestPointerLock();
+    }
+  }
+
+  // exitCesiumFpMode — releases pointer lock and restores normal camera inputs.
+  // Safe to call even when FP mode is not active.
+  function exitCesiumFpMode() {
+    if (!cesiumFpMode) return;
+    if (document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+    cesiumFpMode = false;
+    updateFpModeUi();
+  }
+
+  // updateFpModeUi — sync button, crosshair visibility, cursor, and ssc inputs.
+  function updateFpModeUi() {
+    const fpBtn    = document.getElementById('sl-fp-btn');
+    const crosshair = document.getElementById('sl-fp-crosshair');
+    const cesiumEl  = document.getElementById('cesium-world');
+    if (fpBtn)    { fpBtn.classList.toggle('active', cesiumFpMode); }
+    if (crosshair){ crosshair.classList.toggle('visible', cesiumFpMode); }
+    if (cesiumEl) { cesiumEl.classList.toggle('fp-mode', cesiumFpMode); }
+    // Disable Cesium's built-in mouse controls while FP mode drives the camera
+    const ssc = cesiumViewer && cesiumViewer.scene.screenSpaceCameraController;
+    if (ssc) { ssc.enableInputs = !cesiumFpMode; }
+  }
+
+  // Pointer lock state change: sync cesiumFpMode with actual lock state.
+  document.addEventListener('pointerlockchange', function () {
+    if (!cesiumViewer) return;
+    const locked = document.pointerLockElement === cesiumViewer.scene.canvas;
+    cesiumFpMode = locked;
+    updateFpModeUi();
+  });
+
+  // Mouse look in FP mode — yaw around world-up, pitch around camera right.
+  document.addEventListener('mousemove', function (e) {
+    if (!cesiumFpMode || !cesiumViewer) return;
+    const cam = cesiumViewer.camera;
+    const dx  = e.movementX * SL_FP_MOUSE_SENSITIVITY;
+    const dy  = e.movementY * SL_FP_MOUSE_SENSITIVITY;
+    // Yaw: look left/right using the camera's own up vector
+    cam.look(cam.up, -dx);
+    // Pitch: clamp to ±85° to prevent gimbal flip
+    const pitchAfter = cam.pitch - dy;
+    if (pitchAfter > Cesium.Math.toRadians(-85) && pitchAfter < Cesium.Math.toRadians(85)) {
+      cam.look(cam.right, -dy);
+    }
+  });
+
+  // FP mode toggle button
+  const slFpBtn = document.getElementById('sl-fp-btn');
+  if (slFpBtn) {
+    slFpBtn.addEventListener('click', function () {
+      if (cesiumFpMode) { exitCesiumFpMode(); } else { enterCesiumFpMode(); }
+    });
+  }
+
+  // Escape key exits FP mode (pointer lock also exits on Escape natively, but
+  // we also update state to stay consistent)
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && cesiumFpMode) { exitCesiumFpMode(); }
+  }, true);
+
+  // ── Collision-aware camera: keep camera above minimum ground clearance ────────
+  // Registered once at Cesium init; clamps camera altitude every rendered frame
+  // when in street-level mode so the user never clips through the terrain.
+  function registerTerrainClamp() {
+    if (!cesiumViewer) return;
+    cesiumViewer.scene.postRender.addEventListener(function () {
+      if (!cesiumStreetLevelMode) return;
+      const cPos = cesiumViewer.camera.positionCartographic;
+      if (cPos.height < SL_MIN_ABOVE_GROUND) {
+        cesiumViewer.camera.position = Cesium.Cartesian3.fromDegrees(
+          Cesium.Math.toDegrees(cPos.longitude),
+          Cesium.Math.toDegrees(cPos.latitude),
+          SL_MIN_ABOVE_GROUND
+        );
+      }
+    });
+  }
+
+  // ── Simulated traffic entities: lightweight moving cars ───────────────────────
+  // Cars are represented as point billboards using Cesium's CallbackProperty so
+  // their positions update every render frame without creating new objects.
+  // Density is controlled by SL_TRAFFIC_DENSITY (0–1). When the Google Traffic
+  // API is unavailable the flow is purely simulated (grid-aligned headings at
+  // varied speeds). Cars respawn on the far side when they leave the visible radius.
+
+  function clearSlTraffic() {
+    if (cesiumViewer) {
+      for (const car of slTrafficEntities) {
+        if (car.entity) { try { cesiumViewer.entities.remove(car.entity); } catch (_) {} }
+      }
+    }
+    slTrafficEntities = [];
+    if (slTrafficLoopId) { cancelAnimationFrame(slTrafficLoopId); slTrafficLoopId = null; }
+    const indicator = document.getElementById('sl-traffic-indicator');
+    if (indicator) { indicator.style.display = 'none'; }
+  }
+
+  function spawnSlTraffic() {
+    clearSlTraffic();
+    if (!cesiumViewer || !cesiumStreetLevelMode) return;
+    const n = Math.max(1, Math.round(SL_MAX_TRAFFIC_CARS * SL_TRAFFIC_DENSITY));
+    const cPos    = cesiumViewer.camera.positionCartographic;
+    const baseLat = Cesium.Math.toDegrees(cPos.latitude);
+    const baseLng = Cesium.Math.toDegrees(cPos.longitude);
+    const CAR_COLORS = [
+      Cesium.Color.fromCssColorString('#f5a623'),
+      Cesium.Color.fromCssColorString('#e74c3c'),
+      Cesium.Color.fromCssColorString('#3498db'),
+      Cesium.Color.fromCssColorString('#ecf0f1'),
+      Cesium.Color.fromCssColorString('#95a5a6'),
+    ];
+    for (let i = 0; i < n; i++) {
+      const angle   = Math.random() * 2 * Math.PI;
+      const dist    = (0.1 + Math.random() * 0.9) * SL_TRAFFIC_RADIUS_M;
+      const cosLat  = Math.cos(Cesium.Math.toRadians(baseLat));
+      const car = {
+        lat:     baseLat + (dist * Math.cos(angle)) / 111319,
+        lng:     baseLng + (dist * Math.sin(angle)) / (111319 * cosLat),
+        heading: Math.round(Math.random() * 3) * (Math.PI / 2), // 0°/90°/180°/270°
+        speed:   SL_TRAFFIC_SPEED_MPS * (0.4 + Math.random() * 0.8),
+        entity:  null,
+      };
+      const color = CAR_COLORS[i % CAR_COLORS.length];
+      car.entity = cesiumViewer.entities.add({
+        position: new Cesium.CallbackProperty(function () {
+          return Cesium.Cartesian3.fromDegrees(car.lng, car.lat, 0.5);
+        }, false),
+        point: {
+          pixelSize: 5,
+          color: color,
+          outlineColor: Cesium.Color.BLACK.withAlpha(0.6),
+          outlineWidth: 1,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: 800,
+          scaleByDistance: new Cesium.NearFarScalar(10, 2.0, 600, 0.5),
+        },
+        show: true,
+      });
+      slTrafficEntities.push(car);
+    }
+    slTrafficPrevTime = 0;
+    slTrafficLoopId = requestAnimationFrame(slTrafficMoveLoop);
+    const indicator = document.getElementById('sl-traffic-indicator');
+    if (indicator) { indicator.style.display = ''; }
+  }
+
+  function slTrafficMoveLoop(timestamp) {
+    if (!cesiumStreetLevelMode || !cesiumViewer) {
+      slTrafficLoopId = null;
+      return;
+    }
+    const dt = slTrafficPrevTime > 0 ? Math.min((timestamp - slTrafficPrevTime) / 1000, 0.1) : 0;
+    slTrafficPrevTime = timestamp;
+    const cPos   = cesiumViewer.camera.positionCartographic;
+    const camLat = Cesium.Math.toDegrees(cPos.latitude);
+    const camLng = Cesium.Math.toDegrees(cPos.longitude);
+    const camAlt = cPos.height;
+    const visible = camAlt < SL_TRAFFIC_ALTITUDE_MAX;
+    for (const car of slTrafficEntities) {
+      if (car.entity) { car.entity.show = visible; }
+      if (!visible || dt <= 0) { continue; }
+      // Advance position along heading vector
+      const cosLat = Math.cos(Cesium.Math.toRadians(car.lat));
+      car.lat += (car.speed * dt * Math.cos(car.heading)) / 111319;
+      car.lng += (car.speed * dt * Math.sin(car.heading)) / (111319 * cosLat);
+      // Respawn car on the opposite side when it exits the visible radius
+      const dLat = (car.lat - camLat) * 111319;
+      const dLng = (car.lng - camLng) * 111319 * Math.cos(Cesium.Math.toRadians(camLat));
+      const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+      if (dist > SL_TRAFFIC_RADIUS_M) {
+        const spawnAngle = car.heading + Math.PI + (Math.random() - 0.5) * 0.4;
+        const spawnDist  = SL_TRAFFIC_RADIUS_M * (0.5 + Math.random() * 0.4);
+        const cosBase    = Math.cos(Cesium.Math.toRadians(camLat));
+        car.lat = camLat + (spawnDist * Math.cos(spawnAngle)) / 111319;
+        car.lng = camLng + (spawnDist * Math.sin(spawnAngle)) / (111319 * cosBase);
+      }
+    }
+    slTrafficLoopId = requestAnimationFrame(slTrafficMoveLoop);
+  }
+
+
+  // Works in all Cesium modes (orbital and street-level). Speed scales with
+  // altitude so city flight feels like a drone and high-altitude feels like a
+  // smooth orbit. Shift multiplies speed for fast traversal.
+  const DRONE_MOVE_PER_FRAME    = 1.5;
+  const DRONE_BOOST_MULTIPLIER  = 4;
+  const DRONE_ALT_LOW           = 100;    // m: street / low-drone altitude
+  const DRONE_ALT_MID           = 500;    // m: low aerial altitude
+  const DRONE_ALT_HIGH          = 5000;   // m: high aerial / approach altitude
+  const DRONE_SPEED_LOW         = 1;      // multiplier at < DRONE_ALT_LOW
+  const DRONE_SPEED_MID         = 4;      // multiplier at < DRONE_ALT_MID
+  const DRONE_SPEED_HIGH        = 20;     // multiplier at < DRONE_ALT_HIGH
+  const DRONE_SPEED_ORBITAL     = 150;    // multiplier above DRONE_ALT_HIGH
+  const DRONE_FLIGHT_KEYS = ['w', 'a', 's', 'd', 'q', 'e', 'r', 'f', 'shift'];
+
+  // Normalise a keyboard event key to the drone key token.
+  function toDroneKey(key) {
+    return key === 'Shift' ? 'shift' : key.toLowerCase();
+  }
+
+  function droneMoveLoop() {
+    if (!cesiumViewer) {
+      droneMoveFrameId = null;
+      return;
+    }
+    const anyKey = Object.values(cesiumDroneKeys).some(Boolean);
+    if (!anyKey) {
+      droneMoveFrameId = null;
+      return;
+    }
+    const alt  = cesiumViewer.camera.positionCartographic.height;
+    const mul  = alt < DRONE_ALT_LOW  ? DRONE_SPEED_LOW
+               : alt < DRONE_ALT_MID  ? DRONE_SPEED_MID
+               : alt < DRONE_ALT_HIGH ? DRONE_SPEED_HIGH
+               :                        DRONE_SPEED_ORBITAL;
+    const base  = DRONE_MOVE_PER_FRAME * mul;
+    const speed = base * (cesiumDroneKeys['shift'] ? DRONE_BOOST_MULTIPLIER : 1);
+    if (cesiumDroneKeys['w']) cesiumViewer.camera.moveForward(speed);
+    if (cesiumDroneKeys['s']) cesiumViewer.camera.moveBackward(speed);
+    if (cesiumDroneKeys['a']) cesiumViewer.camera.moveLeft(speed);
+    if (cesiumDroneKeys['d']) cesiumViewer.camera.moveRight(speed);
+    if (cesiumDroneKeys['e']) cesiumViewer.camera.moveUp(speed * 0.5);    // E = ascend
+    if (cesiumDroneKeys['q']) cesiumViewer.camera.moveDown(speed * 0.5);  // Q = descend
+    if (cesiumDroneKeys['r']) cesiumViewer.camera.moveUp(speed * 0.5);    // R = ascend (button fallback)
+    if (cesiumDroneKeys['f']) cesiumViewer.camera.moveDown(speed * 0.5);  // F = descend (button fallback)
+    droneMoveFrameId = requestAnimationFrame(droneMoveLoop);
+  }
+
+  // Wire drone button press/release to key state for button-based control
+  function bindDroneButton(btnId, key) {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    function startMove(e) {
+      e.preventDefault();
+      cesiumDroneKeys[key] = true;
+      if (!droneMoveFrameId) droneMoveFrameId = requestAnimationFrame(droneMoveLoop);
+    }
+    function stopMove() { cesiumDroneKeys[key] = false; }
+    btn.addEventListener('mousedown',  startMove);
+    btn.addEventListener('touchstart', startMove, { passive: false });
+    btn.addEventListener('mouseup',    stopMove);
+    btn.addEventListener('mouseleave', stopMove);
+    btn.addEventListener('touchend',   stopMove);
+  }
+
+  bindDroneButton('sv-fwd-btn',  'w');
+  bindDroneButton('sv-back-btn', 's');
+  bindDroneButton('sv-left-btn', 'a');
+  bindDroneButton('sv-right-btn','d');
+  bindDroneButton('sv-asc-btn',  'r');
+  bindDroneButton('sv-desc-btn', 'f');
+  bindDroneButton('sl-fwd-btn',  'w');
+  bindDroneButton('sl-back-btn', 's');
+  bindDroneButton('sl-left-btn', 'a');
+  bindDroneButton('sl-right-btn','d');
+  bindDroneButton('sl-asc-btn',  'r');
+  bindDroneButton('sl-desc-btn', 'f');
+
+  document.addEventListener('keydown', function (e) {
+    if (!USE_CESIUM || !cesiumViewer) return;
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
+    const k = toDroneKey(e.key);
+    if (!DRONE_FLIGHT_KEYS.includes(k)) return;
+    if (k !== 'shift') e.preventDefault();
+    cesiumDroneKeys[k] = true;
+    if (!droneMoveFrameId) droneMoveFrameId = requestAnimationFrame(droneMoveLoop);
+  });
+
+  document.addEventListener('keyup', function (e) {
+    const k = toDroneKey(e.key);
+    if (DRONE_FLIGHT_KEYS.includes(k)) cesiumDroneKeys[k] = false;
+  });
+
+  // ── Altitude readout: update sv-alt-readout and sl-alt-readout every second ──
+  setInterval(function () {
+    if (!cesiumViewer || !cesiumStreetLevelMode) return;
+    const alt = cesiumViewer.camera.positionCartographic.height;
+    const text = Math.round(alt) + 'm';
+    const svEl = document.getElementById('sv-alt-readout');
+    if (svEl) svEl.textContent = text;
+    const slEl = document.getElementById('sl-alt-readout');
+    if (slEl) slEl.textContent = text;
+  }, 500);
 
   function toLatLngWithFallback(entity) {
     if (!entity) return null;
@@ -1632,6 +3402,171 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       regionsVisible++;
     }
+
+    // ── Live Entity Layers: vehicles, aircraft, vessels, sensors, weather cells ─
+    const liveEntities = (state && state.liveEntities) || { vehicles: [], aircraft: [], vessels: [], sensors: [], weather: [] };
+
+    // Helper to add a live entity point to Cesium
+    function addLiveEntityPoint(entity, color, pixelSize, altitude) {
+      if (!entity || !Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) return;
+      const isSelected = selectedAgentId === entity.id;
+      try {
+        cesiumViewer.entities.add({
+          id: 'live-' + entity.id,
+          rwMeta: { kind: 'agent', id: entity.id },
+          position: Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, altitude || 0),
+          point: {
+            pixelSize: isSelected ? (pixelSize + 5) : pixelSize,
+            color: Cesium.Color.fromCssColorString(isSelected ? '#ffffff' : color),
+            outlineColor: Cesium.Color.fromCssColorString(color),
+            outlineWidth: isSelected ? 3 : 1,
+          },
+          label: entity.label ? {
+            text: entity.label,
+            font: '10px monospace',
+            fillColor: Cesium.Color.fromCssColorString(color),
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            pixelOffset: new Cesium.Cartesian2(0, -12),
+            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 4000000),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          } : undefined,
+        });
+        entitiesVisible++;
+      } catch (_) { /* ignore single entity errors */ }
+    }
+
+    if (layerState.vehicles && visibleEntityTypes.vehicle) {
+      for (const v of liveEntities.vehicles) {
+        addLiveEntityPoint(v, TYPE_STYLE.vehicle.fill, 9, 5);
+      }
+    }
+    if (layerState.aircraft !== false && visibleEntityTypes.aircraft !== false) {
+      for (const ac of (liveEntities.aircraft || [])) {
+        addLiveEntityPoint(ac, TYPE_STYLE.aircraft.fill, 8, ac.altitude || 10000);
+      }
+    }
+    if (layerState.vessels && visibleEntityTypes.vessel) {
+      for (const v of liveEntities.vessels) {
+        addLiveEntityPoint(v, TYPE_STYLE.vessel.fill, 10, 0);
+      }
+    }
+    if (layerState.sensors && visibleEntityTypes.sensor) {
+      for (const s of liveEntities.sensors) {
+        addLiveEntityPoint(s, TYPE_STYLE.sensor.fill, 7, s.altitude || 10);
+      }
+    }
+    if (layerState.weatherCells && visibleEntityTypes.weather) {
+      for (const w of liveEntities.weather) {
+        if (!Number.isFinite(w.lat) || !Number.isFinite(w.lng)) continue;
+        try {
+          const wColor = w.subtype === 'storm' ? '#aaddff' : (w.subtype === 'fog' ? '#ccddee' : '#88ccff');
+          const wRadius = (w.radiusKm || 50) * 1000;
+          cesiumViewer.entities.add({
+            id: 'live-' + w.id,
+            rwMeta: { kind: 'agent', id: w.id },
+            position: Cesium.Cartesian3.fromDegrees(w.lng, w.lat, 5000),
+            ellipse: {
+              semiMajorAxis: wRadius,
+              semiMinorAxis: wRadius,
+              material: Cesium.Color.fromCssColorString(wColor).withAlpha((w.intensity || 0.5) * 0.22),
+              outline: true,
+              outlineColor: Cesium.Color.fromCssColorString(wColor).withAlpha(0.55),
+              outlineWidth: 1.5,
+              height: 5000,
+            },
+          });
+          entitiesVisible++;
+        } catch (_) { /* ignore */ }
+      }
+    }
+
+    // ── Traffic Layer: segments (color-coded polylines), incidents, zone alerts ─
+    if (layerState.trafficSim) {
+      const traffic = (state && state.traffic) || {};
+      for (const inc of (traffic.incidents || [])) {
+        if (!Number.isFinite(inc.lat) || !Number.isFinite(inc.lng)) continue;
+        try {
+          const incColor = inc.severity === 'high' ? '#ff4444' : (inc.severity === 'medium' ? '#ffaa00' : '#ffdd44');
+          cesiumViewer.entities.add({
+            id: 'traffic-inc-' + inc.id,
+            rwMeta: { kind: 'traffic', id: inc.id },
+            position: Cesium.Cartesian3.fromDegrees(inc.lng, inc.lat, 10),
+            point: {
+              pixelSize: inc.severity === 'high' ? 13 : 9,
+              color: Cesium.Color.fromCssColorString(incColor),
+              outlineColor: Cesium.Color.WHITE,
+              outlineWidth: 1,
+            },
+          });
+        } catch (_) { /* ignore */ }
+      }
+      for (const zone of (traffic.zoneAlerts || [])) {
+        if (!zone.active || !Number.isFinite(zone.lat) || !Number.isFinite(zone.lng)) continue;
+        try {
+          cesiumViewer.entities.add({
+            id: 'traffic-zone-' + zone.id,
+            rwMeta: { kind: 'traffic', id: zone.id },
+            position: Cesium.Cartesian3.fromDegrees(zone.lng, zone.lat, 0),
+            ellipse: {
+              semiMajorAxis: (zone.radiusKm || 10) * 1000,
+              semiMinorAxis: (zone.radiusKm || 10) * 1000,
+              material: Cesium.Color.fromCssColorString('#ffaa00').withAlpha(0.08),
+              outline: true,
+              outlineColor: Cesium.Color.fromCssColorString('#ffaa00').withAlpha(0.55),
+              outlineWidth: 1,
+              height: 0,
+            },
+          });
+        } catch (_) { /* ignore */ }
+      }
+      // ── Road segments: color-coded polylines by congestion level ─────────────
+      for (const seg of (traffic.segments || [])) {
+        if (!Number.isFinite(seg.fromLat) || !Number.isFinite(seg.fromLng)
+            || !Number.isFinite(seg.toLat) || !Number.isFinite(seg.toLng)) continue;
+        try {
+          const segColor = seg.level === 'heavy' ? '#ff4444'
+            : seg.level === 'moderate' ? '#ffaa00'
+            : seg.level === 'light'    ? '#ffe044'
+            : '#44cc88';  // free
+          cesiumViewer.entities.add({
+            id: 'traffic-seg-' + seg.id,
+            rwMeta: { kind: 'traffic', id: seg.id },
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+                seg.fromLng, seg.fromLat, 10,
+                seg.toLng,   seg.toLat,   10,
+              ]),
+              width: seg.level === 'heavy' ? 5 : 3,
+              material: new Cesium.PolylineGlowMaterialProperty({
+                glowPower: 0.18,
+                color: Cesium.Color.fromCssColorString(segColor).withAlpha(0.72),
+              }),
+              clampToGround: false,
+            },
+          });
+        } catch (_) { /* ignore */ }
+      }
+      // ── Road closures: dashed white polylines ─────────────────────────────
+      for (const cl of (traffic.closures || [])) {
+        if (!Number.isFinite(cl.lat) || !Number.isFinite(cl.lng)) continue;
+        try {
+          cesiumViewer.entities.add({
+            id: 'traffic-clo-' + cl.id,
+            rwMeta: { kind: 'traffic', id: cl.id },
+            position: Cesium.Cartesian3.fromDegrees(cl.lng, cl.lat, 15),
+            point: {
+              pixelSize: 11,
+              color: Cesium.Color.fromCssColorString('#ffffff').withAlpha(0.85),
+              outlineColor: Cesium.Color.fromCssColorString('#cc2222'),
+              outlineWidth: 2,
+            },
+          });
+        } catch (_) { /* ignore */ }
+      }
+    }
     lastCesiumRenderCounts = {
       entities: entitiesVisible,
       regions: regionsVisible,
@@ -1671,7 +3606,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function viewerCameraSafetyCheck() {
     if (!cesiumViewer || !cesiumViewer.camera || cesiumSafetyViewApplied) return;
     cesiumViewer.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000)
+      destination: Cesium.Cartesian3.fromDegrees(-100, 40, 20000000),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
     });
     cesiumSafetyViewApplied = true;
   }
@@ -2135,11 +4071,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!visibleEntityTypes[type]) return false;
     if (type === 'flight' && !layerState.liveFlights) return false;
     if (type === 'satellite' && !layerState.satellites) return false;
+    if (type === 'vehicle' && !layerState.vehicles) return false;
+    if (type === 'vessel' && !layerState.vessels) return false;
+    if (type === 'sensor' && !layerState.sensors) return false;
+    if (type === 'weather' && !layerState.weatherCells) return false;
     return true;
   }
 
   function buildLayerDiagnostics() {
     const allAgents = Object.values(state.agents || {});
+    const liveEntities = state.liveEntities || { vehicles: [], aircraft: [], vessels: [], sensors: [], weather: [] };
     const flightsInState = allAgents.filter(a => getEntityType(a) === 'flight').length;
     const satellitesInState = allAgents.filter(a => getEntityType(a) === 'satellite').length;
     const regionsInState = Object.keys(state.regions || {}).length;
@@ -2148,6 +4089,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       militaryFlights: 'unavailable',
       earthquakes:     'unavailable',
       satellites:      layerState.satellites ? (satellitesInState > 0 ? 'active' : 'no data') : 'off',
+      vehicles:        layerState.vehicles ? (liveEntities.vehicles.length > 0 ? 'active' : 'no data') : 'off',
+      aircraft:        layerState.aircraft !== false ? ((liveEntities.aircraft || []).length > 0 ? 'active' : 'no data') : 'off',
+      vessels:         layerState.vessels ? (liveEntities.vessels.length > 0 ? 'active' : 'no data') : 'off',
+      sensors:         layerState.sensors ? (liveEntities.sensors.length > 0 ? 'active' : 'no data') : 'off',
+      weatherCells:    layerState.weatherCells ? (liveEntities.weather.length > 0 ? 'active' : 'no data') : 'off',
+      trafficSim:      layerState.trafficSim ? ((state.traffic && state.traffic.segments && state.traffic.segments.length > 0) ? 'active' : 'no data') : 'off',
       traffic:         'unavailable',
       weather:         'unavailable',
       cctvMesh:        'unavailable',
@@ -2163,7 +4110,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function renderSelectedPanel() {
-    const selectedAgent = selectedAgentId ? state.agents[selectedAgentId] : null;
+    const selectedAgent = selectedAgentId
+      ? (state.agents[selectedAgentId] || findLiveEntityForPanel(selectedAgentId))
+      : null;
     const selectedRegion = selectedRegionId ? state.regions[selectedRegionId] : null;
     if (!selectedAgent && !selectedRegion) {
       selectedPanel.innerHTML = '<div class="selected-empty">No target selected</div>';
@@ -2215,6 +4164,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const heading = Number.isFinite(Number(selected.heading)) ? Number(selected.heading) : null;
     const altitude = Number.isFinite(Number(selected.altitude)) ? Number(selected.altitude) : null;
     const source = selected.source || (isOpenSkyFlight(selected) ? 'opensky' : 'sim');
+    const confidence = Number.isFinite(selected.confidence) ? (selected.confidence * 100).toFixed(0) + '%' : '—';
     const lastUpdate = Number.isFinite(Number(selected.lastUpdateMs))
       ? new Date(Number(selected.lastUpdateMs)).toISOString()
       : (selected.updatedAt || selected.lastSeen || '—');
@@ -2223,6 +4173,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       '<span class="selected-label">ID</span><span class="selected-value">' + escHtml(selected.id) + '</span>' +
       '<span class="selected-label">TYPE</span><span class="selected-value">' + escHtml(getEntityType(selected)) + '</span>' +
       '<span class="selected-label">SOURCE</span><span class="selected-value">' + escHtml(source) + '</span>' +
+      '<span class="selected-label">CONFIDENCE</span><span class="selected-value">' + confidence + '</span>' +
       '<span class="selected-label">X</span><span class="selected-value">' + selected.x.toFixed(2) + '</span>' +
       '<span class="selected-label">Y</span><span class="selected-value">' + selected.y.toFixed(2) + '</span>' +
       '<span class="selected-label">LAT</span><span class="selected-value">' + (Number.isFinite(selectedPoint.lat) ? selectedPoint.lat.toFixed(4) : '—') + '</span>' +
@@ -2239,6 +4190,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     syncActionButtons();
   }
 
+  /** Find a live entity for use in the panel (without requiring getAllLiveEntities, safe before it's defined). */
+  function findLiveEntityForPanel(entityId) {
+    const le = (state && state.liveEntities) || {};
+    for (const list of [le.vehicles || [], le.aircraft || [], le.vessels || [], le.sensors || [], le.weather || []]) {
+      const found = list.find(e => e.id === entityId);
+      if (found) return found;
+    }
+    return null;
+  }
+
   function getCurrentTargetKey(explicitType, explicitId) {
     const type = explicitType || (selectedAgentId ? 'agent' : (selectedRegionId ? 'region' : null));
     const id = explicitId || selectedAgentId || selectedRegionId;
@@ -2250,6 +4211,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     focusActionBtn.disabled = !hasSelection;
     pingActionBtn.disabled = !hasSelection;
     flagActionBtn.disabled = !hasSelection;
+    jumpActionBtn.disabled = !hasSelection;
+    inspectActionBtn.disabled = !hasSelection;
+    profileActionBtn.disabled = !hasSelection;
     followTargetToggleEl.disabled = !hasSelection;
     if (!hasSelection && followTargetEnabled) {
       disableFollowTarget('no selection');
@@ -2284,6 +4248,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     lastOperatorActionByTarget[targetKey] = 'focus';
     pushOperatorEvent('operator focused ' + label);
     jumpToTarget(focusPoint);
+    activateFocusMode(focusPoint);
     renderSelectedPanel();
     draw();
   }
@@ -2323,7 +4288,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (agentId) {
       openPanel('target');
       const fp = getSelectedFocusPoint();
-      if (fp) jumpToTarget(fp);
+      if (fp) {
+        jumpToTarget(fp);
+        if (Number.isFinite(fp.lat) && Number.isFinite(fp.lng)) {
+          selectedTargetCoords = { lat: fp.lat, lng: fp.lng };
+          showStreetView(fp.lat, fp.lng);
+        }
+      }
+    } else {
+      selectedTargetCoords = null;
+      hideStreetView();
     }
     draw();
   }
@@ -2338,7 +4312,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (regionId) {
       openPanel('target');
       const fp = getSelectedFocusPoint();
-      if (fp) jumpToTarget(fp);
+      if (fp) {
+        jumpToTarget(fp);
+        if (Number.isFinite(fp.lat) && Number.isFinite(fp.lng)) {
+          selectedTargetCoords = { lat: fp.lat, lng: fp.lng };
+          showStreetView(fp.lat, fp.lng);
+        }
+      }
+    } else {
+      selectedTargetCoords = null;
+      hideStreetView();
     }
     draw();
   }
@@ -2536,13 +4519,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function updateViewportReadout() {
     let text;
     if (USE_CESIUM) {
-      text = 'orbit free';
+      text = cesiumStreetLevelMode ? 'drone' : 'orbit free';
       if (cesiumViewer) {
         const h = cesiumViewer.camera.positionCartographic.height;
-        const altKm = (h / 1000).toFixed(0);
-        text += ' · alt ' + altKm + ' km';
+        const altDisplay = h >= 1000 ? (h / 1000).toFixed(0) + ' km' : Math.round(h) + ' m';
+        text += ' · alt ' + altDisplay;
         const pitch = Cesium.Math.toDegrees(cesiumViewer.camera.pitch).toFixed(0);
         text += ' · pitch ' + pitch + '°';
+        if (cesiumFocusModeActive) text += ' · focus lock';
       }
       text += ' · e:' + lastCesiumRenderCounts.entities + ' r:' + lastCesiumRenderCounts.regions + ' s:' + lastCesiumRenderCounts.satellites;
       text += ' · tiles:' + (lastCesiumRenderCounts.tilesState || (lastCesiumRenderCounts.tilesLoaded ? 'on' : 'off'));
@@ -2642,7 +4626,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   function zoomBy(factor) {
     if (!USE_CESIUM || !cesiumViewer) return;
     const h = cesiumViewer.camera.positionCartographic.height;
-    const next = Math.max(150, Math.min(40000000, h * factor));
+    const next = Math.max(10, Math.min(40000000, h * factor));
     const cart = cesiumViewer.camera.positionCartographic.clone();
     cart.height = next;
     cesiumViewer.camera.position = Cesium.Ellipsoid.WGS84.cartographicToCartesian(cart);
@@ -3332,10 +5316,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const layerDiagnostics = buildLayerDiagnostics();
     lastLayerDiagnostics = layerDiagnostics;
     const layerDebugText = 'L:' + layerDiagnostics.liveFlights
-      + ' T:' + layerDiagnostics.traffic
+      + ' T:' + (layerDiagnostics.trafficSim || layerDiagnostics.traffic)
       + ' S:' + layerDiagnostics.satellites
       + ' R:' + layerDiagnostics.regions
-      + ' W:' + layerDiagnostics.weather;
+      + ' W:' + (layerDiagnostics.weatherCells || layerDiagnostics.weather)
+      + ' V:' + layerDiagnostics.vehicles
+      + ' VE:' + layerDiagnostics.vessels;
     document.getElementById('s-tick').textContent    = state.tick;
     document.getElementById('s-agents').textContent  = visibleAgents.length + '/' + allAgents.length;
     document.getElementById('s-regions').textContent = Object.keys(state.regions).length;
@@ -3378,6 +5364,275 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   focusActionBtn.addEventListener('click', runFocusAction);
   pingActionBtn.addEventListener('click', runPingAction);
   flagActionBtn.addEventListener('click', runFlagAction);
+
+  // ── Jump / Inspect / Profile actions ──────────────────────────────────────
+  jumpActionBtn.addEventListener('click', function () {
+    const fp = getSelectedFocusPoint();
+    if (!fp) return;
+    pushOperatorEvent('operator jump-to-target ' + (selectedAgentId || ('region ' + selectedRegionId)));
+    jumpToTarget(fp);
+    draw();
+  });
+
+  inspectActionBtn.addEventListener('click', function () {
+    const entityId = selectedAgentId;
+    if (!entityId) return;
+    const entity = state.agents[entityId] || findLiveEntity(entityId);
+    if (!entity) return;
+    pushOperatorEvent('operator inspect ' + entityId);
+    openEntityProfile(entity);
+  });
+
+  profileActionBtn.addEventListener('click', function () {
+    const entityId = selectedAgentId;
+    if (!entityId) return;
+    const entity = state.agents[entityId] || findLiveEntity(entityId);
+    if (!entity) return;
+    pushOperatorEvent('operator open-profile ' + entityId);
+    openEntityProfile(entity);
+  });
+
+  profileCloseBtnEl.addEventListener('click', function () {
+    closeEntityProfile();
+  });
+
+  /** Return a flat lookup of all live entities (vehicles, aircraft, vessels, sensors, weather) keyed by id. */
+  function getAllLiveEntities() {
+    const result = {};
+    const le = (state && state.liveEntities) || {};
+    for (const list of [le.vehicles || [], le.aircraft || [], le.vessels || [], le.sensors || [], le.weather || []]) {
+      for (const e of list) { result[e.id] = e; }
+    }
+    return result;
+  }
+
+  /** Find a live entity by id across all layers. */
+  function findLiveEntity(entityId) {
+    const le = (state && state.liveEntities) || {};
+    for (const list of [le.vehicles || [], le.aircraft || [], le.vessels || [], le.sensors || [], le.weather || []]) {
+      const found = list.find(e => e.id === entityId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /** Open entity profile panel with metadata and event history. */
+  function openEntityProfile(entity) {
+    if (!entity) return;
+    entityProfilePanelEl.classList.remove('hidden');
+    profileEntityIdEl.textContent = entity.id;
+    const confidence = Number.isFinite(entity.confidence) ? (entity.confidence * 100).toFixed(0) + '%' : '—';
+    const ts = entity.ts || entity.lastUpdateMs || entity.lastSeen;
+    const tsStr = ts ? new Date(Number.isFinite(ts) ? ts : Date.parse(ts)).toISOString() : '—';
+    profileMetaEl.innerHTML =
+      'TYPE: ' + escHtml(entity.type || '—') + '<br>' +
+      'LABEL: ' + escHtml(entity.label || entity.name || entity.id) + '<br>' +
+      'SOURCE: ' + escHtml(entity.source || '—') + '<br>' +
+      'CONFIDENCE: ' + confidence + '<br>' +
+      'LAST UPDATE: ' + escHtml(tsStr) + '<br>' +
+      (Number.isFinite(entity.lat) ? 'LAT: ' + entity.lat.toFixed(4) + ' LNG: ' + entity.lng.toFixed(4) + '<br>' : '') +
+      (entity.subtype ? 'SUBTYPE: ' + escHtml(entity.subtype) + '<br>' : '') +
+      (Number.isFinite(entity.speed) ? 'SPEED: ' + entity.speed.toFixed(1) + ' m/s<br>' : '') +
+      (Number.isFinite(entity.heading) ? 'HEADING: ' + entity.heading.toFixed(0) + '°<br>' : '');
+
+    const history = Array.isArray(entity.eventHistory) ? entity.eventHistory : [];
+    if (history.length === 0) {
+      profileHistoryEl.innerHTML = '<div class="profile-history-entry" style="color:#2a3840">No event history</div>';
+    } else {
+      profileHistoryEl.innerHTML = history.slice().reverse().map(ev =>
+        '<div class="profile-history-entry">' +
+        '<span class="phe-ts">' + escHtml(ev.ts ? ev.ts.substring(11, 19) : '—') + '</span>' +
+        '<span class="phe-kind">' + escHtml(ev.kind || 'event') + '</span>' +
+        escHtml(ev.msg || '') +
+        '</div>'
+      ).join('');
+    }
+  }
+
+  /** Close the entity profile panel. */
+  function closeEntityProfile() {
+    entityProfilePanelEl.classList.add('hidden');
+  }
+
+  // ── Timeline Engine UI ──────────────────────────────────────────────────────
+  function updateTimelineUI() {
+    const mode = timelineEngine.mode;
+    timelineModeLabelEl.textContent = mode === 'replay' ? 'REPLAY' : 'LIVE';
+    timelineLiveBtnEl.classList.toggle('tl-btn-active', mode === 'live');
+    timelineReplayBtnEl.classList.toggle('tl-btn-active', mode === 'replay');
+    timelinePlayBtnEl.disabled = mode !== 'replay';
+    timelineScrubberEl.disabled = mode !== 'replay';
+
+    const snapCount = timelineEngine.snapshotCount || 0;
+    timelineSnapCountEl.textContent = snapCount > 0 ? snapCount + ' snaps' : '';
+
+    if (mode === 'live') {
+      timelineTsLabelEl.textContent = new Date().toISOString().substring(11, 19) + ' UTC';
+      timelineScrubberEl.value = 100;
+      timelineStartLabelEl.textContent = timelineEngine.replayStart
+        ? new Date(timelineEngine.replayStart).toISOString().substring(11, 19)
+        : '—';
+      timelineEndLabelEl.textContent = 'LIVE';
+    } else {
+      const ts = timelineEngine.replayTs;
+      timelineTsLabelEl.textContent = ts ? new Date(ts).toISOString().substring(11, 19) + ' UTC' : '—';
+      if (timelineEngine.replayStart && timelineEngine.replayEnd && ts) {
+        const pct = Math.max(0, Math.min(100,
+          ((ts - timelineEngine.replayStart) / (timelineEngine.replayEnd - timelineEngine.replayStart)) * 100
+        ));
+        timelineScrubberEl.value = pct.toFixed(1);
+      }
+    }
+  }
+
+  timelineLiveBtnEl.addEventListener('click', function () {
+    timelineEngine.mode = 'live';
+    timelineEngine.replayTs = null;
+    timelineEngine.playing = false;
+    clearInterval(timelineEngine.playIntervalId);
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'set_timeline_mode', mode: 'live' }));
+    }
+    updateTimelineUI();
+    pushOperatorEvent('operator timeline: switched to live');
+  });
+
+  timelineReplayBtnEl.addEventListener('click', function () {
+    timelineEngine.mode = 'replay';
+    const initTs = timelineEngine.replayEnd || Date.now();
+    timelineEngine.replayTs = initTs;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'set_timeline_mode', mode: 'replay', replayTs: initTs }));
+    }
+    updateTimelineUI();
+    pushOperatorEvent('operator timeline: switched to replay');
+  });
+
+  timelinePlayBtnEl.addEventListener('click', function () {
+    if (timelineEngine.mode !== 'replay') return;
+    timelineEngine.playing = !timelineEngine.playing;
+    timelinePlayBtnEl.textContent = timelineEngine.playing ? '⏸' : '▶';
+    if (timelineEngine.playing) {
+      timelineEngine.playIntervalId = setInterval(function () {
+        if (!timelineEngine.playing || timelineEngine.mode !== 'replay') { clearInterval(timelineEngine.playIntervalId); return; }
+        const step = 30000; // advance 30s per tick
+        const next = (timelineEngine.replayTs || timelineEngine.replayStart || Date.now()) + step;
+        if (next >= (timelineEngine.replayEnd || Date.now())) {
+          timelineEngine.playing = false;
+          timelinePlayBtnEl.textContent = '▶';
+          clearInterval(timelineEngine.playIntervalId);
+        } else {
+          timelineEngine.replayTs = next;
+          if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'timeline_scrub', ts: next }));
+          updateTimelineUI();
+        }
+      }, 800);
+    } else {
+      clearInterval(timelineEngine.playIntervalId);
+    }
+  });
+
+  timelineScrubberEl.addEventListener('input', function () {
+    if (timelineEngine.mode !== 'replay') return;
+    const pct = Number(timelineScrubberEl.value) / 100;
+    const start = timelineEngine.replayStart || (Date.now() - 3600000);
+    const end = timelineEngine.replayEnd || Date.now();
+    const ts = Math.round(start + pct * (end - start));
+    timelineEngine.replayTs = ts;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'timeline_scrub', ts }));
+    updateTimelineUI();
+  });
+
+  // Tick live-mode timestamp every second
+  setInterval(function () {
+    if (timelineEngine.mode === 'live') updateTimelineUI();
+  }, 1000);
+
+  updateTimelineUI();
+
+  // ── Layer toggle buttons for new live entity layers ────────────────────────
+  function makeLayerToggle(btnEl, layerKey) {
+    if (!btnEl) return;
+    btnEl.addEventListener('click', function () {
+      if (!LAYER_AVAILABLE[layerKey]) return;
+      setLayerOn(layerKey, !layerState[layerKey]);
+      clearSelectionIfHidden();
+      refreshEventVisibilityStyling();
+      updateLayerStatusBadges();
+      updateStats();
+      draw();
+    });
+  }
+  makeLayerToggle(toggleLayerVehiclesEl, 'vehicles');
+  makeLayerToggle(toggleLayerAircraftEl, 'aircraft');
+  makeLayerToggle(toggleLayerVesselsEl, 'vessels');
+  makeLayerToggle(toggleLayerSensorsEl, 'sensors');
+  makeLayerToggle(toggleLayerWeatherCellsEl, 'weatherCells');
+  makeLayerToggle(toggleLayerTrafficSimEl, 'trafficSim');
+
+  // Boundaries toggle — wired directly to toggleBoundaryLayer so Cesium
+  // data sources are shown/hidden immediately without waiting for a draw tick.
+  if (toggleLayerBoundariesEl) {
+    toggleLayerBoundariesEl.addEventListener('click', function () {
+      toggleBoundaryLayer(!layerState.boundaries);
+    });
+  }
+
+  function onTypeToggleChangeExtended() {
+    visibleEntityTypes.vehicle  = !!toggleTypeVehicleEl.checked;
+    visibleEntityTypes.aircraft = toggleTypeAircraftEl ? !!toggleTypeAircraftEl.checked : true;
+    visibleEntityTypes.vessel   = !!toggleTypeVesselEl.checked;
+    visibleEntityTypes.sensor   = !!toggleTypeSensorEl.checked;
+    visibleEntityTypes.weather  = !!toggleTypeWeatherEl.checked;
+    clearSelectionIfHidden();
+    refreshEventVisibilityStyling();
+    renderSelectedPanel();
+    updateStats();
+    draw();
+  }
+  if (toggleTypeVehicleEl)  toggleTypeVehicleEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeAircraftEl) toggleTypeAircraftEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeVesselEl)   toggleTypeVesselEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeSensorEl)   toggleTypeSensorEl.addEventListener('change', onTypeToggleChangeExtended);
+  if (toggleTypeWeatherEl)  toggleTypeWeatherEl.addEventListener('change', onTypeToggleChangeExtended);
+
+  /** Update layer status badges in the layers drawer. */
+  function updateLayerStatusBadges() {
+    const diag = buildLayerDiagnostics();
+    const pairs = [
+      ['layer-status-vehicles', diag.vehicles],
+      ['layer-status-aircraft', diag.aircraft],
+      ['layer-status-vessels',  diag.vessels],
+      ['layer-status-sensors',  diag.sensors],
+      ['layer-status-weatherCells', diag.weatherCells],
+      ['layer-status-trafficSim', diag.trafficSim],
+    ];
+    for (const [id, val] of pairs) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = val ? val.toUpperCase() : '—';
+    }
+    // sync toggle button states for new layers
+    const layerBtns = [
+      [toggleLayerVehiclesEl, 'vehicles'],
+      [toggleLayerAircraftEl, 'aircraft'],
+      [toggleLayerVesselsEl,  'vessels'],
+      [toggleLayerSensorsEl,  'sensors'],
+      [toggleLayerWeatherCellsEl, 'weatherCells'],
+      [toggleLayerTrafficSimEl, 'trafficSim'],
+    ];
+    for (const [btn, key] of layerBtns) {
+      if (!btn) continue;
+      const on = !!layerState[key];
+      btn.textContent = on ? 'ON' : 'OFF';
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.classList.toggle('active', on);
+      const row = btn.closest('.layer-row');
+      if (row) row.classList.toggle('on', on);
+    }
+  }
+
+  updateLayerStatusBadges();
+
   followTargetToggleEl.addEventListener('change', function () {
     const shouldFollow = !!followTargetToggleEl.checked;
     if (!shouldFollow) {
@@ -3502,7 +5757,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   panDownBtnEl.addEventListener('click', function () { panViewport(0, VIEWPORT_PAN_STEP); });
 
   // ── Rail + drawer event listeners ─────────────────────────────────────────
-  document.querySelectorAll('.rail-btn').forEach(function (btn) {
+  document.querySelectorAll('.rail-btn[data-panel]').forEach(function (btn) {
     btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
   });
   document.querySelectorAll('.drawer-close').forEach(function (btn) {
@@ -3569,17 +5824,29 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     openskyStatus = nextSnapshot && nextSnapshot.opensky
       ? nextSnapshot.opensky
       : Object.assign({}, OPENSKY_STATUS_DEFAULTS);
+    // Sync timeline state from server
+    if (nextSnapshot && nextSnapshot.timeline && timelineEngine.mode === 'live') {
+      timelineEngine.replayStart = nextSnapshot.timeline.replayStart;
+      timelineEngine.replayEnd = nextSnapshot.timeline.replayEnd;
+      timelineEngine.snapshotCount = nextSnapshot.timeline.snapshotCount;
+      updateTimelineUI();
+    }
     latestRegionIntelligence = computeRegionIntelligence();
     clearSelectionIfHidden();
     if (selectedAgentId && !state.agents[selectedAgentId]) {
-      selectAgent(null);
-      return;
+      // check live entities too before clearing selection
+      const allLive = getAllLiveEntities();
+      if (!allLive[selectedAgentId]) {
+        selectAgent(null);
+        return;
+      }
     }
     if (selectedRegionId && !state.regions[selectedRegionId]) {
       selectRegion(null);
       return;
     }
     renderSelectedPanel();
+    updateLayerStatusBadges();
     draw();
   }
 
@@ -3652,91 +5919,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   });
 
   initCesium();
-
-  // ── Flight API polling ──
-  // Uses recursive setTimeout with exponential backoff instead of setInterval.
-  // Base interval: 20 s. On error, delay doubles up to 120 s, then resets on
-  // the next success. This prevents OpenSky rate-limit cascades.
-  const FLIGHT_POLL_BASE_MS  = 20000;
-  const FLIGHT_POLL_MAX_MS   = 120000;
-  let   flightPollDelay      = FLIGHT_POLL_BASE_MS;
-
-  function latLngToGridFE(lat, lng) {
-    return {
-      x: ((Math.max(-180, Math.min(180, lng)) + 180) / 360) * 100,
-      y: ((90 - Math.max(-90, Math.min(90, lat))) / 180) * 100,
-    };
-  }
-
-  function mergeEntities(entities) {
-    // Accept any size dataset — no trimming.
-    // Entities is a flat object { id → entity }. Merge into live state.agents.
-    if (!state || !state.agents) return;
-    Object.assign(state.agents, entities);
-  }
-
-  async function fetchFlightsSafe() {
-    if (!layerState.liveFlights) {
-      // Layer off — check again at base interval without penalising delay
-      setTimeout(fetchFlightsSafe, FLIGHT_POLL_BASE_MS);
-      return;
-    }
-    try {
-      const res = await fetch('/api/flights');
-      console.log('[flights] response.status:', res.status);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-
-      const states = Array.isArray(data.states) ? data.states : [];
-      if (!states.length) {
-        console.warn('[flights] empty states — skipping world update');
-        setTimeout(fetchFlightsSafe, flightPollDelay);
-        return;
-      }
-      console.log('[flights] states.length:', states.length);
-
-      const now = Date.now();
-      const normalized = {};
-      for (const row of states) {
-        if (!Array.isArray(row)) continue;
-        const icao24 = String(row[0] || '').trim().toLowerCase();
-        const callsign = String(row[1] || '').trim();
-        const lon = parseFloat(row[5]);
-        const lat = parseFloat(row[6]);
-        if (!icao24 || !isFinite(lat) || !isFinite(lon)) continue;
-        const altitude = parseFloat(
-          row[7] !== null && row[7] !== undefined ? row[7] : (row[13] !== null ? row[13] : 0)
-        ) || 0;
-        const velocity = parseFloat(row[9])  || 0;
-        const heading  = parseFloat(row[10]) || 0;
-        const onGround = Boolean(row[8]);
-        const id = 'flight-' + icao24;
-        const grid = latLngToGridFE(lat, lon);
-        normalized[id] = {
-          id, type: 'flight', label: callsign || icao24,
-          callsign, icao24, lat, lng: lon, x: grid.x, y: grid.y,
-          altitude, velocity, heading, onGround,
-          source: 'api', lastUpdateMs: now,
-        };
-      }
-
-      apiFetchedFlights = normalized;
-      lastApiFetchedCount = states.length;
-      layerLastUpdated.liveFlights = now;
-      mergeEntities(normalized);
-
-      // Success — reset to base delay
-      flightPollDelay = FLIGHT_POLL_BASE_MS;
-    } catch (err) {
-      console.warn('[flights] fetchFlightsSafe error:', err.message,
-        '— backing off to', Math.min(flightPollDelay * 2, FLIGHT_POLL_MAX_MS) / 1000 + 's');
-      flightPollDelay = Math.min(flightPollDelay * 2, FLIGHT_POLL_MAX_MS);
-    }
-
-    setTimeout(fetchFlightsSafe, flightPollDelay);
-  }
 
   // Merge API flights into every incoming snapshot so they survive WS refreshes
   function mergeApiFlightsIntoSnapshot(snapshot) {
@@ -4258,18 +6440,30 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         }
         previousAgentsById = state.agents || {};
         state = msg.data;
+        // Sync timeline state from snapshot
+        if (msg.data && msg.data.timeline && timelineEngine.mode === 'live') {
+          timelineEngine.replayStart = msg.data.timeline.replayStart;
+          timelineEngine.replayEnd = msg.data.timeline.replayEnd;
+          timelineEngine.snapshotCount = msg.data.timeline.snapshotCount;
+          updateTimelineUI();
+        }
         latestRegionIntelligence = computeRegionIntelligence();
         let selectionChanged = false;
         if (selectedAgentId && !state.agents[selectedAgentId]) {
-          selectAgent(null);
-          selectionChanged = true;
-        } else if (selectedRegionId && !state.regions[selectedRegionId]) {
+          const allLive = getAllLiveEntities();
+          if (!allLive[selectedAgentId]) {
+            selectAgent(null);
+            selectionChanged = true;
+          }
+        }
+        if (!selectionChanged && selectedRegionId && !state.regions[selectedRegionId]) {
           selectRegion(null);
           selectionChanged = true;
         }
         if (!selectionChanged) {
           renderSelectedPanel();
           updateStats();
+          updateLayerStatusBadges();
           draw();
         }
         snapshotQueue.push(msg.data);
@@ -4284,6 +6478,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         if (msg.data.patch) Object.assign(state, msg.data.patch);
         renderSelectedPanel();
         draw();
+      } else if (msg.type === 'timeline_ack') {
+        if (msg.data) {
+          timelineEngine.mode = msg.data.mode || 'live';
+          timelineEngine.replayTs = msg.data.replayTs || null;
+        }
+        updateTimelineUI();
+      } else if (msg.type === 'timeline_frame') {
+        if (msg.data) {
+          timelineEngine.replayTs = msg.data.replayTs || null;
+        }
+        updateTimelineUI();
       }
     };
 
@@ -4332,8 +6537,37 @@ function normalizeStateBatch(states, previous, sourceOverride) {
   return { flights, count };
 }
 
+/**
+ * Strip heavy fields from a live entity before sending to the frontend.
+ * Keeps only the fields needed for Cesium rendering to prevent large payload
+ * sizes and potential RangeError / circular-reference crashes.
+ * @param {object} entity
+ * @returns {object|null}
+ */
+function sanitizeEntityForRender(entity) {
+  if (!entity || typeof entity !== 'object') return null;
+  if (Object.keys(entity).length > 1000) return null;
+  return {
+    id:         entity.id,
+    type:       entity.type,
+    lat:        entity.lat,
+    lng:        entity.lng,
+    alt:        entity.altitude !== undefined ? entity.altitude : entity.alt,
+    status:     entity.state || entity.status || null,
+    confidence: entity.confidence,
+  };
+}
+
+const BROADCAST_MAX_BYTES = 1024 * 1024; // 1 MB
+
 function broadcast(type, data) {
   const msg = JSON.stringify({ type, data });
+  const byteLen = Buffer.byteLength(msg, 'utf8');
+  if (byteLen > BROADCAST_MAX_BYTES) {
+    console.warn('[RW Worldview] broadcast payload too large (' + byteLen + ' bytes), skipping type=' + type);
+    return;
+  }
+  console.log('[RW Worldview] broadcast type=' + type + ' size=' + byteLen + 'B');
   for (const client of wsClients) {
     if (!client.destroyed && client.writable) {
       wsSend(client, msg);
@@ -4419,6 +6653,30 @@ function snapshot() {
       hasClientSecret: !!(fileCredentials.credentialType === 'client_credentials' && fileCredentials.password),
       lastFetchStatus: openSkyLiveState.lastRequestStatus !== null ? openSkyLiveState.lastRequestStatus : 'none',
       lastFetchError: openSkyLiveState.lastErrorMessage || 'none',
+    },
+    // ── Live entity layers ───────────────────────────────────────────────────
+    liveEntities: {
+      vehicles: Object.values(liveEntityState.vehicles).map(sanitizeEntityForRender).filter(Boolean),
+      aircraft: Object.values(liveEntityState.aircraft).map(sanitizeEntityForRender).filter(Boolean),
+      vessels:  Object.values(liveEntityState.vessels).map(sanitizeEntityForRender).filter(Boolean),
+      sensors:  Object.values(liveEntityState.sensors).map(sanitizeEntityForRender).filter(Boolean),
+      weather:  Object.values(liveEntityState.weather).map(sanitizeEntityForRender).filter(Boolean),
+    },
+    // ── Traffic layer ────────────────────────────────────────────────────────
+    traffic: {
+      segments:   trafficState.segments,
+      incidents:  trafficState.incidents,
+      closures:   trafficState.closures,
+      zoneAlerts: trafficState.zoneAlerts,
+      lastUpdateAt: trafficState.lastUpdateAt,
+    },
+    // ── Timeline state ───────────────────────────────────────────────────────
+    timeline: {
+      mode:         timelineState.mode,
+      replayTs:     timelineState.replayTs,
+      replayStart:  timelineState.replayStart,
+      replayEnd:    timelineState.replayEnd,
+      snapshotCount: timelineState.snapshots.length,
     },
   };
 }
@@ -4539,6 +6797,449 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
   return entity;
 }
 
+// ─── Live Entity Builders ─────────────────────────────────────────────────────
+
+/**
+ * Build a ground vehicle entity with full structured metadata.
+ * @param {string} id
+ * @param {{ lat: number, lng: number, heading?: number, speed?: number,
+ *           label?: string, subtype?: string, source?: string }} opts
+ * @param {object|null} previous
+ * @returns {object}
+ */
+function buildVehicleEntity(id, opts, previous) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const trail = Array.isArray(previous && previous.trail) ? previous.trail.slice(-12) : [];
+  const moved = !previous
+    || !Number.isFinite(previous.lat) || !Number.isFinite(previous.lng)
+    || Math.abs(previous.lat - opts.lat) > 0.0001
+    || Math.abs(previous.lng - opts.lng) > 0.0001;
+  if (trail.length === 0 || moved) trail.push({ lat: opts.lat, lng: opts.lng, ts: now });
+  const entity = {
+    id: 'vehicle-' + id,
+    type: 'vehicle',
+    label: opts.label || id,
+    name: opts.label || id,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: 0,
+    heading: Number.isFinite(opts.heading) ? opts.heading : 0,
+    speed: Number.isFinite(opts.speed) ? opts.speed : 0,
+    subtype: opts.subtype || 'car',
+    source: opts.source || 'sim',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.85,
+    eventHistory: (previous && Array.isArray(previous.eventHistory)) ? previous.eventHistory : [],
+    active: true,
+    state: 'moving',
+    trail: trail.slice(-12),
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+/**
+ * Build a maritime vessel entity with full structured metadata.
+ */
+function buildVesselEntity(id, opts, previous) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const trail = Array.isArray(previous && previous.trail) ? previous.trail.slice(-16) : [];
+  const moved = !previous
+    || !Number.isFinite(previous.lat) || !Number.isFinite(previous.lng)
+    || Math.abs(previous.lat - opts.lat) > 0.0001
+    || Math.abs(previous.lng - opts.lng) > 0.0001;
+  if (trail.length === 0 || moved) trail.push({ lat: opts.lat, lng: opts.lng, ts: now });
+  const entity = {
+    id: 'vessel-' + id,
+    type: 'vessel',
+    label: opts.label || id,
+    name: opts.label || id,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: 0,
+    heading: Number.isFinite(opts.heading) ? opts.heading : 0,
+    speed: Number.isFinite(opts.speed) ? opts.speed : 0,
+    subtype: opts.subtype || 'cargo',
+    mmsi: opts.mmsi || null,
+    source: opts.source || 'ais',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.90,
+    eventHistory: (previous && Array.isArray(previous.eventHistory)) ? previous.eventHistory : [],
+    active: true,
+    state: 'underway',
+    trail: trail.slice(-16),
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+/**
+ * Build a fixed sensor node entity with full structured metadata.
+ */
+function buildSensorEntity(id, opts) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const entity = {
+    id: 'sensor-' + id,
+    type: 'sensor',
+    label: opts.label || id,
+    name: opts.label || id,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: Number.isFinite(opts.altitude) ? opts.altitude : 10,
+    heading: 0,
+    speed: 0,
+    subtype: opts.subtype || 'cctv',
+    source: opts.source || 'infra',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.95,
+    eventHistory: [],
+    active: true,
+    state: opts.state || 'online',
+    trail: [],
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+/**
+ * Build a weather cell entity (storm, rain, fog) with structured metadata.
+ */
+function buildWeatherCellEntity(id, opts, previous) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const entity = {
+    id: 'weather-' + id,
+    type: 'weather',
+    label: opts.label || id,
+    name: opts.label || id,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: Number.isFinite(opts.altitude) ? opts.altitude : 5000,
+    heading: Number.isFinite(opts.heading) ? opts.heading : 0,
+    speed: Number.isFinite(opts.speed) ? opts.speed : 0,
+    subtype: opts.subtype || 'rain',   // rain | storm | fog | clear
+    intensity: Number.isFinite(opts.intensity) ? opts.intensity : 0.5,   // 0–1
+    radiusKm: Number.isFinite(opts.radiusKm) ? opts.radiusKm : 50,
+    source: opts.source || 'noaa',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.80,
+    eventHistory: (previous && Array.isArray(previous.eventHistory)) ? previous.eventHistory : [],
+    active: true,
+    state: opts.subtype || 'rain',
+    trail: [],
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+/**
+ * Build an aircraft entity with full structured metadata.
+ * Aircraft carry source (ads-b, opensky, sim), callsign, altitude, heading, speed,
+ * confidence, and event history.
+ * @param {string} id
+ * @param {object} opts
+ * @param {object|null} previous
+ * @returns {object|null}
+ */
+function buildAircraftEntity(id, opts, previous) {
+  if (!id || !Number.isFinite(opts.lat) || !Number.isFinite(opts.lng)) return null;
+  const now = Date.now();
+  const trail = Array.isArray(previous && previous.trail) ? previous.trail.slice(-24) : [];
+  const moved = !previous
+    || !Number.isFinite(previous.lat) || !Number.isFinite(previous.lng)
+    || Math.abs(previous.lat - opts.lat) > 0.0001
+    || Math.abs(previous.lng - opts.lng) > 0.0001;
+  if (trail.length === 0 || moved) trail.push({ lat: opts.lat, lng: opts.lng, alt: opts.altitude || 0, ts: now });
+  const entity = {
+    id: 'aircraft-' + id,
+    type: 'aircraft',
+    label: opts.label || opts.callsign || id,
+    name: opts.label || opts.callsign || id,
+    callsign: opts.callsign || null,
+    lat: opts.lat,
+    lng: opts.lng,
+    altitude: Number.isFinite(opts.altitude) ? opts.altitude : 10000,
+    heading: Number.isFinite(opts.heading) ? opts.heading : 0,
+    speed: Number.isFinite(opts.speed) ? opts.speed : 0,
+    subtype: opts.subtype || 'commercial',  // commercial | military | private | drone | helicopter
+    source: opts.source || 'sim',
+    ts: now,
+    confidence: Number.isFinite(opts.confidence) ? opts.confidence : 0.88,
+    eventHistory: (previous && Array.isArray(previous.eventHistory)) ? previous.eventHistory : [],
+    active: true,
+    state: opts.state || 'airborne',
+    trail: trail.slice(-24),
+    lastUpdateMs: now,
+    region: null,
+  };
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+// ─── Live Entity Layer Simulation ─────────────────────────────────────────────
+
+/** Seed a repeatable pseudo-random value from a string key and numeric slot. */
+function seededRand(key, slot) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = (h * 16777619) >>> 0; }
+  h ^= slot; h = (h * 16777619) >>> 0;
+  return (h >>> 0) / 0xFFFFFFFF;
+}
+
+const LIVE_ENTITY_UPDATE_MS = 8000; // refresh interval for simulated live entities
+let lastLiveEntityUpdateAt = 0;
+
+/**
+ * Refresh simulated live entity layers: vehicles, vessels, weather cells.
+ * Sensor nodes are static; they are seeded once on first call.
+ */
+function refreshLiveEntityLayers() {
+  const now = Date.now();
+  if (now - lastLiveEntityUpdateAt < LIVE_ENTITY_UPDATE_MS) return;
+  lastLiveEntityUpdateAt = now;
+
+  // ── Vehicles (ground traffic in major city corridors) ──────────────────────
+  const vehicleSeeds = [
+    { id: 'v001', baseLat: 40.71, baseLng: -74.01, label: 'UNIT-01', subtype: 'police' },
+    { id: 'v002', baseLat: 51.50, baseLng: -0.12,  label: 'UNIT-02', subtype: 'ambulance' },
+    { id: 'v003', baseLat: 48.85, baseLng: 2.35,   label: 'TRK-03',  subtype: 'truck' },
+    { id: 'v004', baseLat: 35.68, baseLng: 139.69, label: 'CAR-04',  subtype: 'car' },
+    { id: 'v005', baseLat: 34.05, baseLng: -118.24, label: 'UNIT-05', subtype: 'fire' },
+    { id: 'v006', baseLat: 19.43, baseLng: -99.13, label: 'TRK-06',  subtype: 'truck' },
+  ];
+  for (const s of vehicleSeeds) {
+    const drift = 0.004;
+    const lat = s.baseLat + (seededRand(s.id, now % 97) - 0.5) * drift;
+    const lng = s.baseLng + (seededRand(s.id, now % 113) - 0.5) * drift;
+    const heading = (seededRand(s.id, now % 67) * 360);
+    const speed = 5 + seededRand(s.id, now % 41) * 25;
+    const prev = liveEntityState.vehicles[s.id] || null;
+    const entity = buildVehicleEntity(s.id, {
+      lat, lng, heading, speed,
+      label: s.label, subtype: s.subtype, source: 'sim',
+      confidence: 0.80 + seededRand(s.id, 7) * 0.15,
+    }, prev);
+    if (entity) liveEntityState.vehicles[s.id] = entity;
+  }
+
+  // ── Vessels (maritime shipping lanes) ─────────────────────────────────────
+  const vesselSeeds = [
+    { id: 'sh001', baseLat: 51.90, baseLng: 4.00,  label: 'CARGO-1',  subtype: 'cargo',  mmsi: '244820000' },
+    { id: 'sh002', baseLat: 1.28,  baseLng: 103.83, label: 'TANKER-2', subtype: 'tanker', mmsi: '563012000' },
+    { id: 'sh003', baseLat: 37.77, baseLng: -122.41, label: 'FERRY-3', subtype: 'ferry',  mmsi: '367001000' },
+    { id: 'sh004', baseLat: 29.98, baseLng: 32.56,  label: 'CARGO-4',  subtype: 'cargo',  mmsi: '636091000' },
+  ];
+  for (const s of vesselSeeds) {
+    const drift = 0.02;
+    const lat = s.baseLat + (seededRand(s.id, now % 89) - 0.5) * drift;
+    const lng = s.baseLng + (seededRand(s.id, now % 101) - 0.5) * drift;
+    const heading = seededRand(s.id, now % 53) * 360;
+    const speed = 3 + seededRand(s.id, now % 37) * 15;
+    const prev = liveEntityState.vessels[s.id] || null;
+    const entity = buildVesselEntity(s.id, {
+      lat, lng, heading, speed,
+      label: s.label, subtype: s.subtype, mmsi: s.mmsi, source: 'ais',
+      confidence: 0.85 + seededRand(s.id, 9) * 0.10,
+    }, prev);
+    if (entity) liveEntityState.vessels[s.id] = entity;
+  }
+
+  // ── Weather Cells ─────────────────────────────────────────────────────────
+  const weatherSeeds = [
+    { id: 'wc001', baseLat: 30.0,  baseLng: -90.0,  label: 'STORM-1', subtype: 'storm',   radiusKm: 120, intensity: 0.85 },
+    { id: 'wc002', baseLat: 55.0,  baseLng: 10.0,   label: 'RAIN-2',  subtype: 'rain',    radiusKm: 80,  intensity: 0.55 },
+    { id: 'wc003', baseLat: -5.0,  baseLng: 115.0,  label: 'RAIN-3',  subtype: 'rain',    radiusKm: 60,  intensity: 0.40 },
+    { id: 'wc004', baseLat: 37.5,  baseLng: 127.0,  label: 'FOG-4',   subtype: 'fog',     radiusKm: 30,  intensity: 0.70 },
+    { id: 'wc005', baseLat: 25.0,  baseLng: -80.0,  label: 'STORM-5', subtype: 'storm',   radiusKm: 90,  intensity: 0.65 },
+  ];
+  for (const s of weatherSeeds) {
+    const drift = 0.05;
+    const lat = s.baseLat + (seededRand(s.id, now % 79) - 0.5) * drift;
+    const lng = s.baseLng + (seededRand(s.id, now % 83) - 0.5) * drift;
+    const heading = seededRand(s.id, now % 43) * 360;
+    const speed = 2 + seededRand(s.id, now % 31) * 8;
+    const prev = liveEntityState.weather[s.id] || null;
+    const entity = buildWeatherCellEntity(s.id, {
+      lat, lng, heading, speed,
+      label: s.label, subtype: s.subtype, source: 'noaa',
+      radiusKm: s.radiusKm, intensity: s.intensity,
+      confidence: 0.75 + seededRand(s.id, 11) * 0.15,
+    }, prev);
+    if (entity) liveEntityState.weather[s.id] = entity;
+  }
+
+  // ── Aircraft (simulated, non-OpenSky — representative global corridors) ─────
+  const aircraftSeeds = [
+    { id: 'ac001', baseLat: 51.48, baseLng: -0.45,   callsign: 'BAW001', subtype: 'commercial', altitude: 11000 },
+    { id: 'ac002', baseLat: 40.63, baseLng: -73.79,  callsign: 'AAL202', subtype: 'commercial', altitude: 9500  },
+    { id: 'ac003', baseLat: 35.55, baseLng: 139.78,  callsign: 'JAL301', subtype: 'commercial', altitude: 10500 },
+    { id: 'ac004', baseLat: -33.94, baseLng: 151.18, callsign: 'QFA410', subtype: 'commercial', altitude: 12000 },
+    { id: 'ac005', baseLat: 48.36, baseLng: 11.79,   callsign: 'DLH505', subtype: 'commercial', altitude: 10000 },
+    { id: 'ac006', baseLat: 25.25, baseLng: 55.36,   callsign: 'UAE771', subtype: 'commercial', altitude: 11500 },
+    { id: 'ac007', baseLat: 37.62, baseLng: -122.38, callsign: 'UAL891', subtype: 'commercial', altitude: 9000  },
+    { id: 'ac008', baseLat: 1.36,  baseLng: 103.99,  callsign: 'SIA312', subtype: 'commercial', altitude: 10800 },
+  ];
+  for (const s of aircraftSeeds) {
+    const drift = 0.03;
+    const lat = s.baseLat + (seededRand(s.id, now % 71) - 0.5) * drift;
+    const lng = s.baseLng + (seededRand(s.id, now % 107) - 0.5) * drift;
+    const heading = seededRand(s.id, now % 61) * 360;
+    const speed = 180 + seededRand(s.id, now % 47) * 100;  // m/s
+    const prev = liveEntityState.aircraft[s.id] || null;
+    const entity = buildAircraftEntity(s.id, {
+      lat, lng, heading, speed,
+      callsign: s.callsign, subtype: s.subtype, source: 'sim',
+      altitude: s.altitude + (seededRand(s.id, now % 29) - 0.5) * 200,
+      confidence: 0.88 + seededRand(s.id, 13) * 0.10,
+    }, prev);
+    if (entity) liveEntityState.aircraft[s.id] = entity;
+  }
+}
+
+/** Seed static sensor nodes once at startup. */
+function seedSensorNodes() {
+  const sensorSeeds = [
+    { id: 'sn001', lat: 40.71, lng: -74.01, label: 'CAM-NYC-01', subtype: 'cctv',    source: 'infra' },
+    { id: 'sn002', lat: 51.50, lng: -0.12,  label: 'CAM-LON-02', subtype: 'cctv',    source: 'infra' },
+    { id: 'sn003', lat: 48.85, lng: 2.35,   label: 'WX-PAR-03',  subtype: 'weather', source: 'noaa'  },
+    { id: 'sn004', lat: 35.68, lng: 139.69, label: 'ACS-TKY-04', subtype: 'acoustic',source: 'infra' },
+    { id: 'sn005', lat: 34.05, lng: -118.24, label: 'CAM-LAX-05', subtype: 'cctv',   source: 'infra' },
+    { id: 'sn006', lat: 1.35,  lng: 103.82,  label: 'CAM-SIN-06', subtype: 'cctv',   source: 'infra' },
+    { id: 'sn007', lat: 25.20, lng: 55.27,   label: 'WX-DXB-07',  subtype: 'weather',source: 'noaa'  },
+    { id: 'sn008', lat: -33.86, lng: 151.21, label: 'CAM-SYD-08', subtype: 'cctv',   source: 'infra' },
+  ];
+  for (const s of sensorSeeds) {
+    if (!liveEntityState.sensors[s.id]) {
+      const entity = buildSensorEntity(s.id, { ...s, confidence: 0.95, state: 'online' });
+      if (entity) liveEntityState.sensors[s.id] = entity;
+    }
+  }
+}
+
+// ─── Traffic Layer Simulation ─────────────────────────────────────────────────
+
+const TRAFFIC_UPDATE_MS = 12000;
+let lastTrafficUpdateAt = 0;
+
+/**
+ * Refresh simulated traffic layer data: segments, incidents, closures, zone alerts.
+ */
+function refreshTrafficLayer() {
+  const now = Date.now();
+  if (now - lastTrafficUpdateAt < TRAFFIC_UPDATE_MS) return;
+  lastTrafficUpdateAt = now;
+
+  // Road segments in major metro corridors
+  const segmentDefs = [
+    { id: 'seg-nyc-1', name: 'I-95 New York',     fromLat: 40.63, fromLng: -74.03, toLat: 40.78, toLng: -73.97 },
+    { id: 'seg-la-1',  name: 'US-101 Los Angeles', fromLat: 34.00, fromLng: -118.40, toLat: 34.10, toLng: -118.20 },
+    { id: 'seg-lon-1', name: 'M25 London',          fromLat: 51.40, fromLng: -0.50, toLat: 51.55, toLng: 0.10 },
+    { id: 'seg-par-1', name: 'A1 Paris',            fromLat: 48.80, fromLng: 2.30, toLat: 48.95, toLng: 2.40 },
+    { id: 'seg-tok-1', name: 'C1 Tokyo',            fromLat: 35.62, fromLng: 139.65, toLat: 35.74, toLng: 139.75 },
+    { id: 'seg-chi-1', name: 'I-90 Chicago',        fromLat: 41.80, fromLng: -87.80, toLat: 41.90, toLng: -87.60 },
+  ];
+
+  trafficState.segments = segmentDefs.map(def => {
+    const rand = seededRand(def.id, now % 173);
+    const speedKph = 20 + rand * 100;  // 20–120 km/h
+    const congestion = 1 - (speedKph / 120);  // 0=free-flow, 1=gridlock
+    let level = 'free';
+    if (congestion > 0.75) level = 'heavy';
+    else if (congestion > 0.45) level = 'moderate';
+    else if (congestion > 0.20) level = 'light';
+    return {
+      ...def,
+      speedKph: Math.round(speedKph),
+      congestion: parseFloat(congestion.toFixed(2)),
+      level,
+      source: 'sim',
+      ts: now,
+      confidence: 0.80 + seededRand(def.id, 5) * 0.15,
+    };
+  });
+
+  // Incidents (accidents, breakdowns)
+  const incidentPool = [
+    { id: 'inc-001', lat: 40.71, lng: -74.01, type: 'accident',   desc: 'Multi-vehicle accident I-95 NB',    severity: 'high'  },
+    { id: 'inc-002', lat: 34.05, lng: -118.25, type: 'breakdown',  desc: 'Truck breakdown US-101 SB',          severity: 'medium'},
+    { id: 'inc-003', lat: 51.50, lng: -0.11,  type: 'roadwork',   desc: 'Emergency road works A4',            severity: 'low'   },
+    { id: 'inc-004', lat: 48.87, lng: 2.38,   type: 'accident',   desc: 'Minor collision Boulevard Périphérique', severity: 'low'},
+  ];
+  // Only show incidents with rand < 0.6 (60% probability active)
+  trafficState.incidents = incidentPool.filter(inc =>
+    seededRand(inc.id, now % 199) < 0.6
+  ).map(inc => ({ ...inc, source: 'sim', ts: now, confidence: 0.85 }));
+
+  // Closures
+  const closurePool = [
+    { id: 'clo-001', lat: 40.75, lng: -73.99, type: 'planned',    desc: 'Bridge maintenance — closed 22:00–05:00' },
+    { id: 'clo-002', lat: 51.52, lng: -0.08,  type: 'emergency',  desc: 'Emergency gas main repair' },
+  ];
+  trafficState.closures = closurePool.filter(cl =>
+    seededRand(cl.id, now % 211) < 0.4
+  ).map(cl => ({ ...cl, source: 'sim', ts: now, confidence: 0.90 }));
+
+  // Zone alerts (congestion charge, ULEZ, alert zones)
+  trafficState.zoneAlerts = [
+    { id: 'zone-lon-1', lat: 51.50, lng: -0.12, name: 'London ULEZ',     type: 'ulez',       radiusKm: 12, active: true, ts: now, source: 'tfl' },
+    { id: 'zone-nyc-1', lat: 40.71, lng: -74.01, name: 'NYC Congestion',  type: 'congestion', radiusKm: 8,  active: seededRand('zone-nyc-1', now % 157) > 0.3, ts: now, source: 'sim' },
+  ];
+
+  trafficState.lastUpdateAt = now;
+}
+
+// ─── Timeline Snapshot Recording ─────────────────────────────────────────────
+
+const TIMELINE_SNAPSHOT_INTERVAL_MS = 30000; // record a snapshot every 30s
+const TIMELINE_MAX_SNAPSHOTS = 300;           // ~2.5 hours of history
+
+function recordTimelineSnapshot() {
+  const now = Date.now();
+  if (timelineState.lastSnapshotAt && now - timelineState.lastSnapshotAt < TIMELINE_SNAPSHOT_INTERVAL_MS) return;
+  timelineState.lastSnapshotAt = now;
+  const snap = {
+    ts: now,
+    agentCount: Object.keys(worldview.agents).length,
+    flightCount: Object.keys(openSkyLiveState.flights).length,
+    vehicleCount: Object.keys(liveEntityState.vehicles).length,
+    vesselCount: Object.keys(liveEntityState.vessels).length,
+    incidentCount: trafficState.incidents.length,
+    events: eventLog.slice(-10).map(e => ({ kind: e.kind, msg: e.msg, ts: e.ts })),
+  };
+  timelineState.snapshots.push(snap);
+  if (timelineState.snapshots.length > TIMELINE_MAX_SNAPSHOTS) {
+    timelineState.snapshots.shift();
+  }
+  if (!timelineState.replayStart && timelineState.snapshots.length > 0) {
+    timelineState.replayStart = timelineState.snapshots[0].ts;
+  }
+  timelineState.replayEnd = now;
+}
+
+/** Record an event into an entity's event history (capped at 10). */
+function appendEntityEvent(entityId, kind, msg) {
+  if (!entityId) return;
+  if (!entityEventHistory[entityId]) entityEventHistory[entityId] = [];
+  entityEventHistory[entityId].push({ ts: new Date().toISOString(), kind, msg });
+  if (entityEventHistory[entityId].length > 10) entityEventHistory[entityId].shift();
+}
+
 async function pollOpenSkyFlights() {
   if (!OPENSKY_ENABLED) return;
   // Env vars take priority; fall back to credentials loaded from opensky.json.
@@ -4608,6 +7309,7 @@ async function pollOpenSkyFlights() {
     console.log('[RW Worldview] OpenSky payload states exists=' + hasStates + ' count=' + states.length);
     if (!hasStates || states.length === 0) {
       console.warn('[RW Worldview] OpenSky returned empty or invalid response');
+      return;
     }
 
     const previous = openSkyLiveState.flights;
@@ -4671,6 +7373,7 @@ async function pollOpenSkyFlights() {
     openSkyLiveState.lastVisibleCount = 0;
     openSkyLiveState.lastDrawnCount = 0;
     emit('system', msg, { source: 'opensky' });
+    throw err;
   }
 }
 
@@ -4680,24 +7383,76 @@ function startOpenSkyPolling() {
     return;
   }
   openSkyLiveState.pollingRunning = true;
-  console.log('[RW Worldview] OpenSky polling enabled; base=' + OPENSKY_POLL_INTERVAL_MS + 'ms max=120000ms');
+  console.log('[RW Worldview] OpenSky polling enabled; success=20000ms error=30000ms');
   console.log('[RW Worldview] OpenSky polling URL=' + OPENSKY_STATES_URL + ' publicFallback=' + OPENSKY_PUBLIC_STATES_URL);
   console.log('RW_OPENSKY_ENABLED', process.env.RW_OPENSKY_ENABLED);
 
-  const OPENSKY_MAX_DELAY_MS = 120000;
-  let openSkyDelay = OPENSKY_POLL_INTERVAL_MS;
+  async function schedulePoll() {
+    try {
+      await pollOpenSkyFlights();
+      setTimeout(schedulePoll, 20000);
+    } catch (err) {
+      console.warn('[RW Worldview] OpenSky poll failed — retrying in 30s');
+      setTimeout(schedulePoll, 30000);
+    }
+  }
+
+  schedulePoll();
+}
+
+// ─── Aviationstack polling ─────────────────────────────────────────────────────
+
+async function pollAviationstackFlights() {
+  if (!AVIATIONSTACK_KEY) {
+    console.warn('[RW Worldview] Aviationstack key not configured (AVIATIONSTACK_KEY)');
+    return;
+  }
+  const url = 'https://api.aviationstack.com/v1/flights?access_key=' + AVIATIONSTACK_KEY;
+  console.log('[RW Worldview] Polling Aviationstack...');
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Aviationstack request failed with HTTP ' + response.status);
+    }
+    const payload = await response.json();
+    const data = Array.isArray(payload && payload.data) ? payload.data : [];
+    const normalized = data
+      .filter(f => f && f.live &&
+        Number.isFinite(f.live.latitude) &&
+        Number.isFinite(f.live.longitude) &&
+        f.flight && (f.flight.iata || f.flight.icao))
+      .map(f => ({
+        id: 'flight-' + (f.flight.iata || f.flight.icao),
+        lat: f.live.latitude,
+        lon: f.live.longitude,
+        altitude: f.live.altitude || 0,
+        velocity: f.live.speed_horizontal || 0,
+      }));
+    aviationstackState.flights = normalized;
+    aviationstackState.lastFetchedCount = normalized.length;
+    aviationstackState.lastPollAt = new Date().toISOString();
+    aviationstackState.lastErrorAt = null;
+    aviationstackState.lastErrorMessage = null;
+    console.log('[RW Worldview] Aviationstack: fetched ' + data.length + ' flights, ' + normalized.length + ' with live position');
+  } catch (err) {
+    console.warn('[RW Worldview] Aviationstack poll error: ' + err.message);
+    aviationstackState.lastErrorAt = new Date().toISOString();
+    aviationstackState.lastErrorMessage = err.message;
+  }
+}
+
+function startAviationstackPolling() {
+  if (!AVIATIONSTACK_KEY) {
+    console.log('[RW Worldview] Aviationstack polling disabled (AVIATIONSTACK_KEY not set)');
+    return;
+  }
+  aviationstackState.pollingRunning = true;
+  console.log('[RW Worldview] Aviationstack polling enabled; interval=' + AVIATIONSTACK_POLL_INTERVAL_MS + 'ms');
 
   function schedulePoll() {
-    pollOpenSkyFlights()
-      .then(() => {
-        openSkyDelay = OPENSKY_POLL_INTERVAL_MS; // success — reset to base
-        setTimeout(schedulePoll, openSkyDelay);
-      })
-      .catch(() => {
-        openSkyDelay = Math.min(openSkyDelay * 2, OPENSKY_MAX_DELAY_MS);
-        console.warn('[RW Worldview] OpenSky poll failed — backing off to ' + openSkyDelay / 1000 + 's');
-        setTimeout(schedulePoll, openSkyDelay);
-      });
+    pollAviationstackFlights()
+      .then(() => setTimeout(schedulePoll, AVIATIONSTACK_POLL_INTERVAL_MS))
+      .catch(() => setTimeout(schedulePoll, AVIATIONSTACK_POLL_INTERVAL_MS));
   }
 
   schedulePoll();
@@ -4998,6 +7753,11 @@ function simulationLoop() {
   for (const agent of Object.values(worldview.agents)) {
     tickAgent(agent);
   }
+
+  // Refresh live entity layers and traffic layer at their own cadence
+  refreshLiveEntityLayers();
+  refreshTrafficLayer();
+  recordTimelineSnapshot();
 
   // broadcast full snapshot every 5 ticks, delta otherwise
   if (worldview.tick % 5 === 0) {
@@ -5574,6 +8334,30 @@ function handleClientMessage(socket, msg) {
   // clients can request a snapshot on demand
   if (msg && msg.type === 'get_snapshot') {
     wsSend(socket, JSON.stringify({ type: 'snapshot', data: snapshot() }));
+    return;
+  }
+  // set timeline mode: { type: 'set_timeline_mode', mode: 'live'|'replay', replayTs?: number }
+  if (msg && msg.type === 'set_timeline_mode') {
+    const mode = msg.mode === 'replay' ? 'replay' : 'live';
+    timelineState.mode = mode;
+    if (mode === 'replay' && Number.isFinite(msg.replayTs)) {
+      timelineState.replayTs = msg.replayTs;
+    } else if (mode === 'live') {
+      timelineState.replayTs = null;
+    }
+    wsSend(socket, JSON.stringify({ type: 'timeline_ack', data: { mode: timelineState.mode, replayTs: timelineState.replayTs } }));
+    return;
+  }
+  // scrub replay timestamp: { type: 'timeline_scrub', ts: number }
+  if (msg && msg.type === 'timeline_scrub' && Number.isFinite(msg.ts)) {
+    timelineState.mode = 'replay';
+    timelineState.replayTs = msg.ts;
+    // find the nearest snapshot
+    const nearest = timelineState.snapshots.reduce((best, snap) => {
+      return (!best || Math.abs(snap.ts - msg.ts) < Math.abs(best.ts - msg.ts)) ? snap : best;
+    }, null);
+    wsSend(socket, JSON.stringify({ type: 'timeline_frame', data: { replayTs: msg.ts, snapshot: nearest } }));
+    return;
   }
 }
 
@@ -5707,34 +8491,63 @@ function router(req, res) {
     return;
   }
 
-  // ── GET /api/flights  → server-side OpenSky proxy (raw states pass-through)
+  // ── GET /api/flights  → Aviationstack normalized flights
   if (req.method === 'GET' && url === '/api/flights') {
-    const states = openSkyLiveState.rawStates;
-    if (!Array.isArray(states) || states.length === 0) {
-      // No cached data yet — do a live fetch so the first request always returns data
-      const effectiveUser = OPENSKY_USERNAME || fileCredentials.username;
-      const effectivePass = OPENSKY_PASSWORD || fileCredentials.password;
-      const authHeader = (effectiveUser && effectivePass)
-        ? 'Basic ' + Buffer.from(effectiveUser + ':' + effectivePass).toString('base64')
-        : null;
-      const fetchUrl = authHeader ? OPENSKY_STATES_URL : OPENSKY_PUBLIC_STATES_URL;
-      fetch(fetchUrl, { headers: authHeader ? { Authorization: authHeader } : undefined })
-        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
-        .then(payload => {
-          const s = Array.isArray(payload && payload.states) ? payload.states : [];
-          openSkyLiveState.rawStates = s;
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ states: s, count: s.length, time: Date.now() }));
-        })
-        .catch(err => {
-          console.warn('[RW /api/flights] fetch failed:', err.message);
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'flight fetch failed' }));
-        });
-      return;
-    }
+    const flights = aviationstackState.flights;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ states, count: states.length, time: openSkyLiveState.lastPollAt || Date.now() }));
+    res.end(JSON.stringify({ flights, count: flights.length, time: aviationstackState.lastPollAt || Date.now() }));
+    return;
+  }
+
+  // ── GET /api/live-entities  → live entity layers (vehicles, aircraft, vessels, sensors, weather)
+  if (req.method === 'GET' && url === '/api/live-entities') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      vehicles: Object.values(liveEntityState.vehicles).map(sanitizeEntityForRender).filter(Boolean),
+      aircraft: Object.values(liveEntityState.aircraft).map(sanitizeEntityForRender).filter(Boolean),
+      vessels:  Object.values(liveEntityState.vessels).map(sanitizeEntityForRender).filter(Boolean),
+      sensors:  Object.values(liveEntityState.sensors).map(sanitizeEntityForRender).filter(Boolean),
+      weather:  Object.values(liveEntityState.weather).map(sanitizeEntityForRender).filter(Boolean),
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // ── GET /api/traffic  → traffic layer data
+  if (req.method === 'GET' && url === '/api/traffic') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      segments:   trafficState.segments,
+      incidents:  trafficState.incidents,
+      closures:   trafficState.closures,
+      zoneAlerts: trafficState.zoneAlerts,
+      lastUpdateAt: trafficState.lastUpdateAt,
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // ── GET /api/timeline  → timeline state and recent snapshots
+  if (req.method === 'GET' && url === '/api/timeline') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      mode:          timelineState.mode,
+      replayTs:      timelineState.replayTs,
+      replayStart:   timelineState.replayStart,
+      replayEnd:     timelineState.replayEnd,
+      snapshotCount: timelineState.snapshots.length,
+      snapshots:     timelineState.snapshots.slice(-60),  // last 60 for replay scrubbing
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // ── GET /api/entity-history/:entityId  → event history for a specific entity
+  if (req.method === 'GET' && url.startsWith('/api/entity-history/')) {
+    const entityId = decodeURIComponent(url.slice('/api/entity-history/'.length));
+    const history = entityEventHistory[entityId] || [];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ entityId, history, count: history.length, ts: Date.now() }));
     return;
   }
 
@@ -5758,11 +8571,13 @@ server.on('upgrade', (req, socket, head) => {
 
 initWorld();
 bootstrapWorkers();
+seedSensorNodes();
 
 if (require.main === module) {
   setInterval(simulationLoop, 800);
   setInterval(plannerTick, 2000);
   setInterval(pruneOldTasks, 60000);
+  startAviationstackPolling();
   startOpenSkyPolling();
   startOpenSkyFileWatcher();
 
@@ -5813,4 +8628,20 @@ module.exports = {
   createWorker,
   bootstrapWorkers,
   onFlightAppeared,
+  // ── Live entity layer exports ───────────────────────────────────────────────
+  buildVehicleEntity,
+  buildAircraftEntity,
+  buildVesselEntity,
+  buildSensorEntity,
+  buildWeatherCellEntity,
+  sanitizeEntityForRender,
+  liveEntityState,
+  trafficState,
+  timelineState,
+  entityEventHistory,
+  appendEntityEvent,
+  refreshLiveEntityLayers,
+  refreshTrafficLayer,
+  recordTimelineSnapshot,
+  seedSensorNodes,
 };
