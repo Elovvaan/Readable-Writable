@@ -1549,4 +1549,54 @@ describe('globe boundary navigation', function () {
     assert.ok(body.includes('lastSelectedBoundaryEntity'),
       'hover handler must be aware of lastSelectedBoundaryEntity to preserve active style');
   });
+
+  // ── Crash-prevention: safe geometry options ──────────────────────────────
+  test('styleBoundaryDataSource sets polygon.granularity to reduce tessellation cost', function () {
+    const fnIdx = src.indexOf('function styleBoundaryDataSource');
+    assert.ok(fnIdx !== -1, 'styleBoundaryDataSource must exist');
+    const body = src.slice(fnIdx, fnIdx + 1200);
+    assert.ok(body.includes('granularity'),
+      'styleBoundaryDataSource must set polygon.granularity to limit subdivision cost');
+  });
+
+  test('styleBoundaryDataSource sets polygon.arcType to RHUMB to avoid expensive geodesic arcs', function () {
+    const fnIdx = src.indexOf('function styleBoundaryDataSource');
+    const body = src.slice(fnIdx, fnIdx + 1200);
+    assert.ok(body.includes('arcType') && (body.includes('RHUMB') || body.includes('ArcType')),
+      'styleBoundaryDataSource must set polygon.arcType (RHUMB) to skip costly geodesic arc subdivision');
+  });
+
+  test('styleBoundaryDataSource does not set polygon.height or polygon.heightReference (conflict prevention)', function () {
+    const fnIdx = src.indexOf('function styleBoundaryDataSource');
+    const body = src.slice(fnIdx, fnIdx + 1200);
+    assert.ok(!body.includes('polygon.height ') && !body.includes('polygon.height=') && !body.includes('.height       ='),
+      'styleBoundaryDataSource must not set polygon.height — it conflicts with clampToGround in load options');
+    assert.ok(!body.includes('heightReference'),
+      'styleBoundaryDataSource must not set polygon.heightReference — it conflicts with clampToGround in load options');
+  });
+
+  test('styleBoundaryDataSource precomputes _boundaryCenter for each entity', function () {
+    const fnIdx = src.indexOf('function styleBoundaryDataSource');
+    const body = src.slice(fnIdx, fnIdx + 1800);
+    assert.ok(body.includes('_boundaryCenter'),
+      'styleBoundaryDataSource must precompute _boundaryCenter to enable crash-safe fly-to');
+  });
+
+  test('flyToBoundaryEntity uses precomputed _boundaryCenter instead of polygon hierarchy', function () {
+    const fnIdx = src.indexOf('function flyToBoundaryEntity');
+    assert.ok(fnIdx !== -1, 'flyToBoundaryEntity must exist');
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('_boundaryCenter'),
+      'flyToBoundaryEntity must read from _boundaryCenter (precomputed centroid)');
+    assert.ok(!body.includes('polygon.hierarchy'),
+      'flyToBoundaryEntity must not traverse polygon.hierarchy (crash risk for complex polygons)');
+  });
+
+  test('loadBoundaryGeoJson passes markerSize:0 to suppress point-marker rendering', function () {
+    const fnIdx = src.indexOf('function loadBoundaryGeoJson');
+    assert.ok(fnIdx !== -1, 'loadBoundaryGeoJson must exist');
+    const body = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('markerSize'),
+      'loadBoundaryGeoJson must set markerSize:0 to prevent expensive point-marker geometry');
+  });
 });

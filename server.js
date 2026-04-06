@@ -2051,19 +2051,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function flyToBoundaryEntity(entity, isState) {
     if (!cesiumViewer || !entity) return;
-    const bb = entity.polygon && entity.polygon.hierarchy
-      ? entity.polygon.hierarchy.getValue(Cesium.JulianDate.now())
-      : null;
-    if (!bb || !bb.positions || bb.positions.length === 0) return;
-
-    let cx = 0, cy = 0, cz = 0;
-    const pts = bb.positions;
-    for (let i = 0; i < pts.length; i++) { cx += pts[i].x; cy += pts[i].y; cz += pts[i].z; }
-    cx /= pts.length; cy /= pts.length; cz /= pts.length;
-    const carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(new Cesium.Cartesian3(cx, cy, cz));
-    if (!carto) return;
-    const lat = Cesium.Math.toDegrees(carto.latitude);
-    const lng = Cesium.Math.toDegrees(carto.longitude);
+    // Use precomputed centroid — avoids traversing large polygon hierarchies which
+    // can crash the renderer for complex multi-polygon countries.
+    if (!entity._boundaryCenter) return;
+    const lng = entity._boundaryCenter[0];
+    const lat = entity._boundaryCenter[1];
 
     const alt = boundaryFlyAltitude(isState);
     cesiumCameraMoveInternal = true;
@@ -2119,13 +2111,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       e.polygon.outlineColor = isState ? BOUNDARY_COLOR_STATE_IDLE : BOUNDARY_COLOR_COUNTRY_IDLE;
       e.polygon.outlineWidth = 1.0;
       e.polygon.material     = BOUNDARY_FILL_IDLE;
-      e.polygon.height       = 0;
-      e.polygon.heightReference = Cesium.HeightReference.CLAMP_TO_GROUND;
+      e.polygon.granularity  = Cesium.Math.toRadians(5);
+      e.polygon.arcType      = Cesium.ArcType.RHUMB;
       const props = e.properties ? e.properties.getValue(Cesium.JulianDate.now()) : null;
       e._boundaryName    = boundaryFeatureName(props) || (e.name || '');
       e._boundaryIsoA3   = boundaryIsoA3(props);
       e._boundaryIsState = isState;
       e._boundaryState   = 'idle';
+      // Precompute centroid once at load time (sampled for efficiency) so that
+      // flyToBoundaryEntity never needs to traverse the full polygon hierarchy.
+      const hier = e.polygon.hierarchy ? e.polygon.hierarchy.getValue(Cesium.JulianDate.now()) : null;
+      if (hier && hier.positions && hier.positions.length > 0) {
+        const pts  = hier.positions;
+        const step = Math.max(1, Math.floor(pts.length / 48));
+        let cx = 0, cy = 0, cz = 0, n = 0;
+        for (let j = 0; j < pts.length; j += step) { cx += pts[j].x; cy += pts[j].y; cz += pts[j].z; n++; }
+        const carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(
+          new Cesium.Cartesian3(cx / n, cy / n, cz / n)
+        );
+        if (carto) {
+          e._boundaryCenter = [
+            Cesium.Math.toDegrees(carto.longitude),
+            Cesium.Math.toDegrees(carto.latitude),
+          ];
+        }
+      }
     }
   }
 
@@ -2165,6 +2175,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       stroke: Cesium.Color.TRANSPARENT,
       fill:   Cesium.Color.TRANSPARENT,
       strokeWidth: 1,
+      markerSize: 0,
       clampToGround: true,
     }).then(function (ds) {
       ds.name = name;
