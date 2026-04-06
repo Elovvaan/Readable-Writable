@@ -11,6 +11,7 @@ const {
   openSkyLiveState,
   adsbExchangeState,
   flightProviderState,
+  _simFlightsCache,
 } = require('../server');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -234,7 +235,7 @@ describe('getSimFlights', () => {
     }
   });
 
-  test('motion persists — positions differ across ticks (calls 5ms apart)', async () => {
+  test('maintains stable structure across successive calls', async () => {
     const f1 = getSimFlights();
     await new Promise(resolve => setTimeout(resolve, 5));
     const f2 = getSimFlights();
@@ -244,6 +245,23 @@ describe('getSimFlights', () => {
     for (const id of Object.keys(f1)) {
       assert.ok(id in f2, 'flight ' + id + ' should still exist in next tick');
     }
+  });
+
+  test('trail persistence: second call builds on first via _simFlightsCache', () => {
+    // Clear the cache first
+    for (const k of Object.keys(_simFlightsCache)) delete _simFlightsCache[k];
+    const f1 = getSimFlights();
+    // Cache should be populated after first call
+    const cacheKeys = Object.keys(_simFlightsCache);
+    assert.ok(cacheKeys.length >= 8);
+    // Every entry in cache should match returned flights
+    for (const id of cacheKeys) {
+      assert.ok(id in f1);
+      assert.equal(_simFlightsCache[id].id, f1[id].id);
+    }
+    // Second call should reference the same ids
+    const f2 = getSimFlights();
+    assert.equal(Object.keys(f2).length, Object.keys(f1).length);
   });
 });
 

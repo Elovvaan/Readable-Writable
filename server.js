@@ -141,6 +141,10 @@ const flightProviderState = {
   lastSelectedAt: null,
 };
 
+// Persistent trail cache for simulated fallback flights (keyed by entity id).
+// Needed because getSimFlights() is a pure function that cannot reference itself.
+const _simFlightsCache = {};
+
 // ─── Planner / Worker / Task Runtime Stores ───────────────────────────────────
 const taskRegistry = new Map();   // taskId → task
 const workerRuntime = new Map();  // workerId → worker
@@ -7055,7 +7059,9 @@ function getSimFlights() {
     const heading = (Math.atan2(-Math.sin(orbitPhase), Math.cos(orbitPhase)) * 180 / Math.PI + 360) % 360;
     const velocity = 240 + seededRand(s.id, now % 47) * 40;
     const altitude = s.altitude + (seededRand(s.id, now % 29) - 0.5) * 200;
-    const prev    = openSkyLiveState.flights['flight-' + s.id] || adsbExchangeState.flights['flight-' + s.id] || null;
+    // Use the dedicated sim cache for trail persistence (ids: 'flight-sim-f001', etc.)
+    const entityId = 'flight-' + s.id;
+    const prev    = _simFlightsCache[entityId] || null;
     const grid    = latLngToGrid(lat, lng);
     const trail   = Array.isArray(prev && prev.trail) ? prev.trail.slice(-OPENSKY_TRAIL_MAX_POINTS) : [];
     const moved   = !prev
@@ -7064,7 +7070,7 @@ function getSimFlights() {
       || Math.abs(prev.lng - lng) > 0.0001;
     if (trail.length === 0 || moved) trail.push({ lat, lng, ts: now });
     const entity = {
-      id: 'flight-' + s.id,
+      id: entityId,
       type: 'flight',
       label: s.callsign,
       name: s.callsign,
@@ -7088,7 +7094,8 @@ function getSimFlights() {
       trail: trail.slice(-OPENSKY_TRAIL_MAX_POINTS),
       lastUpdateMs: now,
     };
-    flights[entity.id] = entity;
+    _simFlightsCache[entityId] = entity;
+    flights[entityId] = entity;
   }
   return flights;
 }
@@ -7782,20 +7789,15 @@ async function pollAdsbExchangeFlights() {
     const payload = await response.json();
     const acArray = Array.isArray(payload && payload.ac) ? payload.ac : [];
     console.log('[RW Worldview] ADS-B Exchange: ac count=' + acArray.length);
-    if (acArray.length === 0) {
-      console.warn('[RW Worldview] ADS-B Exchange returned empty response');
-      adsbExchangeState.lastErrorAt = new Date().toISOString();
-      adsbExchangeState.lastErrorMessage = 'empty response';
-      return;
-    }
+    // normalizeAdsbBatch handles empty arrays correctly (returns { flights: {}, count: 0 })
     const previous = adsbExchangeState.flights;
     const { flights: nextFlights, count: normalizedCount } = normalizeAdsbBatch(acArray, previous);
-    adsbExchangeState.lastFetchedCount  = acArray.length;
+    adsbExchangeState.lastFetchedCount    = acArray.length;
     adsbExchangeState.lastNormalizedCount = normalizedCount;
-    adsbExchangeState.flights           = nextFlights;
-    adsbExchangeState.lastPollAt        = new Date().toISOString();
-    adsbExchangeState.lastErrorAt       = null;
-    adsbExchangeState.lastErrorMessage  = null;
+    adsbExchangeState.flights             = nextFlights;
+    adsbExchangeState.lastPollAt          = new Date().toISOString();
+    adsbExchangeState.lastErrorAt         = null;
+    adsbExchangeState.lastErrorMessage    = null;
     console.log('[RW Worldview] ADS-B Exchange: fetched=' + acArray.length + ' normalized=' + normalizedCount);
     broadcast('snapshot', snapshot());
   } catch (err) {
@@ -7814,9 +7816,9 @@ function startAdsbExchangePolling() {
   console.log('[RW Worldview] ADS-B Exchange polling enabled; interval=' + ADSB_EXCHANGE_POLL_INTERVAL_MS + 'ms');
 
   function schedulePoll() {
+    // pollAdsbExchangeFlights always resolves (internal try-catch handles errors).
     pollAdsbExchangeFlights()
-      .then(() => setTimeout(schedulePoll, ADSB_EXCHANGE_POLL_INTERVAL_MS))
-      .catch(() => setTimeout(schedulePoll, ADSB_EXCHANGE_POLL_INTERVAL_MS));
+      .then(() => setTimeout(schedulePoll, ADSB_EXCHANGE_POLL_INTERVAL_MS));
   }
 
   schedulePoll();
@@ -9051,6 +9053,7 @@ module.exports = {
   loadOpenSkyFile,
   normalizeStateBatch,
   errMsg,
+  _simFlightsCache,
   // ── Planner / Worker / Task exports ────────────────────────────────────────
   taskRegistry,
   workerRuntime,
