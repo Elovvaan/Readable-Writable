@@ -30,6 +30,16 @@ const AVIATIONSTACK_POLL_INTERVAL_MS = 20000;
 // Commercial jets cruise at ~240–280 m/s; 600 m/s ≈ Mach 1.8.
 const ANOMALY_MAX_SPEED_MS = 600;
 
+// ─── Flight Provider Config ───────────────────────────────────────────────────
+// ADS-B Exchange (primary live source). Requires a RapidAPI key.
+const ADSB_EXCHANGE_API_KEY = process.env.ADSB_EXCHANGE_API_KEY || '';
+const ADSB_EXCHANGE_API_URL = process.env.ADSB_EXCHANGE_API_URL ||
+  'https://adsbexchange-com1.p.rapidapi.com/v2/lat/0/lon/0/dist/1600/';
+const ADSB_EXCHANGE_POLL_INTERVAL_MS = Math.max(5000,
+  Number(process.env.ADSB_EXCHANGE_POLL_INTERVAL_MS || 15000));
+// A provider is considered stale after this many ms without a successful poll.
+const FLIGHT_PROVIDER_STALE_MS = 90000;
+
 // ─── State ───────────────────────────────────────────────────────────────────
 const worldview = {
   agents: {},
@@ -110,6 +120,30 @@ const aviationstackState = {
   lastFetchedCount: 0,
   pollingRunning: false,
 };
+
+// ─── ADS-B Exchange State ─────────────────────────────────────────────────────
+const adsbExchangeState = {
+  flights: {},           // normalized flight entities keyed by id
+  lastPollAt: null,
+  lastErrorAt: null,
+  lastErrorMessage: null,
+  lastFetchedCount: 0,
+  lastNormalizedCount: 0,
+  pollingRunning: false,
+};
+
+// Tracks the result of the current provider cascade selection.
+const flightProviderState = {
+  activeProvider: 'sim',   // 'adsb-exchange' | 'opensky' | 'sim'
+  fetched: 0,
+  visible: 0,
+  drawn: 0,
+  lastSelectedAt: null,
+};
+
+// Persistent trail cache for simulated fallback flights (keyed by entity id).
+// Needed because getSimFlights() is a pure function that cannot reference itself.
+const _simFlightsCache = {};
 
 // ─── Planner / Worker / Task Runtime Stores ───────────────────────────────────
 const taskRegistry = new Map();   // taskId → task
@@ -1525,6 +1559,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     liveFlights: null,
     satellites:  null,
   };
+  // Tracks the active flight provider reported by the server (used for display)
+  let activeFlightProvider = 'sim';
 
   // ── Layer UI helpers ──────────────────────────────────────────────────────
   function timeSinceStr(tsMs) {
@@ -5316,7 +5352,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       try { return new Date(raw).toISOString().slice(11, 19); } catch (e) { return raw; }
     }());
     const flightDebugText =
-      'fetched:' + fetched +
+      'src:' + activeFlightProvider +
+      ' fetched:' + fetched +
       ' visible:' + visibleFlights +
       ' drawn:' + drawnFlights +
       ' | at:' + fetchAtStr;
@@ -5349,10 +5386,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     // ── Layer freshness panel update ──────────────────────────────────────
     if (layerState.liveFlights) {
-      const pollTs = openskyStatus && openskyStatus.lastPollAt
-        ? new Date(openskyStatus.lastPollAt).getTime() : null;
+      // Use flightProvider diagnostics (covers all providers including sim)
+      const fp = state && state.flightProvider;
+      const pollTs = fp && fp.lastSelectedAt
+        ? new Date(fp.lastSelectedAt).getTime()
+        : (openskyStatus && openskyStatus.lastPollAt ? new Date(openskyStatus.lastPollAt).getTime() : null);
       if (pollTs) layerLastUpdated.liveFlights = pollTs;
-      setLayerStatus('liveFlights', openskyStatus && openskyStatus.lastErrorAt
+      const hasError = (fp && fp.activeProvider !== 'sim' &&
+        ((fp.activeProvider === 'adsb-exchange' && fp.adsbExchange && fp.adsbExchange.lastErrorAt) ||
+         (fp.activeProvider === 'opensky' && fp.opensky && fp.opensky.lastErrorAt)));
+      setLayerStatus('liveFlights', hasError
         ? 'error · ' + timeSinceStr(layerLastUpdated.liveFlights)
         : timeSinceStr(layerLastUpdated.liveFlights));
     }
@@ -5830,6 +5873,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     openskyStatus = nextSnapshot && nextSnapshot.opensky
       ? nextSnapshot.opensky
       : Object.assign({}, OPENSKY_STATUS_DEFAULTS);
+    // Sync active flight provider from server snapshot
+    if (nextSnapshot && nextSnapshot.flightProvider && nextSnapshot.flightProvider.activeProvider) {
+      activeFlightProvider = nextSnapshot.flightProvider.activeProvider;
+      // Update the layer provider label to reflect the live source
+      const providerLabelEl = document.querySelector('[data-layer="liveFlights"] .layer-provider');
+      if (providerLabelEl) {
+        const labels = {
+          'adsb-exchange': 'ADS-B Exchange',
+          'opensky':       'OpenSky Network',
+          'sim':           'Simulated (fallback)',
+        };
+        providerLabelEl.textContent = labels[activeFlightProvider] || activeFlightProvider;
+      }
+    }
     // Sync timeline state from server
     if (nextSnapshot && nextSnapshot.timeline && timelineEngine.mode === 'live') {
       timelineEngine.replayStart = nextSnapshot.timeline.replayStart;
@@ -5961,40 +6018,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
-      const states = Array.isArray(data.states) ? data.states : [];
-      if (!states.length) {
+      // New format: { provider, entities, count, fetched, visible, drawn, time }
+      const entities = Array.isArray(data.entities) ? data.entities : [];
+      if (!entities.length) {
         setTimeout(fetchFlightsSafe, flightPollDelay);
         return;
       }
 
       const now = Date.now();
       const normalized = {};
-      for (const row of states) {
-        if (!Array.isArray(row)) continue;
-        const icao24 = String(row[0] || '').trim().toLowerCase();
-        const callsign = String(row[1] || '').trim();
-        const lon = parseFloat(row[5]);
-        const lat = parseFloat(row[6]);
-        if (!icao24 || !isFinite(lat) || !isFinite(lon)) continue;
-        const altitude = parseFloat(
-          row[7] !== null && row[7] !== undefined ? row[7] : (row[13] !== null ? row[13] : 0)
-        ) || 0;
-        const velocity = parseFloat(row[9])  || 0;
-        const heading  = parseFloat(row[10]) || 0;
-        const onGround = Boolean(row[8]);
-        const id = 'flight-' + icao24;
-        const grid = latLngToGridFE(lat, lon);
-        normalized[id] = {
-          id, type: 'flight', label: callsign || icao24,
-          callsign, icao24, lat, lng: lon, x: grid.x, y: grid.y,
-          altitude, velocity, heading, onGround,
-          source: 'opensky', lastUpdateMs: now,
-        };
+      for (const entity of entities) {
+        if (!entity || !entity.id || !Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) continue;
+        normalized[entity.id] = { ...entity, lastUpdateMs: now };
       }
 
       apiFetchedFlights = normalized;
-      lastApiFetchedCount = states.length;
+      lastApiFetchedCount = entities.length;
       layerLastUpdated.liveFlights = now;
+      // Track active provider from REST response for diagnostics
+      if (data.provider) activeFlightProvider = data.provider;
       mergeEntities(normalized);
 
       // Success — reset to base delay
@@ -6626,6 +6668,21 @@ function normalizeStateBatch(states, previous, sourceOverride) {
   return { flights, count };
 }
 
+// Converts an ADS-B Exchange aircraft array into a flights map.
+function normalizeAdsbBatch(acArray, previous) {
+  const flights = {};
+  let count = 0;
+  for (const ac of acArray) {
+    const icao24 = ac && String(ac.hex || '').trim().toLowerCase();
+    const prev = icao24 ? previous['flight-' + icao24] : null;
+    const entity = buildAdsbExchangeFlightEntity(ac, prev);
+    if (!entity) continue;
+    count++;
+    flights[entity.id] = entity;
+  }
+  return { flights, count };
+}
+
 /**
  * Strip heavy fields from a live entity before sending to the frontend.
  * Keeps only the fields needed for Cesium rendering to prevent large payload
@@ -6674,10 +6731,13 @@ function emit(kind, msg, patch, entityType) {
 }
 
 function snapshot() {
+  // Run the provider cascade to get the authoritative flights map.
+  const { provider: activeProvider, flights: activeFlights } = selectActiveFlights();
+
   const mergedAgents = {
     ...worldview.agents,
-    ...openSkyFileState.flights,   // file-sourced flights (live API wins on icao collision)
-    ...openSkyLiveState.flights,
+    ...openSkyFileState.flights,   // file-sourced flights always merged
+    ...activeFlights,              // cascade: adsb-exchange → opensky → sim
   };
 
   // Annotate agents with current task status where a worker is assigned
@@ -6766,6 +6826,28 @@ function snapshot() {
       replayStart:  timelineState.replayStart,
       replayEnd:    timelineState.replayEnd,
       snapshotCount: timelineState.snapshots.length,
+    },
+    // ── Flight provider diagnostics ──────────────────────────────────────────
+    flightProvider: {
+      activeProvider: flightProviderState.activeProvider,
+      fetched:        flightProviderState.fetched,
+      visible:        flightProviderState.visible,
+      drawn:          flightProviderState.drawn,
+      lastSelectedAt: flightProviderState.lastSelectedAt,
+      adsbExchange: {
+        configured:  !!ADSB_EXCHANGE_API_KEY,
+        fetched:     adsbExchangeState.lastFetchedCount,
+        normalized:  adsbExchangeState.lastNormalizedCount,
+        lastPollAt:  adsbExchangeState.lastPollAt,
+        lastErrorAt: adsbExchangeState.lastErrorAt,
+      },
+      opensky: {
+        enabled:     OPENSKY_ENABLED,
+        fetched:     openSkyLiveState.lastFetchedCount,
+        normalized:  openSkyLiveState.lastNormalizedCount,
+        lastPollAt:  openSkyLiveState.lastPollAt,
+        lastErrorAt: openSkyLiveState.lastErrorAt,
+      },
     },
   };
 }
@@ -6886,7 +6968,189 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
   return entity;
 }
 
-// ─── Live Entity Builders ─────────────────────────────────────────────────────
+/**
+ * Build a flight entity from an ADS-B Exchange aircraft record.
+ * Normalizes to the same internal schema as buildOpenSkyFlightEntity so the
+ * rest of the render/stats pipeline can treat both sources identically.
+ * @param {object} ac  - ADS-B Exchange aircraft object (hex, flight, lat, lon, alt_baro, gs, track …)
+ * @param {object|null} previousEntity
+ * @returns {object|null}
+ */
+function buildAdsbExchangeFlightEntity(ac, previousEntity) {
+  if (!ac || typeof ac !== 'object') return null;
+  const icao24 = String(ac.hex || '').trim().toLowerCase();
+  const callsign = String(ac.flight || '').trim();
+  const lat = safeNumber(ac.lat);
+  const lng = safeNumber(ac.lon);
+  if (!icao24 || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const altitude = safeNumber(ac.alt_baro !== undefined ? ac.alt_baro : ac.alt_geom);
+  const velocity = safeNumber(ac.gs);       // ground speed in knots
+  const heading  = safeNumber(ac.track);
+  const verticalRate = safeNumber(ac.baro_rate);
+  const onGround = Boolean(ac.on_ground) || (altitude !== null && altitude <= 0);
+  const now = Date.now();
+  const entity = {
+    id: 'flight-' + icao24,
+    type: 'flight',
+    label: callsign || icao24,
+    name: callsign || icao24,
+    icao24,
+    lat,
+    lng,
+    altitude,
+    heading,
+    velocity,
+    speed: velocity,
+    verticalRate,
+    onGround,
+    source: 'adsb-exchange',
+    region: null,
+    active: true,
+    state: onGround ? 'grounded' : 'airborne',
+    memory: [],
+    lastSeen: new Date().toISOString(),
+    prevLat: previousEntity && Number.isFinite(previousEntity.lat) ? previousEntity.lat : null,
+    prevLng: previousEntity && Number.isFinite(previousEntity.lng) ? previousEntity.lng : null,
+    trail: Array.isArray(previousEntity && previousEntity.trail) ? previousEntity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS) : [],
+    lastUpdateMs: now,
+  };
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    const moved = !previousEntity
+      || !Number.isFinite(previousEntity.lat)
+      || !Number.isFinite(previousEntity.lng)
+      || Math.abs(previousEntity.lat - lat) > 0.0001
+      || Math.abs(previousEntity.lng - lng) > 0.0001;
+    if (entity.trail.length === 0 || moved) {
+      entity.trail.push({ lat, lng, ts: now });
+    }
+    entity.trail = entity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS);
+  }
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+/**
+ * Generate deterministic simulated flights for the final fallback tier.
+ * Uses the same orbital-motion math as refreshLiveEntityLayers aircraft seeds
+ * so the globe always shows visible moving aircraft even when all live APIs fail.
+ * @returns {{ [id: string]: object }} flights map keyed by entity id
+ */
+function getSimFlights() {
+  const now = Date.now();
+  const simSeeds = [
+    { id: 'sim-f001', baseLat: 51.48,  baseLng:   -0.45, callsign: 'BAW001', altitude: 11000 },
+    { id: 'sim-f002', baseLat: 40.63,  baseLng:  -73.79, callsign: 'AAL202', altitude:  9500 },
+    { id: 'sim-f003', baseLat: 35.55,  baseLng:  139.78, callsign: 'JAL301', altitude: 10500 },
+    { id: 'sim-f004', baseLat: -33.94, baseLng:  151.18, callsign: 'QFA410', altitude: 12000 },
+    { id: 'sim-f005', baseLat: 48.36,  baseLng:   11.79, callsign: 'DLH505', altitude: 10000 },
+    { id: 'sim-f006', baseLat: 25.25,  baseLng:   55.36, callsign: 'UAE771', altitude: 11500 },
+    { id: 'sim-f007', baseLat: 37.62,  baseLng: -122.38, callsign: 'UAL891', altitude:  9000 },
+    { id: 'sim-f008', baseLat:  1.36,  baseLng:  103.99, callsign: 'SIA312', altitude: 10800 },
+  ];
+  const flights = {};
+  for (const s of simSeeds) {
+    const orbitR  = 0.06;
+    const orbitMs = 20000;
+    const phase0  = seededRand(s.id, 3) * 2 * Math.PI;
+    const orbitPhase = (now % orbitMs) / orbitMs * 2 * Math.PI + phase0;
+    const lat     = s.baseLat + Math.sin(orbitPhase) * orbitR;
+    const lng     = s.baseLng + Math.cos(orbitPhase) * orbitR;
+    const heading = (Math.atan2(-Math.sin(orbitPhase), Math.cos(orbitPhase)) * 180 / Math.PI + 360) % 360;
+    const velocity = 240 + seededRand(s.id, now % 47) * 40;
+    const altitude = s.altitude + (seededRand(s.id, now % 29) - 0.5) * 200;
+    // Use the dedicated sim cache for trail persistence (ids: 'flight-sim-f001', etc.)
+    const entityId = 'flight-' + s.id;
+    const prev    = _simFlightsCache[entityId] || null;
+    const grid    = latLngToGrid(lat, lng);
+    const trail   = Array.isArray(prev && prev.trail) ? prev.trail.slice(-OPENSKY_TRAIL_MAX_POINTS) : [];
+    const moved   = !prev
+      || !Number.isFinite(prev.lat) || !Number.isFinite(prev.lng)
+      || Math.abs(prev.lat - lat) > 0.0001
+      || Math.abs(prev.lng - lng) > 0.0001;
+    if (trail.length === 0 || moved) trail.push({ lat, lng, ts: now });
+    const entity = {
+      id: entityId,
+      type: 'flight',
+      label: s.callsign,
+      name: s.callsign,
+      icao24: s.id,
+      lat, lng,
+      x: grid.x, y: grid.y,
+      altitude,
+      heading,
+      velocity,
+      speed: velocity,
+      verticalRate: 0,
+      onGround: false,
+      source: 'sim',
+      region: resolveClosestRegion({ lat, lng }),
+      active: true,
+      state: 'airborne',
+      memory: [],
+      lastSeen: new Date().toISOString(),
+      prevLat: prev ? prev.lat : null,
+      prevLng: prev ? prev.lng : null,
+      trail: trail.slice(-OPENSKY_TRAIL_MAX_POINTS),
+      lastUpdateMs: now,
+    };
+    _simFlightsCache[entityId] = entity;
+    flights[entityId] = entity;
+  }
+  return flights;
+}
+
+/**
+ * Select the active flight provider using the priority cascade:
+ *   1. ADS-B Exchange  — if key is configured, last poll is recent and non-empty
+ *   2. OpenSky         — if enabled, last poll is recent and non-empty
+ *   3. Simulated       — deterministic orbital flights, always available
+ *
+ * Side-effect: updates flightProviderState.
+ * @returns {{ provider: string, flights: object }}
+ */
+function selectActiveFlights() {
+  const now = Date.now();
+  const isRecent = (pollAt) => {
+    if (!pollAt) return false;
+    return now - new Date(pollAt).getTime() < FLIGHT_PROVIDER_STALE_MS;
+  };
+
+  let provider, flights;
+
+  // 1. ADS-B Exchange
+  if (
+    ADSB_EXCHANGE_API_KEY &&
+    !adsbExchangeState.lastErrorAt &&
+    isRecent(adsbExchangeState.lastPollAt) &&
+    Object.keys(adsbExchangeState.flights).length > 0
+  ) {
+    provider = 'adsb-exchange';
+    flights  = adsbExchangeState.flights;
+  // 2. OpenSky
+  } else if (
+    OPENSKY_ENABLED &&
+    !openSkyLiveState.lastErrorAt &&
+    isRecent(openSkyLiveState.lastPollAt) &&
+    Object.keys(openSkyLiveState.flights).length > 0
+  ) {
+    provider = 'opensky';
+    flights  = openSkyLiveState.flights;
+  // 3. Simulated fallback — always-on so the globe keeps moving
+  } else {
+    provider = 'sim';
+    flights  = getSimFlights();
+  }
+
+  const vis = countVisibleOpenSkyFlights(flights, OPENSKY_GLOBE_MIN_Z);
+  flightProviderState.activeProvider  = provider;
+  flightProviderState.fetched         = Object.keys(flights).length;
+  flightProviderState.visible         = vis.passProjection;
+  flightProviderState.drawn           = vis.passMinZ;
+  flightProviderState.lastSelectedAt  = new Date().toISOString();
+
+  return { provider, flights };
+}
 
 /**
  * Build a ground vehicle entity with full structured metadata.
@@ -7501,6 +7765,60 @@ function startOpenSkyPolling() {
       console.warn('[RW Worldview] OpenSky poll failed — retrying in 30s');
       setTimeout(schedulePoll, 30000);
     }
+  }
+
+  schedulePoll();
+}
+
+// ─── ADS-B Exchange polling ───────────────────────────────────────────────────
+
+async function pollAdsbExchangeFlights() {
+  if (!ADSB_EXCHANGE_API_KEY) return;
+  console.log('[RW Worldview] Polling ADS-B Exchange...');
+  try {
+    const response = await fetch(ADSB_EXCHANGE_API_URL, {
+      method: 'GET',
+      headers: {
+        'x-rapidapi-key':  ADSB_EXCHANGE_API_KEY,
+        'x-rapidapi-host': 'adsbexchange-com1.p.rapidapi.com',
+      },
+    });
+    if (!response.ok) {
+      throw new Error('ADS-B Exchange request failed with HTTP ' + response.status);
+    }
+    const payload = await response.json();
+    const acArray = Array.isArray(payload && payload.ac) ? payload.ac : [];
+    console.log('[RW Worldview] ADS-B Exchange: ac count=' + acArray.length);
+    // normalizeAdsbBatch handles empty arrays correctly (returns { flights: {}, count: 0 })
+    const previous = adsbExchangeState.flights;
+    const { flights: nextFlights, count: normalizedCount } = normalizeAdsbBatch(acArray, previous);
+    adsbExchangeState.lastFetchedCount    = acArray.length;
+    adsbExchangeState.lastNormalizedCount = normalizedCount;
+    adsbExchangeState.flights             = nextFlights;
+    adsbExchangeState.lastPollAt          = new Date().toISOString();
+    adsbExchangeState.lastErrorAt         = null;
+    adsbExchangeState.lastErrorMessage    = null;
+    console.log('[RW Worldview] ADS-B Exchange: fetched=' + acArray.length + ' normalized=' + normalizedCount);
+    broadcast('snapshot', snapshot());
+  } catch (err) {
+    console.warn('[RW Worldview] ADS-B Exchange poll error: ' + err.message);
+    adsbExchangeState.lastErrorAt      = new Date().toISOString();
+    adsbExchangeState.lastErrorMessage = err.message;
+  }
+}
+
+function startAdsbExchangePolling() {
+  if (!ADSB_EXCHANGE_API_KEY) {
+    console.log('[RW Worldview] ADS-B Exchange polling disabled (ADSB_EXCHANGE_API_KEY not set) — using OpenSky/sim cascade');
+    return;
+  }
+  adsbExchangeState.pollingRunning = true;
+  console.log('[RW Worldview] ADS-B Exchange polling enabled; interval=' + ADSB_EXCHANGE_POLL_INTERVAL_MS + 'ms');
+
+  function schedulePoll() {
+    // pollAdsbExchangeFlights always resolves (internal try-catch handles errors).
+    pollAdsbExchangeFlights()
+      .then(() => setTimeout(schedulePoll, ADSB_EXCHANGE_POLL_INTERVAL_MS));
   }
 
   schedulePoll();
@@ -8597,11 +8915,20 @@ function router(req, res) {
     return;
   }
 
-  // ── GET /api/flights  → Aviationstack normalized flights
+  // ── GET /api/flights  → active provider's normalized flight entities
   if (req.method === 'GET' && url === '/api/flights') {
-    const flights = aviationstackState.flights;
+    const { provider, flights } = selectActiveFlights();
+    const entities = Object.values(flights);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ flights, count: flights.length, time: aviationstackState.lastPollAt || Date.now() }));
+    res.end(JSON.stringify({
+      provider,
+      entities,
+      count: entities.length,
+      fetched: flightProviderState.fetched,
+      visible: flightProviderState.visible,
+      drawn:   flightProviderState.drawn,
+      time:    flightProviderState.lastSelectedAt || new Date().toISOString(),
+    }));
     return;
   }
 
@@ -8683,8 +9010,9 @@ if (require.main === module) {
   setInterval(simulationLoop, 800);
   setInterval(plannerTick, 2000);
   setInterval(pruneOldTasks, 60000);
+  startAdsbExchangePolling();   // primary live source
   startAviationstackPolling();
-  startOpenSkyPolling();
+  startOpenSkyPolling();        // secondary fallback
   startOpenSkyFileWatcher();
 
   server.listen(PORT, '0.0.0.0', () => {
@@ -8705,6 +9033,10 @@ module.exports = {
   countVisibleOpenSkyFlights,
   resolveClosestRegion,
   buildOpenSkyFlightEntity,
+  buildAdsbExchangeFlightEntity,
+  normalizeAdsbBatch,
+  getSimFlights,
+  selectActiveFlights,
   emit,
   wsSend,
   wsParse,
@@ -8714,11 +9046,14 @@ module.exports = {
   eventLog,
   openSkyLiveState,
   openSkyFileState,
+  adsbExchangeState,
+  flightProviderState,
   fileCredentials,
   detectAnomalies,
   loadOpenSkyFile,
   normalizeStateBatch,
   errMsg,
+  _simFlightsCache,
   // ── Planner / Worker / Task exports ────────────────────────────────────────
   taskRegistry,
   workerRuntime,
