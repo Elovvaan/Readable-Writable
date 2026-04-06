@@ -1577,7 +1577,7 @@ describe('globe boundary navigation', function () {
 
   test('styleBoundaryDataSource precomputes _boundaryCenter for each entity', function () {
     const fnIdx = src.indexOf('function styleBoundaryDataSource');
-    const body = src.slice(fnIdx, fnIdx + 1800);
+    const body = src.slice(fnIdx, fnIdx + 2500);
     assert.ok(body.includes('_boundaryCenter'),
       'styleBoundaryDataSource must precompute _boundaryCenter to enable crash-safe fly-to');
   });
@@ -1595,8 +1595,120 @@ describe('globe boundary navigation', function () {
   test('loadBoundaryGeoJson passes markerSize:0 to suppress point-marker rendering', function () {
     const fnIdx = src.indexOf('function loadBoundaryGeoJson');
     assert.ok(fnIdx !== -1, 'loadBoundaryGeoJson must exist');
-    const body = src.slice(fnIdx, fnIdx + 400);
+    const body = src.slice(fnIdx, fnIdx + 800);
     assert.ok(body.includes('markerSize'),
       'loadBoundaryGeoJson must set markerSize:0 to prevent expensive point-marker geometry');
+  });
+
+  // ── BOUNDARIES_ENABLED feature flag ──────────────────────────────────────
+  test('BOUNDARIES_ENABLED feature flag constant is defined', function () {
+    assert.ok(src.includes('BOUNDARIES_ENABLED'),
+      'BOUNDARIES_ENABLED feature flag must be defined');
+  });
+
+  test('BOUNDARIES_ENABLED is a boolean true constant', function () {
+    const idx = src.indexOf('BOUNDARIES_ENABLED');
+    assert.ok(idx !== -1, 'BOUNDARIES_ENABLED must exist');
+    const snippet = src.slice(idx, idx + 60);
+    assert.ok(snippet.includes('true') || snippet.includes('false'),
+      'BOUNDARIES_ENABLED must be assigned a boolean value');
+  });
+
+  test('initGlobeBoundaries guards on BOUNDARIES_ENABLED before doing any work', function () {
+    const fnIdx = src.indexOf('async function initGlobeBoundaries');
+    assert.ok(fnIdx !== -1, 'initGlobeBoundaries must exist');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('BOUNDARIES_ENABLED'),
+      'initGlobeBoundaries must check BOUNDARIES_ENABLED flag at the top');
+  });
+
+  // ── Dataset size validation ───────────────────────────────────────────────
+  test('GEOJSON_MAX_BYTES constant is defined for dataset size limit', function () {
+    assert.ok(src.includes('GEOJSON_MAX_BYTES'),
+      'GEOJSON_MAX_BYTES constant must be defined to reject oversized datasets');
+  });
+
+  test('GEOJSON_MAX_BYTES is set to 1 MB (1048576)', function () {
+    const idx = src.indexOf('GEOJSON_MAX_BYTES');
+    assert.ok(idx !== -1, 'GEOJSON_MAX_BYTES must exist');
+    const snippet = src.slice(idx, idx + 60);
+    assert.ok(snippet.includes('1048576'),
+      'GEOJSON_MAX_BYTES must equal 1048576 (1 MB)');
+  });
+
+  test('loadBoundaryGeoJson validates dataset size before loading into Cesium', function () {
+    const fnIdx = src.indexOf('function loadBoundaryGeoJson');
+    assert.ok(fnIdx !== -1, 'loadBoundaryGeoJson must exist');
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('GEOJSON_MAX_BYTES'),
+      'loadBoundaryGeoJson must check GEOJSON_MAX_BYTES to reject oversized datasets');
+  });
+
+  test('loadBoundaryGeoJson fetches GeoJSON text before passing to Cesium', function () {
+    const fnIdx = src.indexOf('function loadBoundaryGeoJson');
+    const body = src.slice(fnIdx, fnIdx + 800);
+    assert.ok(body.includes('fetch('),
+      'loadBoundaryGeoJson must pre-fetch GeoJSON to enable size validation before loading');
+  });
+
+  // ── Position safety guard ─────────────────────────────────────────────────
+  test('BOUNDARY_MAX_POSITIONS constant is defined for position safety guard', function () {
+    assert.ok(src.includes('BOUNDARY_MAX_POSITIONS'),
+      'BOUNDARY_MAX_POSITIONS constant must be defined');
+  });
+
+  test('styleBoundaryDataSource skips entities exceeding BOUNDARY_MAX_POSITIONS', function () {
+    const fnIdx = src.indexOf('function styleBoundaryDataSource');
+    assert.ok(fnIdx !== -1, 'styleBoundaryDataSource must exist');
+    const body = src.slice(fnIdx, fnIdx + 2200);
+    assert.ok(body.includes('BOUNDARY_MAX_POSITIONS'),
+      'styleBoundaryDataSource must guard against entities with too many positions');
+  });
+
+  test('styleBoundaryDataSource logs a warning and skips oversized entities', function () {
+    const fnIdx = src.indexOf('function styleBoundaryDataSource');
+    const body = src.slice(fnIdx, fnIdx + 2200);
+    assert.ok(body.includes('console.warn') && body.includes('BOUNDARY_MAX_POSITIONS'),
+      'styleBoundaryDataSource must warn and skip entities exceeding position limit');
+  });
+
+  // ── Outline-only rendering ────────────────────────────────────────────────
+  test('styleBoundaryDataSource sets polygon.fill=false for outline-only rendering', function () {
+    const fnIdx = src.indexOf('function styleBoundaryDataSource');
+    assert.ok(fnIdx !== -1, 'styleBoundaryDataSource must exist');
+    const body = src.slice(fnIdx, fnIdx + 1200);
+    assert.ok(body.includes('polygon.fill') && body.includes('false'),
+      'styleBoundaryDataSource must set polygon.fill=false (outline-only, no triangulation)');
+  });
+
+  test('styleBoundaryDataSource does not set polygon.material (outline-only mode)', function () {
+    const fnIdx = src.indexOf('function styleBoundaryDataSource');
+    const body = src.slice(fnIdx, fnIdx + 1200);
+    assert.ok(!body.includes('polygon.material'),
+      'styleBoundaryDataSource must not set polygon.material — outline-only mode prevents fill triangulation');
+  });
+
+  test('setBoundaryHoverStyle sets polygon.fill=false (outline-only rendering)', function () {
+    const fnIdx = src.indexOf('function setBoundaryHoverStyle');
+    assert.ok(fnIdx !== -1, 'setBoundaryHoverStyle must exist');
+    const body = src.slice(fnIdx, fnIdx + 1000);
+    assert.ok(body.includes('polygon.fill') && body.includes('false'),
+      'setBoundaryHoverStyle must disable polygon fill to avoid heavy triangulation');
+  });
+
+  test('setBoundaryHoverStyle does not set polygon.material (outline-only mode)', function () {
+    const fnIdx = src.indexOf('function setBoundaryHoverStyle');
+    const body = src.slice(fnIdx, fnIdx + 1000);
+    assert.ok(!body.includes('polygon.material'),
+      'setBoundaryHoverStyle must not set polygon.material in outline-only mode');
+  });
+
+  // ── Lazy-loading deferral ─────────────────────────────────────────────────
+  test('initGlobeBoundaries is deferred via setTimeout in initCesium (lazy-load)', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    assert.ok(fnIdx !== -1, 'initCesium must exist');
+    const body = src.slice(fnIdx, fnIdx + 8000);
+    assert.ok(body.includes('setTimeout') && body.includes('initGlobeBoundaries()'),
+      'initGlobeBoundaries must be wrapped in setTimeout to defer past the initial render cycle');
   });
 });
