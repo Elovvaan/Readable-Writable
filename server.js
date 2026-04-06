@@ -595,6 +595,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         </div>
         <button class="layer-toggle active" id="toggle-layer-trafficSim" type="button" aria-pressed="true">ON</button>
       </div>
+      <div class="layer-row on" data-layer="boundaries">
+        <div class="layer-icon">◻</div>
+        <div class="layer-info">
+          <div class="layer-name">Boundaries</div>
+          <div class="layer-provider">Natural Earth</div>
+          <div class="layer-freshness" id="layer-status-boundaries">—</div>
+        </div>
+        <button class="layer-toggle active" id="toggle-layer-boundaries" type="button" aria-pressed="true">ON</button>
+      </div>
       <div class="layer-row unavailable" data-layer="traffic">
         <div class="layer-icon">≡</div>
         <div class="layer-info">
@@ -1129,6 +1138,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const toggleLayerSensorsEl     = document.getElementById('toggle-layer-sensors');
   const toggleLayerWeatherCellsEl= document.getElementById('toggle-layer-weatherCells');
   const toggleLayerTrafficSimEl  = document.getElementById('toggle-layer-trafficSim');
+  const toggleLayerBoundariesEl  = document.getElementById('toggle-layer-boundaries');
   // kept for title-init compatibility; these are disabled buttons in unavailable state
   const toggleLayerTrafficEl     = document.getElementById('toggle-layer-traffic');
   const toggleLayerWeatherEl     = document.getElementById('toggle-layer-weather');
@@ -1334,6 +1344,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     sensors:         true,   // Sensor nodes (fixed infrastructure)
     weatherCells:    true,   // Weather cells (simulated NOAA)
     trafficSim:      true,   // Traffic layer (simulated)
+    boundaries:      true,   // Geographic boundaries (Natural Earth GeoJSON)
     traffic:         false,  // UNAVAILABLE — live feed not configured
     weather:         false,  // UNAVAILABLE — live radar not configured
     cctvMesh:        false,  // UNAVAILABLE — no data source wired
@@ -1345,6 +1356,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     liveFlights: true, militaryFlights: false, earthquakes: false,
     satellites: true,
     vehicles: true, aircraft: true, vessels: true, sensors: true, weatherCells: true, trafficSim: true,
+    boundaries: true,
     traffic: false, weather: false, cctvMesh: false, bikeshare: false,
   };
   // Timeline engine client state
@@ -1976,13 +1988,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   // CRT palette
   const BOUNDARY_COLOR_COUNTRY_IDLE    = new Cesium.Color(0.12, 0.6, 0.55, 0.55);
   const BOUNDARY_COLOR_COUNTRY_HOVER   = new Cesium.Color(0.24, 0.79, 0.72, 0.95);
+  const BOUNDARY_COLOR_COUNTRY_ACTIVE  = new Cesium.Color(0.35, 0.95, 0.85, 1.00);
   const BOUNDARY_COLOR_STATE_IDLE      = new Cesium.Color(0.08, 0.45, 0.42, 0.40);
   const BOUNDARY_COLOR_STATE_HOVER     = new Cesium.Color(0.20, 0.70, 0.65, 0.90);
+  const BOUNDARY_COLOR_STATE_ACTIVE    = new Cesium.Color(0.30, 0.88, 0.78, 0.98);
   const BOUNDARY_FILL_IDLE             = new Cesium.Color(0.12, 0.60, 0.55, 0.04);
   const BOUNDARY_FILL_HOVER            = new Cesium.Color(0.24, 0.79, 0.72, 0.12);
+  const BOUNDARY_FILL_ACTIVE           = new Cesium.Color(0.30, 0.88, 0.78, 0.20);
 
   let globeBoundaryCountryDs  = null;
   let globeBoundaryStateDs    = null;
+  let globeBoundaryAdmin1Ds   = null;   // world admin_1 (lazy-loaded for drill-down)
+  let lastSelectedBoundaryEntity = null;  // currently active/selected boundary entity
 
   function boundaryFeatureName(props) {
     if (!props) return '';
@@ -1990,18 +2007,46 @@ const FRONTEND_HTML = `<!DOCTYPE html>
            props.GEOUNIT || props.ADMIN || props.name_en || '';
   }
 
+  function boundaryIsoA3(props) {
+    if (!props) return '';
+    return props.ADM0_A3 || props.ISO_A3 || props.ISO_A3_EH || props.adm0_a3 || '';
+  }
+
   function boundaryFlyAltitude(isState) {
     return isState ? BOUNDARY_FLY_ALT_STATE : BOUNDARY_FLY_ALT_COUNTRY;
   }
 
-  function setBoundaryHoverStyle(entity, hovered, isState) {
+  function setBoundaryHoverStyle(entity, state, isState) {
+    // state: 'idle' | 'hover' | 'active'
     if (!entity || !entity.polygon) return;
-    const idleColor  = isState ? BOUNDARY_COLOR_STATE_IDLE  : BOUNDARY_COLOR_COUNTRY_IDLE;
-    const hoverColor = isState ? BOUNDARY_COLOR_STATE_HOVER : BOUNDARY_COLOR_COUNTRY_HOVER;
+    let outlineColor, outlineWidth, fillMaterial;
+    if (state === 'active') {
+      outlineColor  = isState ? BOUNDARY_COLOR_STATE_ACTIVE  : BOUNDARY_COLOR_COUNTRY_ACTIVE;
+      outlineWidth  = 3.0;
+      fillMaterial  = BOUNDARY_FILL_ACTIVE;
+    } else if (state === 'hover') {
+      outlineColor  = isState ? BOUNDARY_COLOR_STATE_HOVER   : BOUNDARY_COLOR_COUNTRY_HOVER;
+      outlineWidth  = 2.5;
+      fillMaterial  = BOUNDARY_FILL_HOVER;
+    } else {
+      outlineColor  = isState ? BOUNDARY_COLOR_STATE_IDLE    : BOUNDARY_COLOR_COUNTRY_IDLE;
+      outlineWidth  = 1.0;
+      fillMaterial  = BOUNDARY_FILL_IDLE;
+    }
     entity.polygon.outline      = true;
-    entity.polygon.outlineColor = hovered ? hoverColor : idleColor;
-    entity.polygon.outlineWidth = hovered ? 2.5 : 1.0;
-    entity.polygon.material     = hovered ? BOUNDARY_FILL_HOVER : BOUNDARY_FILL_IDLE;
+    entity.polygon.outlineColor = outlineColor;
+    entity.polygon.outlineWidth = outlineWidth;
+    entity.polygon.material     = fillMaterial;
+    entity._boundaryState       = state;
+  }
+
+  function clearBoundarySelection() {
+    if (!lastSelectedBoundaryEntity) return;
+    const ent = lastSelectedBoundaryEntity;
+    lastSelectedBoundaryEntity = null;
+    setBoundaryHoverStyle(ent, 'idle', ent._boundaryIsState);
+    // Hide drill-down sub-boundaries when selection cleared
+    if (globeBoundaryAdmin1Ds) globeBoundaryAdmin1Ds.show = false;
   }
 
   function flyToBoundaryEntity(entity, isState) {
@@ -2030,6 +2075,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       complete: function () { cesiumCameraMoveInternal = false; },
       cancel:   function () { cesiumCameraMoveInternal = false; },
     });
+
+    // Clear previous selection then mark this one as active
+    if (lastSelectedBoundaryEntity && lastSelectedBoundaryEntity !== entity) {
+      setBoundaryHoverStyle(lastSelectedBoundaryEntity, 'idle', lastSelectedBoundaryEntity._boundaryIsState);
+    }
+    setBoundaryHoverStyle(entity, 'active', isState);
+    lastSelectedBoundaryEntity = entity;
+
+    // Progressive drill-down: load sub-country boundaries for selected country
+    if (!isState && entity._boundaryIsoA3) {
+      showBoundaryDrillDown(entity._boundaryIsoA3);
+    }
 
     const name = entity._boundaryName || '';
     if (name) {
@@ -2065,19 +2122,41 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       e.polygon.height       = 0;
       e.polygon.heightReference = Cesium.HeightReference.CLAMP_TO_GROUND;
       const props = e.properties ? e.properties.getValue(Cesium.JulianDate.now()) : null;
-      e._boundaryName = boundaryFeatureName(props) || (e.name || '');
+      e._boundaryName    = boundaryFeatureName(props) || (e.name || '');
+      e._boundaryIsoA3   = boundaryIsoA3(props);
       e._boundaryIsState = isState;
+      e._boundaryState   = 'idle';
     }
   }
 
   function updateBoundaryLod() {
     if (!cesiumViewer) return;
+    const on  = layerState.boundaries !== false;
     const alt = cesiumViewer.camera.positionCartographic.height;
     if (globeBoundaryCountryDs) {
-      globeBoundaryCountryDs.show = true;
+      globeBoundaryCountryDs.show = on;
     }
     if (globeBoundaryStateDs) {
-      globeBoundaryStateDs.show = (alt < BOUNDARY_ALT_COUNTRY);
+      globeBoundaryStateDs.show = on && (alt < BOUNDARY_ALT_COUNTRY);
+    }
+    if (globeBoundaryAdmin1Ds) {
+      // Admin-1 is only shown when a country is selected and boundaries are on
+      globeBoundaryAdmin1Ds.show = on && !!lastSelectedBoundaryEntity && !lastSelectedBoundaryEntity._boundaryIsState;
+    }
+  }
+
+  function toggleBoundaryLayer(on) {
+    setLayerOn('boundaries', on);
+    if (globeBoundaryCountryDs) globeBoundaryCountryDs.show = on;
+    if (globeBoundaryStateDs)   globeBoundaryStateDs.show   = on;
+    if (globeBoundaryAdmin1Ds)  globeBoundaryAdmin1Ds.show  = on && !!lastSelectedBoundaryEntity;
+    if (!on) {
+      showBoundaryLabel('', 0, 0);
+      // Clear selection state but keep entity ref for re-enable
+      if (lastSelectedBoundaryEntity) {
+        setBoundaryHoverStyle(lastSelectedBoundaryEntity, 'idle', lastSelectedBoundaryEntity._boundaryIsState);
+        lastSelectedBoundaryEntity = null;
+      }
     }
   }
 
@@ -2093,6 +2172,45 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }).catch(function (err) {
       console.warn('[RW Boundary] Failed to load ' + name + ':', err);
       return null;
+    });
+  }
+
+  // Lazy-load world admin_1 (provinces/states for all countries) and filter to
+  // the selected country. The dataset is fetched only once; subsequent calls
+  // just update entity visibility.
+  let _admin1LoadPromise = null;
+  const ADMIN1_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_110m_admin_1_states_provinces.geojson';
+
+  function ensureBoundaryAdmin1() {
+    if (_admin1LoadPromise) return _admin1LoadPromise;
+    _admin1LoadPromise = loadBoundaryGeoJson(ADMIN1_URL, 'admin1').then(function (ds) {
+      if (!ds) return null;
+      styleBoundaryDataSource(ds, true);
+      ds.show = false;  // hidden until a country is selected
+      cesiumViewer.dataSources.add(ds);
+      globeBoundaryAdmin1Ds = ds;
+      console.info('[RW Boundary] Admin-1 loaded (' + ds.entities.values.length + ' polygons)');
+      return ds;
+    });
+    return _admin1LoadPromise;
+  }
+
+  function showBoundaryDrillDown(isoA3) {
+    if (!cesiumViewer || !isoA3 || !layerState.boundaries) return;
+    ensureBoundaryAdmin1().then(function (ds) {
+      if (!ds) return;
+      const entities = ds.entities.values;
+      let matched = 0;
+      for (let i = 0; i < entities.length; i++) {
+        const e = entities[i];
+        const show = e._boundaryIsoA3 === isoA3;
+        if (e.polygon) e.polygon.show = show;
+        if (show) matched++;
+      }
+      ds.show = matched > 0;
+      if (matched > 0) {
+        console.info('[RW Boundary] Drill-down: ' + matched + ' sub-regions for ' + isoA3);
+      }
     });
   }
 
@@ -2136,12 +2254,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         const entity = picked && picked.id instanceof Cesium.Entity ? picked.id : null;
 
         if (lastHoveredEntity && lastHoveredEntity !== entity) {
-          setBoundaryHoverStyle(lastHoveredEntity, false, lastHoveredEntity._boundaryIsState);
+          // Restore to active if it's the selected entity, else idle
+          const restoreState = (lastHoveredEntity === lastSelectedBoundaryEntity) ? 'active' : 'idle';
+          setBoundaryHoverStyle(lastHoveredEntity, restoreState, lastHoveredEntity._boundaryIsState);
         }
 
         if (entity && entity.polygon && entity._boundaryName !== undefined) {
           if (entity !== lastHoveredEntity) {
-            setBoundaryHoverStyle(entity, true, entity._boundaryIsState);
+            // Only elevate to hover if it's not already active
+            if (entity !== lastSelectedBoundaryEntity) {
+              setBoundaryHoverStyle(entity, 'hover', entity._boundaryIsState);
+            }
           }
           const screenPos = movement.endPosition;
           showBoundaryLabel(entity._boundaryName, screenPos.x, screenPos.y);
@@ -5297,6 +5420,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   makeLayerToggle(toggleLayerSensorsEl, 'sensors');
   makeLayerToggle(toggleLayerWeatherCellsEl, 'weatherCells');
   makeLayerToggle(toggleLayerTrafficSimEl, 'trafficSim');
+
+  // Boundaries toggle — wired directly to toggleBoundaryLayer so Cesium
+  // data sources are shown/hidden immediately without waiting for a draw tick.
+  if (toggleLayerBoundariesEl) {
+    toggleLayerBoundariesEl.addEventListener('click', function () {
+      toggleBoundaryLayer(!layerState.boundaries);
+    });
+  }
 
   function onTypeToggleChangeExtended() {
     visibleEntityTypes.vehicle  = !!toggleTypeVehicleEl.checked;
