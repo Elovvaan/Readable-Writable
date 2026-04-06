@@ -3206,10 +3206,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const allAgents = Object.values(state.agents || {});
     const flights = allAgents.filter(function (a) { return getEntityType(a) === 'flight'; });
     flightsMerged = flights.length;
-    if (flights.length) {
-      console.log('FLIGHT SAMPLE', flights[0]);
-    }
-
     cesiumViewer.entities.removeAll();
     cesiumEntityRefs.agents = {};
     cesiumEntityRefs.regions = {};
@@ -3218,13 +3214,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     viewerCameraSafetyCheck();
 
     const flightsLayerBlocked = !layerState.liveFlights;
-    if (flightsLayerBlocked) {
-      console.log('Flights skipped due to layer toggle');
-    }
     for (const a of allAgents) {
       const entityType = getEntityType(a);
       const forceRender = shouldForceRenderOpenSkyFlight(a);
-      if (entityType === 'flight') flightsMerged++;
       if (!(forceRender || (showAgents && isEntityTypeVisible(entityType)))) continue;
       if (!showAgents || !isEntityTypeVisible(entityType)) continue;
       if (entityType === 'flight') flightsVisibleAfterFilters++;
@@ -4479,7 +4471,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!Number.isFinite(speedMps) || !Number.isFinite(heading) || speedMps <= 0.5 || dtMs <= 0) return basePoint;
     const extrapolated = projectLatLngByHeading(basePoint.lat, basePoint.lng, heading, (speedMps * (dtMs / 1000)) / 1000);
     if (!extrapolated) return basePoint;
-    const mapped = latLngToGrid(extrapolated.lat, extrapolated.lng);
+    const mapped = latLngToGridFE(extrapolated.lat, extrapolated.lng);
     return {
       x: mapped.x,
       y: mapped.y,
@@ -5818,7 +5810,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     const receivedFlightCount = Object.values(nextSnapshot && nextSnapshot.agents ? nextSnapshot.agents : {}).filter(function (a) {
       return a && a.type === 'flight';
     }).length;
-    console.log('Flights received:', receivedFlightCount);
     previousAgentsById = state.agents || {};
     state = nextSnapshot;
     openskyStatus = nextSnapshot && nextSnapshot.opensky
@@ -5919,6 +5910,89 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   });
 
   initCesium();
+
+  // ── Flight API polling ──
+  // Uses recursive setTimeout with exponential backoff instead of setInterval.
+  // Base interval: 20 s. On error, delay doubles up to 120 s, then resets on
+  // the next success. This prevents OpenSky rate-limit cascades.
+  const FLIGHT_POLL_BASE_MS  = 20000;
+  const FLIGHT_POLL_MAX_MS   = 120000;
+  let   flightPollDelay      = FLIGHT_POLL_BASE_MS;
+
+  function latLngToGridFE(lat, lng) {
+    return {
+      x: ((Math.max(-180, Math.min(180, lng)) + 180) / 360) * 100,
+      y: ((90 - Math.max(-90, Math.min(90, lat))) / 180) * 100,
+    };
+  }
+
+  function mergeEntities(entities) {
+    // Accept any size dataset — no trimming.
+    // Entities is a flat object { id → entity }. Merge into live state.agents.
+    if (!state || !state.agents) return;
+    Object.assign(state.agents, entities);
+  }
+
+  async function fetchFlightsSafe() {
+    if (!layerState.liveFlights) {
+      // Layer off — check again at base interval without penalising delay
+      setTimeout(fetchFlightsSafe, FLIGHT_POLL_BASE_MS);
+      return;
+    }
+    try {
+      const res = await fetch('/api/flights');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      const states = Array.isArray(data.states) ? data.states : [];
+      if (!states.length) {
+        setTimeout(fetchFlightsSafe, flightPollDelay);
+        return;
+      }
+
+      const now = Date.now();
+      const normalized = {};
+      for (const row of states) {
+        if (!Array.isArray(row)) continue;
+        const icao24 = String(row[0] || '').trim().toLowerCase();
+        const callsign = String(row[1] || '').trim();
+        const lon = parseFloat(row[5]);
+        const lat = parseFloat(row[6]);
+        if (!icao24 || !isFinite(lat) || !isFinite(lon)) continue;
+        const altitude = parseFloat(
+          row[7] !== null && row[7] !== undefined ? row[7] : (row[13] !== null ? row[13] : 0)
+        ) || 0;
+        const velocity = parseFloat(row[9])  || 0;
+        const heading  = parseFloat(row[10]) || 0;
+        const onGround = Boolean(row[8]);
+        const id = 'flight-' + icao24;
+        const grid = latLngToGridFE(lat, lon);
+        normalized[id] = {
+          id, type: 'flight', label: callsign || icao24,
+          callsign, icao24, lat, lng: lon, x: grid.x, y: grid.y,
+          altitude, velocity, heading, onGround,
+          source: 'opensky', lastUpdateMs: now,
+        };
+      }
+
+      apiFetchedFlights = normalized;
+      lastApiFetchedCount = states.length;
+      layerLastUpdated.liveFlights = now;
+      mergeEntities(normalized);
+
+      // Success — reset to base delay
+      flightPollDelay = FLIGHT_POLL_BASE_MS;
+    } catch (err) {
+      console.warn('[flights] fetchFlightsSafe error:', err.message,
+        '— backing off to', Math.min(flightPollDelay * 2, FLIGHT_POLL_MAX_MS) / 1000 + 's');
+      flightPollDelay = Math.min(flightPollDelay * 2, FLIGHT_POLL_MAX_MS);
+    }
+
+    setTimeout(fetchFlightsSafe, flightPollDelay);
+  }
+
 
   // Merge API flights into every incoming snapshot so they survive WS refreshes
   function mergeApiFlightsIntoSnapshot(snapshot) {
