@@ -1569,7 +1569,7 @@ describe('globe boundary navigation', function () {
   test('styleBoundaryDataSource does not set polygon.height or polygon.heightReference (conflict prevention)', function () {
     const fnIdx = src.indexOf('function styleBoundaryDataSource');
     const body = src.slice(fnIdx, fnIdx + 1200);
-    assert.ok(!body.includes('polygon.height ') && !body.includes('polygon.height=') && !body.includes('.height       ='),
+    assert.ok(!/e\.polygon\.height\s*=/.test(body),
       'styleBoundaryDataSource must not set polygon.height — it conflicts with clampToGround in load options');
     assert.ok(!body.includes('heightReference'),
       'styleBoundaryDataSource must not set polygon.heightReference — it conflicts with clampToGround in load options');

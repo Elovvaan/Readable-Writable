@@ -2123,7 +2123,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const hier = e.polygon.hierarchy ? e.polygon.hierarchy.getValue(Cesium.JulianDate.now()) : null;
       if (hier && hier.positions && hier.positions.length > 0) {
         const pts  = hier.positions;
-        const step = Math.max(1, Math.floor(pts.length / 48));
+        const step = Math.max(1, Math.floor(pts.length / 48)); // sample up to 48 pts for O(1) centroid
         let cx = 0, cy = 0, cz = 0, n = 0;
         for (let j = 0; j < pts.length; j += step) { cx += pts[j].x; cy += pts[j].y; cz += pts[j].z; n++; }
         const carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(
