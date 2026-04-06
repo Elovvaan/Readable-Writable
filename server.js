@@ -1910,7 +1910,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
     });
     bindCesiumSelection();
-    initGlobeBoundaries();
+    // Lazy-load boundaries after globe is stable (deferred past the initial render cycle)
+    setTimeout(function () { initGlobeBoundaries(); }, 0);
     registerTerrainClamp();
     cesiumViewer.resize();
     draw();
@@ -1980,10 +1981,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   //   Countries: https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_110m_admin_0_countries.geojson
   //   US States: https://cdn.jsdelivr.net/gh/PublicaMundi/MappingAPI@a4c1b2e/data/geojson/us-states.json
 
+  const BOUNDARIES_ENABLED        = true;      // feature flag: set false to disable all boundary rendering
   const BOUNDARY_ALT_COUNTRY      = 3000000;   // 3 000 km — show only countries above this
   const BOUNDARY_ALT_STATE        = 300000;    // 300 km — show states below this
   const BOUNDARY_FLY_ALT_COUNTRY  = 3000000;   // fly altitude when zooming to a country
   const BOUNDARY_FLY_ALT_STATE    = 600000;    // fly altitude when zooming to a US state
+  const BOUNDARY_MAX_POSITIONS    = 20000;     // skip entities with more positions to prevent RangeError
+  const GEOJSON_MAX_BYTES         = 1048576;   // 1 MB — reject oversized datasets before loading
 
   // CRT palette
   const BOUNDARY_COLOR_COUNTRY_IDLE    = new Cesium.Color(0.12, 0.6, 0.55, 0.55);
@@ -2018,25 +2022,23 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   function setBoundaryHoverStyle(entity, state, isState) {
     // state: 'idle' | 'hover' | 'active'
+    // Outline-only mode: no polygon fill to avoid heavy triangulation.
     if (!entity || !entity.polygon) return;
-    let outlineColor, outlineWidth, fillMaterial;
+    let outlineColor, outlineWidth;
     if (state === 'active') {
       outlineColor  = isState ? BOUNDARY_COLOR_STATE_ACTIVE  : BOUNDARY_COLOR_COUNTRY_ACTIVE;
       outlineWidth  = 3.0;
-      fillMaterial  = BOUNDARY_FILL_ACTIVE;
     } else if (state === 'hover') {
       outlineColor  = isState ? BOUNDARY_COLOR_STATE_HOVER   : BOUNDARY_COLOR_COUNTRY_HOVER;
       outlineWidth  = 2.5;
-      fillMaterial  = BOUNDARY_FILL_HOVER;
     } else {
       outlineColor  = isState ? BOUNDARY_COLOR_STATE_IDLE    : BOUNDARY_COLOR_COUNTRY_IDLE;
       outlineWidth  = 1.0;
-      fillMaterial  = BOUNDARY_FILL_IDLE;
     }
     entity.polygon.outline      = true;
     entity.polygon.outlineColor = outlineColor;
     entity.polygon.outlineWidth = outlineWidth;
-    entity.polygon.material     = fillMaterial;
+    entity.polygon.fill         = false;   // outline-only: no triangulation cost
     entity._boundaryState       = state;
   }
 
@@ -2110,7 +2112,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       e.polygon.outline      = true;
       e.polygon.outlineColor = isState ? BOUNDARY_COLOR_STATE_IDLE : BOUNDARY_COLOR_COUNTRY_IDLE;
       e.polygon.outlineWidth = 1.0;
-      e.polygon.material     = BOUNDARY_FILL_IDLE;
+      e.polygon.fill         = false;   // outline-only: prevents heavy triangulation/subdivision
       e.polygon.granularity  = Cesium.Math.toRadians(5);
       e.polygon.arcType      = Cesium.ArcType.RHUMB;
       const props = e.properties ? e.properties.getValue(Cesium.JulianDate.now()) : null;
@@ -2122,18 +2124,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       // flyToBoundaryEntity never needs to traverse the full polygon hierarchy.
       const hier = e.polygon.hierarchy ? e.polygon.hierarchy.getValue(Cesium.JulianDate.now()) : null;
       if (hier && hier.positions && hier.positions.length > 0) {
-        const pts  = hier.positions;
-        const step = Math.max(1, Math.floor(pts.length / 48)); // sample up to 48 pts for O(1) centroid
-        let cx = 0, cy = 0, cz = 0, n = 0;
-        for (let j = 0; j < pts.length; j += step) { cx += pts[j].x; cy += pts[j].y; cz += pts[j].z; n++; }
-        const carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(
-          new Cesium.Cartesian3(cx / n, cy / n, cz / n)
-        );
-        if (carto) {
-          e._boundaryCenter = [
-            Cesium.Math.toDegrees(carto.longitude),
-            Cesium.Math.toDegrees(carto.latitude),
-          ];
+        // Safety guard: skip entities with excessive positions to prevent RangeError crashes
+        if (hier.positions.length > BOUNDARY_MAX_POSITIONS) {
+          console.warn('[RW Boundary] entity "' + (e._boundaryName || '') + '" has ' +
+            hier.positions.length + ' positions — skipped to prevent RangeError (limit: ' +
+            BOUNDARY_MAX_POSITIONS + ')');
+          e.polygon.show = false;
+        } else {
+          const pts  = hier.positions;
+          const step = Math.max(1, Math.floor(pts.length / 48)); // sample up to 48 pts for O(1) centroid
+          let cx = 0, cy = 0, cz = 0, n = 0;
+          for (let j = 0; j < pts.length; j += step) { cx += pts[j].x; cy += pts[j].y; cz += pts[j].z; n++; }
+          const carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(
+            new Cesium.Cartesian3(cx / n, cy / n, cz / n)
+          );
+          if (carto) {
+            e._boundaryCenter = [
+              Cesium.Math.toDegrees(carto.longitude),
+              Cesium.Math.toDegrees(carto.latitude),
+            ];
+          }
         }
       }
     }
@@ -2171,13 +2181,23 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   function loadBoundaryGeoJson(url, name) {
-    return Cesium.GeoJsonDataSource.load(url, {
-      stroke: Cesium.Color.TRANSPARENT,
-      fill:   Cesium.Color.TRANSPARENT,
-      strokeWidth: 1,
-      markerSize: 0,
-      clampToGround: true,
+    return fetch(url).then(function (res) {
+      return res.text();
+    }).then(function (txt) {
+      if (txt.length > GEOJSON_MAX_BYTES) {
+        console.warn('[RW Boundary] ' + name + ' rejected: ' + txt.length +
+          ' bytes exceeds safe limit of ' + GEOJSON_MAX_BYTES + ' bytes (1 MB)');
+        return null;
+      }
+      return Cesium.GeoJsonDataSource.load(JSON.parse(txt), {
+        stroke: Cesium.Color.TRANSPARENT,
+        fill:   Cesium.Color.TRANSPARENT,
+        strokeWidth: 1,
+        markerSize: 0,
+        clampToGround: true,
+      });
     }).then(function (ds) {
+      if (!ds) return null;
       ds.name = name;
       return ds;
     }).catch(function (err) {
@@ -2226,6 +2246,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   async function initGlobeBoundaries() {
+    if (!BOUNDARIES_ENABLED) {
+      console.info('[RW Boundary] disabled via BOUNDARIES_ENABLED flag');
+      return;
+    }
     if (!cesiumViewer || typeof Cesium === 'undefined') return;
 
     const COUNTRY_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_110m_admin_0_countries.geojson';
