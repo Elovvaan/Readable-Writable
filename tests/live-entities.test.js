@@ -318,6 +318,48 @@ describe('refreshLiveEntityLayers', () => {
         'vehicle ' + v.id + ' has invalid coordinates');
     }
   });
+
+  test('vehicle positions stay within orbital radius of base (~2 km)', () => {
+    // Orbital radius is 0.018° — positions must remain within that bound + floating-point epsilon
+    const bases = {
+      'v001': { lat: 40.71, lng: -74.01 }, 'v002': { lat: 51.50, lng: -0.12 },
+      'v003': { lat: 48.85, lng: 2.35 },   'v004': { lat: 35.68, lng: 139.69 },
+      'v005': { lat: 34.05, lng: -118.24 }, 'v006': { lat: 19.43, lng: -99.13 },
+    };
+    for (const v of Object.values(liveEntityState.vehicles)) {
+      const seed = v.id.replace('vehicle-', '');
+      if (!bases[seed]) continue;
+      const b = bases[seed];
+      assert.ok(Math.abs(v.lat - b.lat) <= 0.018 + 1e-9, 'vehicle lat drift too large: ' + Math.abs(v.lat - b.lat));
+      assert.ok(Math.abs(v.lng - b.lng) <= 0.018 + 1e-9, 'vehicle lng drift too large: ' + Math.abs(v.lng - b.lng));
+    }
+  });
+
+  test('vessel positions stay within orbital radius of base (~5 km)', () => {
+    // Orbital radius is 0.045° — positions must remain within that bound + floating-point epsilon
+    const bases = {
+      'sh001': { lat: 51.90, lng: 4.00 },   'sh002': { lat: 1.28,  lng: 103.83 },
+      'sh003': { lat: 37.77, lng: -122.41 }, 'sh004': { lat: 29.98, lng: 32.56 },
+    };
+    for (const v of Object.values(liveEntityState.vessels)) {
+      const seed = v.id.replace('vessel-', '');
+      if (!bases[seed]) continue;
+      const b = bases[seed];
+      assert.ok(Math.abs(v.lat - b.lat) <= 0.045 + 1e-9, 'vessel lat drift too large: ' + Math.abs(v.lat - b.lat));
+      assert.ok(Math.abs(v.lng - b.lng) <= 0.045 + 1e-9, 'vessel lng drift too large: ' + Math.abs(v.lng - b.lng));
+    }
+  });
+
+  test('vehicles and vessels have heading in [0, 360)', () => {
+    for (const v of Object.values(liveEntityState.vehicles)) {
+      assert.ok(Number.isFinite(v.heading) && v.heading >= 0 && v.heading < 360,
+        'vehicle heading out of range: ' + v.heading);
+    }
+    for (const v of Object.values(liveEntityState.vessels)) {
+      assert.ok(Number.isFinite(v.heading) && v.heading >= 0 && v.heading < 360,
+        'vessel heading out of range: ' + v.heading);
+    }
+  });
 });
 
 // ─── seedSensorNodes ──────────────────────────────────────────────────────────
