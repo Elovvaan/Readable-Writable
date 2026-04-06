@@ -6713,7 +6713,6 @@ function broadcast(type, data) {
     console.warn('[RW Worldview] broadcast payload too large (' + byteLen + ' bytes), skipping type=' + type);
     return;
   }
-  console.log('[RW Worldview] broadcast type=' + type + ' size=' + byteLen + 'B');
   for (const client of wsClients) {
     if (!client.destroyed && client.writable) {
       wsSend(client, msg);
@@ -7623,7 +7622,6 @@ async function pollOpenSkyFlights() {
     : (usingFileCreds && fileCredentials.credentialType === 'client_credentials')
       ? 'client_credentials'
       : 'username_password';
-  console.log('[RW Worldview] Polling OpenSky... running=' + openSkyLiveState.pollingRunning + ' authConfigured=' + authConfigured);
   try {
     const authHeader = authConfigured
       ? 'Basic ' + Buffer.from(effectiveUser + ':' + effectivePass).toString('base64')
@@ -7633,12 +7631,7 @@ async function pollOpenSkyFlights() {
     let requestUrl = authConfigured ? OPENSKY_STATES_URL : OPENSKY_PUBLIC_STATES_URL;
     let useAuth = !!authConfigured;
 
-    if (!authConfigured) {
-      console.warn('[RW Worldview] Falling back to public OpenSky endpoint');
-    }
-
     const runRequest = async (url, auth) => {
-      console.log('[RW Worldview] OpenSky request lifecycle: url=' + url + ' auth=' + (auth ? 'basic' : 'none'));
       const response = await fetch(url, {
         method: 'GET',
         headers: auth && authHeader ? { Authorization: authHeader } : undefined,
@@ -7646,7 +7639,6 @@ async function pollOpenSkyFlights() {
       openSkyLiveState.lastRequestUrl = url;
       openSkyLiveState.lastRequestStatus = response.status;
       const rawBody = await response.text();
-      console.log('[RW Worldview] OpenSky response status=' + response.status + ' bodyLength=' + rawBody.length);
       return { response, rawBody };
     };
 
@@ -7676,7 +7668,6 @@ async function pollOpenSkyFlights() {
 
     const hasStates = Array.isArray(payload && payload.states);
     const states = hasStates ? payload.states : [];
-    console.log('[RW Worldview] OpenSky payload states exists=' + hasStates + ' count=' + states.length);
     if (!hasStates || states.length === 0) {
       console.warn('[RW Worldview] OpenSky returned empty or invalid response');
       return;
@@ -7692,22 +7683,10 @@ async function pollOpenSkyFlights() {
 
     openSkyLiveState.lastFetchedCount = states.length;
     openSkyLiveState.lastNormalizedCount = normalizedCount;
-    console.log(
-      '[RW Worldview] OpenSky visibility: fetched=' + states.length
-      + ' normalized=' + normalizedCount
-      + ' projection=' + visibilityStats.passProjection
-      + ' minZ=' + visibilityStats.passMinZ
-      + ' (threshold=' + OPENSKY_GLOBE_MIN_Z + ')'
-    );
-    console.info('[RW Flights][poll]', {
-      flightsFetched: states.length,
-      flightsMerged: normalizedCount,
-      flightsRendered: Object.keys(nextFlights).length,
-    });
     openSkyLiveState.lastVisibleCount = visibleCount;
     openSkyLiveState.lastDrawnCount = drawnCount;
 
-    console.log('OpenSky: fetched ' + states.length + ' flights, normalized ' + normalizedCount + ', visible ' + visibleCount + ', drawn ' + drawnCount);
+    console.log('[RW Worldview] OpenSky: fetched=' + states.length + ' normalized=' + normalizedCount + ' visible=' + visibleCount + ' drawn=' + drawnCount);
 
     let updatedCount = 0;
     for (const flightId of Object.keys(nextFlights)) {
@@ -7788,7 +7767,6 @@ async function pollAdsbExchangeFlights() {
     }
     const payload = await response.json();
     const acArray = Array.isArray(payload && payload.ac) ? payload.ac : [];
-    console.log('[RW Worldview] ADS-B Exchange: ac count=' + acArray.length);
     // normalizeAdsbBatch handles empty arrays correctly (returns { flights: {}, count: 0 })
     const previous = adsbExchangeState.flights;
     const { flights: nextFlights, count: normalizedCount } = normalizeAdsbBatch(acArray, previous);
