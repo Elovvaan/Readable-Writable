@@ -316,6 +316,41 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   padding: 12px;
   border-top: 1px solid #0ff;
 }
+    /* ── Orchestration overlay ──────────────────────────────────────────── */
+    #orch-canvas { position: absolute; inset: 0; z-index: 4; pointer-events: none; display: block; }
+    #orch-inspector {
+      position: absolute; right: 0; top: 0; bottom: 0; width: 268px; z-index: 26;
+      background: #07080ce8; border-left: 1px solid #1a2530; backdrop-filter: blur(8px);
+      display: flex; flex-direction: column; transform: translateX(268px);
+      transition: transform 200ms cubic-bezier(.4,0,.2,1); pointer-events: auto;
+    }
+    #orch-inspector.open { transform: translateX(0); }
+    #orch-inspector.shift-left { right: 280px; }
+    .oi-header { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #111820; flex-shrink: 0; gap: 8px; }
+    .oi-title { font-size: .6rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; flex: 1; }
+    .oi-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; }
+    .oi-close:hover { color: #6898aa; }
+    .oi-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .oi-badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 8px; font-size: .6rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; border: 1px solid; }
+    .oi-badge.idle  { color: #4e7888; border-color: #1a2a38; background: #0c1620; }
+    .oi-badge.active{ color: #3ec9b8; border-color: #1f5e5a; background: #0a2422; }
+    .oi-badge.error { color: #e05050; border-color: #4a1818; background: #1a0a0a; }
+    .oi-badge.high-load { color: #f0a020; border-color: #4a3010; background: #1a1005; }
+    .oi-field { display: grid; gap: 2px; font-size: .66rem; }
+    .oi-field-label { color: #2a3a48; letter-spacing: .06em; text-transform: uppercase; font-size: .58rem; }
+    .oi-field-value { color: #7098a8; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .oi-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .oi-metric { border: 1px solid #111820; border-radius: 4px; padding: 6px 8px; }
+    .oi-metric-val { color: #6ab0c8; font-family: monospace; font-size: .82rem; }
+    .oi-metric-key { color: #2a3840; font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; }
+    .oi-section { border-top: 1px solid #111820; padding-top: 8px; margin-top: 4px; }
+    .oi-section-title { font-size: .58rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #1e3040; margin-bottom: 6px; }
+    /* Orchestration layer controls in layers drawer */
+    .orch-ctrl-row { display: flex; gap: 5px; flex-wrap: wrap; padding: 4px 12px; }
+    .orch-ctrl-btn { border: 1px solid #182430; background: #0b1018; color: #4e8096; border-radius: 4px; font-size: .62rem; padding: 4px 8px; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; }
+    .orch-ctrl-btn:hover { background: #0e1e2e; border-color: #254056; color: #7ab8cc; }
+    .orch-ctrl-btn.active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
+    .orch-status-pill { font-size: .6rem; color: #4e7888; padding: 2px 8px; border-radius: 999px; border: 1px solid #141e28; background: #08090e; }
   </style>
 </head>
 <body>
@@ -340,6 +375,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <button class="rail-btn" type="button" data-panel="target" title="Selected Target" aria-label="Toggle Target panel">⊕</button>
     <button class="rail-btn" type="button" data-panel="stats"  title="Stats" aria-label="Toggle Stats panel">▦</button>
     <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel">◈</button>
+    <div class="rail-sep"></div>
+    <button class="rail-btn" id="orch-rail-btn" type="button" title="Orchestration Overlay" aria-label="Toggle Orchestration Overlay">⬡</button>
   </nav>
 
   <!-- Layers drawer (left) -->
@@ -431,6 +468,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <div class="lp-divider"></div>
       <div class="lp-title">Region Layer</div>
       <label class="lp-toggle"><input type="checkbox" id="toggle-layer-regions" checked><span>Regions</span></label>
+      <div class="lp-divider"></div>
+      <div class="lp-title">Orchestration</div>
+      <label class="lp-toggle"><input type="checkbox" id="orch-toggle-vis" checked><span>Show Overlay</span></label>
+      <label class="lp-toggle"><input type="checkbox" id="orch-toggle-links" checked><span>Globe Links</span></label>
+      <label class="lp-toggle"><input type="checkbox" id="orch-toggle-pulses" checked><span>Pulse Flows</span></label>
+      <div class="orch-ctrl-row">
+        <button class="orch-ctrl-btn active" id="orch-btn-run" type="button">▶ Run</button>
+        <button class="orch-ctrl-btn" id="orch-btn-pause" type="button">⏸ Pause</button>
+        <button class="orch-ctrl-btn" id="orch-btn-scale-up" type="button">+ Scale</button>
+        <button class="orch-ctrl-btn" id="orch-btn-scale-dn" type="button">− Scale</button>
+      </div>
+      <div class="orch-ctrl-row">
+        <span class="orch-status-pill" id="orch-status-pill">idle</span>
+      </div>
     </div>
   </div>
 
@@ -583,6 +634,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div class="noise"></div>
     <div class="pixel-grid"></div>
     <div class="vignette"></div>
+  </div>
+
+  <!-- Orchestration overlay canvas — screen-fixed above globe, pointer-events handled by JS hit-test -->
+  <canvas id="orch-canvas" aria-hidden="true"></canvas>
+
+  <!-- Orchestration node inspector — right-side panel, opens on node click -->
+  <div id="orch-inspector" role="complementary" aria-label="Node Inspector">
+    <div class="oi-header">
+      <span class="oi-title">Node Inspector</span>
+      <button class="oi-close" id="orch-inspector-close" type="button" aria-label="Close inspector">✕</button>
+    </div>
+    <div class="oi-body" id="orch-inspector-body">
+      <div class="oi-field"><span class="oi-field-label">Select a node</span></div>
+    </div>
   </div>
 
 </div>
@@ -3685,6 +3750,484 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   fetchFlightsSafe();
+
+  // ── Orchestration Overlay ──────────────────────────────────────────────────
+  // Screen-fixed concentric ring system rendered on #orch-canvas (z-index 4).
+  // Rings use Fibonacci node counts: 1, 3, 5, 8, 13.
+  // Ring 4 (8 nodes) is the "worker ring" — each node is linked to a live globe entity.
+  // All hit-testing is done in JS; pointer-events: none on the canvas itself.
+  (function () {
+    const orchCanvas  = document.getElementById('orch-canvas');
+    const orchCtx     = orchCanvas.getContext('2d');
+    const orchInspEl  = document.getElementById('orch-inspector');
+    const orchBodyEl  = document.getElementById('orch-inspector-body');
+    const orchCloseEl = document.getElementById('orch-inspector-close');
+    const orchPillEl  = document.getElementById('orch-status-pill');
+    const globeShell  = document.getElementById('globe-shell');
+
+    // ── Config ──────────────────────────────────────────────────────────────
+    const PHI = 1.6180339887;
+    // Ring definitions: count = nodes, role, base radius as fraction of min(w,h)
+    const RING_DEFS = [
+      { count: 1,  role: 'core',           label: 'RW CORE',    rFrac: 0     },
+      { count: 1,  role: 'planner',        label: 'Planner',    rFrac: 0.07  },
+      { count: 3,  role: 'region_scout',   label: 'Scout-R',    rFrac: 0.12  },
+      { count: 5,  role: 'flight_scout',   label: 'Scout-F',    rFrac: 0.20  },
+      { count: 8,  role: 'worker',         label: 'Worker',     rFrac: 0.31  },
+      { count: 13, role: 'monitor',        label: 'Monitor',    rFrac: 0.45  },
+    ];
+    // Node radius in px (hit area + draw size)
+    const NODE_R      = { core: 16, planner: 12, region_scout: 8, flight_scout: 8, worker: 9, monitor: 6 };
+    const MAX_PULSES  = 24;
+    const PULSE_SPEED = 0.012; // fraction of total distance per frame
+    const SYNC_EVERY  = 2000;  // ms between server-state syncs
+
+    // ── Runtime state ────────────────────────────────────────────────────────
+    let orchVisible    = true;
+    let orchRunning    = true;
+    let orchLinksOn    = true;
+    let orchPulsesOn   = true;
+    let orchScale      = 1.0;
+    let orchNodes      = [];   // { id, ring, role, label, cx, cy, state, workerId, entityId, metrics }
+    let orchPulses     = [];   // { x0,y0,x1,y1, t, dir, color }
+    let orchHoverId    = null;
+    let orchSelId      = null;
+    let orchLastSync   = 0;
+    let orchAnimId     = null;
+
+    // Node states → visual config
+    const STATE_STYLE = {
+      idle:       { fill: '#0d1e2e', stroke: '#1e3a50', glow: 0,   strokeW: 1.2 },
+      active:     { fill: '#0a2824', stroke: '#3ec9b8', glow: 14,  strokeW: 1.8 },
+      error:      { fill: '#2a0a0a', stroke: '#e05050', glow: 16,  strokeW: 2   },
+      'high-load':{ fill: '#1a1205', stroke: '#f0a020', glow: 12,  strokeW: 2   },
+    };
+
+    // ── Canvas resize ────────────────────────────────────────────────────────
+    function resizeOrchCanvas() {
+      const r = globeShell.getBoundingClientRect();
+      orchCanvas.width  = r.width;
+      orchCanvas.height = r.height;
+    }
+    resizeOrchCanvas();
+    window.addEventListener('resize', () => { resizeOrchCanvas(); buildNodes(); });
+
+    // ── Node construction ────────────────────────────────────────────────────
+    function buildNodes() {
+      const cx  = orchCanvas.width  / 2;
+      const cy  = orchCanvas.height / 2;
+      const min = Math.min(orchCanvas.width, orchCanvas.height) * orchScale;
+      const nodes = [];
+
+      RING_DEFS.forEach((ring, ringIdx) => {
+        const r = ring.rFrac * min;
+        for (let i = 0; i < ring.count; i++) {
+          // Evenly distribute; rotate ring slightly so no node sits at exact top
+          const offset = ringIdx % 2 === 0 ? Math.PI / ring.count : 0;
+          const angle  = (2 * Math.PI * i / ring.count) - Math.PI / 2 + offset;
+          const nx     = cx + Math.cos(angle) * r;
+          const ny     = cy + Math.sin(angle) * r;
+          nodes.push({
+            id:       'n-' + ringIdx + '-' + i,
+            ring:     ringIdx,
+            idx:      i,
+            role:     ring.role,
+            label:    ring.count === 1 ? ring.label : ring.label + '-' + (i + 1),
+            cx:       nx,
+            cy:       ny,
+            state:    'idle',
+            workerId: null,
+            entityId: null,
+            metrics:  null,
+            taskId:   null,
+          });
+        }
+      });
+      orchNodes = nodes;
+    }
+    buildNodes();
+
+    // ── Server-state sync ────────────────────────────────────────────────────
+    function syncFromServerState() {
+      if (!state) return;
+      const workers    = Array.isArray(state.workers) ? state.workers : [];
+      const tasks      = Array.isArray(state.tasks)   ? state.tasks   : [];
+      const plannerSt  = state.planner || {};
+
+      // Map workers to ring nodes by role; maintain stable assignment by index
+      let workersByRole = {};
+      for (const w of workers) {
+        if (!workersByRole[w.role]) workersByRole[w.role] = [];
+        workersByRole[w.role].push(w);
+      }
+
+      // Track how many active tasks exist for high-load detection
+      const runningCount = tasks.filter(t => t.status === 'running').length;
+      const errorCount   = tasks.filter(t => t.status === 'failed' && (!t.completedAt || (Date.now() - new Date(t.completedAt).getTime()) < 8000)).length;
+
+      let roleCounters = {};
+      for (const node of orchNodes) {
+        if (node.role === 'core') {
+          node.state   = orchRunning ? (runningCount > 0 ? 'active' : 'idle') : 'idle';
+          node.metrics = plannerSt.stats || null;
+          continue;
+        }
+        if (node.role === 'planner') {
+          node.state   = runningCount > 0 ? 'active' : 'idle';
+          node.taskId  = null;
+          continue;
+        }
+        const rolePool = workersByRole[node.role] || [];
+        const roleIdx  = roleCounters[node.role] = (roleCounters[node.role] || 0);
+        const worker   = rolePool[roleIdx] || null;
+        roleCounters[node.role]++;
+
+        if (!worker) { node.state = 'idle'; node.workerId = null; node.metrics = null; continue; }
+        node.workerId = worker.id;
+        node.metrics  = worker.metrics;
+        node.taskId   = worker.currentTaskId;
+        const failed  = errorCount > 0 && worker.metrics && worker.metrics.failed > 0;
+        node.state    = failed ? 'error'
+          : worker.status === 'busy' ? (worker.metrics && worker.metrics.completed > 5 ? 'high-load' : 'active')
+          : 'idle';
+
+        // Ring 4 (worker, 8 nodes): bind to a real globe entity
+        if (node.ring === 4) {
+          const agents = Object.values(state.agents || {});
+          const flights = agents.filter(a => a && a.type === 'flight');
+          const bound   = flights[node.idx] || agents[node.idx] || null;
+          node.entityId = bound ? bound.id : null;
+        }
+      }
+
+      // Spawn pulses from active assignments
+      if (orchPulsesOn && orchRunning && orchPulses.length < MAX_PULSES) {
+        for (const node of orchNodes) {
+          if (node.state === 'active' && Math.random() < 0.25) {
+            spawnPulse(node, 'out');
+          } else if (node.state === 'error' && Math.random() < 0.3) {
+            spawnPulse(node, 'in');
+          }
+        }
+      }
+
+      // Update status pill
+      if (orchPillEl) {
+        const activeN = orchNodes.filter(n => n.state === 'active').length;
+        const errN    = orchNodes.filter(n => n.state === 'error').length;
+        orchPillEl.textContent = errN > 0 ? 'error (' + errN + ')'
+          : activeN > 0 ? 'running (' + activeN + ')'
+          : orchRunning ? 'idle' : 'paused';
+      }
+    }
+
+    // ── Pulses ───────────────────────────────────────────────────────────────
+    function coreNode() { return orchNodes.find(n => n.role === 'core'); }
+
+    function spawnPulse(node, dir) {
+      const core = coreNode();
+      if (!core) return;
+      const isOut = dir === 'out';
+      const color = node.state === 'error'     ? '#e05050'
+        : node.state === 'high-load' ? '#f0a020'
+        : node.state === 'active'    ? '#3ec9b8'
+        : '#2a5060';
+      orchPulses.push({
+        x0: isOut ? core.cx : node.cx,
+        y0: isOut ? core.cy : node.cy,
+        x1: isOut ? node.cx : core.cx,
+        y1: isOut ? node.cy : core.cy,
+        t:  0,
+        dir,
+        color,
+        ring: node.ring,
+      });
+    }
+
+    // ── Hit testing ──────────────────────────────────────────────────────────
+    function orchHitTest(mx, my) {
+      if (!orchVisible) return null;
+      const rect = globeShell.getBoundingClientRect();
+      const lx = mx - rect.left;
+      const ly = my - rect.top;
+      for (const node of orchNodes) {
+        const r = (NODE_R[node.role] || 8) + 4; // +4 px tolerance
+        if ((lx - node.cx) ** 2 + (ly - node.cy) ** 2 <= r * r) return node;
+      }
+      return null;
+    }
+
+    // ── Inspector ────────────────────────────────────────────────────────────
+    function openInspector(node) {
+      orchSelId = node.id;
+      const stSt  = node.state || 'idle';
+      const m     = node.metrics || {};
+      const taskId = node.taskId ? node.taskId.slice(-8) : '—';
+      const entity = node.entityId ? (state.agents && state.agents[node.entityId]) : null;
+
+      const badge = '<span class="oi-badge ' + stSt + '">' + stSt.toUpperCase() + '</span>';
+      const metricsHtml = node.metrics ? '<div class="oi-metrics">'
+        + '<div class="oi-metric"><div class="oi-metric-val">' + (m.completed || 0) + '</div><div class="oi-metric-key">Completed</div></div>'
+        + '<div class="oi-metric"><div class="oi-metric-val">' + (m.failed || 0) + '</div><div class="oi-metric-key">Failed</div></div>'
+        + '<div class="oi-metric"><div class="oi-metric-val">' + (m.avgScore ? m.avgScore.toFixed(2) : '—') + '</div><div class="oi-metric-key">Avg Score</div></div>'
+        + '<div class="oi-metric"><div class="oi-metric-val">' + (m.avgLatencyMs ? Math.round(m.avgLatencyMs) + 'ms' : '—') + '</div><div class="oi-metric-key">Avg Latency</div></div>'
+        + '</div>' : '';
+      const entityHtml = entity ? '<div class="oi-section"><div class="oi-section-title">Bound Entity</div>'
+        + '<div class="oi-field"><span class="oi-field-label">ID</span><span class="oi-field-value">' + (entity.id || '—') + '</span></div>'
+        + '<div class="oi-field"><span class="oi-field-label">Type</span><span class="oi-field-value">' + (entity.type || '—') + '</span></div>'
+        + '<div class="oi-field"><span class="oi-field-label">Position</span><span class="oi-field-value">' + (entity.lat != null ? entity.lat.toFixed(2) + ', ' + entity.lng.toFixed(2) : '—') + '</span></div>'
+        + '</div>' : '';
+
+      orchBodyEl.innerHTML = '<div class="oi-field"><span class="oi-field-label">Node</span><span class="oi-field-value">' + node.label + '</span></div>'
+        + '<div class="oi-field" style="margin-top:4px">' + badge + '</div>'
+        + '<div class="oi-field"><span class="oi-field-label">Role</span><span class="oi-field-value">' + node.role + '</span></div>'
+        + '<div class="oi-field"><span class="oi-field-label">Ring</span><span class="oi-field-value">' + node.ring + '</span></div>'
+        + '<div class="oi-field"><span class="oi-field-label">Worker ID</span><span class="oi-field-value">' + (node.workerId ? node.workerId.slice(-12) : '—') + '</span></div>'
+        + '<div class="oi-field"><span class="oi-field-label">Active Task</span><span class="oi-field-value">' + taskId + '</span></div>'
+        + (metricsHtml ? '<div class="oi-section"><div class="oi-section-title">Metrics</div>' + metricsHtml + '</div>' : '')
+        + entityHtml;
+
+      orchInspEl.classList.add('open');
+      // Shift left if right drawer is open
+      const drawerRight = document.getElementById('drawer-right');
+      orchInspEl.classList.toggle('shift-left', drawerRight && drawerRight.classList.contains('open'));
+    }
+
+    function closeInspector() {
+      orchSelId = null;
+      orchInspEl.classList.remove('open');
+    }
+
+    orchCloseEl && orchCloseEl.addEventListener('click', closeInspector);
+
+    // ── Mouse events (routed from globe-shell) ───────────────────────────────
+    globeShell.addEventListener('mousemove', function (e) {
+      const hit = orchHitTest(e.clientX, e.clientY);
+      const newId = hit ? hit.id : null;
+      if (newId !== orchHoverId) {
+        orchHoverId = newId;
+        globeShell.style.cursor = newId ? 'pointer' : '';
+      }
+    });
+    globeShell.addEventListener('click', function (e) {
+      const hit = orchHitTest(e.clientX, e.clientY);
+      if (hit) {
+        openInspector(hit);
+        e.stopPropagation();
+      } else if (!orchInspEl.contains(e.target)) {
+        closeInspector();
+      }
+    });
+
+    // ── Render loop ──────────────────────────────────────────────────────────
+    function lerp(a, b, t) { return a + (b - a) * t; }
+
+    function drawOrch() {
+      orchAnimId = requestAnimationFrame(drawOrch);
+
+      const now = Date.now();
+      if (now - orchLastSync > SYNC_EVERY) {
+        orchLastSync = now;
+        syncFromServerState();
+      }
+
+      const W = orchCanvas.width;
+      const H = orchCanvas.height;
+      orchCtx.clearRect(0, 0, W, H);
+      if (!orchVisible) return;
+
+      const cx = W / 2;
+      const cy = H / 2;
+      const min = Math.min(W, H) * orchScale;
+
+      // ── Draw ring circles (subtle) ──
+      orchCtx.save();
+      for (let ri = 1; ri < RING_DEFS.length; ri++) {
+        const r = RING_DEFS[ri].rFrac * min;
+        orchCtx.beginPath();
+        orchCtx.arc(cx, cy, r, 0, Math.PI * 2);
+        orchCtx.strokeStyle = 'rgba(30,60,80,0.28)';
+        orchCtx.lineWidth   = 0.8;
+        orchCtx.setLineDash([4, 8]);
+        orchCtx.stroke();
+        orchCtx.setLineDash([]);
+      }
+      orchCtx.restore();
+
+      // ── Draw spoke edges (center → ring 1 → ring 2...) ──
+      orchCtx.save();
+      orchCtx.globalAlpha = 0.18;
+      for (const node of orchNodes) {
+        if (node.ring === 0) continue;
+        // Parent ring = ring - 1, nearest node
+        const parentRing = orchNodes.filter(n => n.ring === node.ring - 1);
+        if (!parentRing.length) continue;
+        const parent = parentRing.reduce((best, n) => {
+          const da = Math.hypot(n.cx - node.cx, n.cy - node.cy);
+          const db = Math.hypot(best.cx - node.cx, best.cy - node.cy);
+          return da < db ? n : best;
+        }, parentRing[0]);
+        orchCtx.beginPath();
+        orchCtx.moveTo(parent.cx, parent.cy);
+        orchCtx.lineTo(node.cx, node.cy);
+        orchCtx.strokeStyle = '#2a5060';
+        orchCtx.lineWidth   = node.state === 'active' ? 1.4 : 0.8;
+        orchCtx.stroke();
+      }
+      orchCtx.restore();
+
+      // ── Draw globe-entity links for ring-4 workers ──
+      if (orchLinksOn && typeof cesiumViewer !== 'undefined' && cesiumViewer) {
+        const rect = globeShell.getBoundingClientRect();
+        for (const node of orchNodes) {
+          if (node.ring !== 4 || !node.entityId) continue;
+          const entity = state && state.agents && state.agents[node.entityId];
+          if (!entity || !Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) continue;
+          try {
+            const alt = Number.isFinite(entity.altitude) ? Math.max(500, entity.altitude) : 1000;
+            const cart3 = Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, alt);
+            const sp = Cesium.SceneTransforms.worldToWindowCoordinates(cesiumViewer.scene, cart3);
+            if (!sp) continue;
+            // Cesium returns window-relative coords; subtract globeShell offset
+            const sx = sp.x - rect.left;
+            const sy = sp.y - rect.top;
+            const ss = node.state;
+            orchCtx.save();
+            orchCtx.globalAlpha = ss === 'idle' ? 0.18 : 0.55;
+            orchCtx.beginPath();
+            orchCtx.setLineDash([3, 7]);
+            orchCtx.moveTo(node.cx, node.cy);
+            orchCtx.lineTo(sx, sy);
+            orchCtx.strokeStyle = ss === 'error' ? '#e05050' : ss === 'active' ? '#3ec9b8' : '#2a5060';
+            orchCtx.lineWidth   = ss === 'high-load' ? 2 : 1;
+            orchCtx.stroke();
+            orchCtx.setLineDash([]);
+            // Small dot at globe position
+            orchCtx.beginPath();
+            orchCtx.arc(sx, sy, 3, 0, Math.PI * 2);
+            orchCtx.fillStyle = ss === 'error' ? '#e05050' : '#3ec9b8';
+            orchCtx.fill();
+            orchCtx.restore();
+          } catch (_) { /* Cesium projection can fail during camera move */ }
+        }
+      }
+
+      // ── Advance and draw pulses ──
+      if (orchPulsesOn) {
+        orchPulses = orchPulses.filter(p => p.t < 1);
+        for (const p of orchPulses) {
+          p.t = Math.min(1, p.t + PULSE_SPEED);
+          const px = lerp(p.x0, p.x1, p.t);
+          const py = lerp(p.y0, p.y1, p.t);
+          const alpha = p.t < 0.1 ? p.t * 10 : p.t > 0.85 ? (1 - p.t) / 0.15 : 1;
+          orchCtx.save();
+          orchCtx.globalAlpha = alpha * 0.85;
+          orchCtx.beginPath();
+          orchCtx.arc(px, py, 3.5, 0, Math.PI * 2);
+          orchCtx.fillStyle = p.color;
+          if (STATE_STYLE.active.glow > 0) {
+            orchCtx.shadowBlur   = 10;
+            orchCtx.shadowColor  = p.color;
+          }
+          orchCtx.fill();
+          orchCtx.restore();
+        }
+      }
+
+      // ── Draw nodes ──
+      for (const node of orchNodes) {
+        const r     = (NODE_R[node.role] || 8) * (node.ring === 0 ? 1 : 1);
+        const ss    = STATE_STYLE[node.state] || STATE_STYLE.idle;
+        const hover = node.id === orchHoverId;
+        const sel   = node.id === orchSelId;
+
+        orchCtx.save();
+
+        // Glow for active / error states
+        if (ss.glow > 0 || hover || sel) {
+          orchCtx.shadowBlur  = hover ? ss.glow + 10 : ss.glow;
+          orchCtx.shadowColor = sel ? '#ffffff' : ss.stroke;
+        }
+
+        // Node fill
+        orchCtx.beginPath();
+        orchCtx.arc(node.cx, node.cy, r, 0, Math.PI * 2);
+        orchCtx.fillStyle = ss.fill;
+        orchCtx.fill();
+
+        // Node stroke
+        orchCtx.lineWidth   = hover ? ss.strokeW + 1 : ss.strokeW;
+        orchCtx.strokeStyle = sel ? '#ffffff' : (hover ? ss.stroke : ss.stroke);
+        orchCtx.stroke();
+
+        // Core node: inner ring decoration
+        if (node.ring === 0) {
+          orchCtx.beginPath();
+          orchCtx.arc(node.cx, node.cy, r - 4, 0, Math.PI * 2);
+          orchCtx.strokeStyle = ss.stroke + '88';
+          orchCtx.lineWidth   = 0.8;
+          orchCtx.stroke();
+        }
+
+        orchCtx.restore();
+
+        // Label — only show for non-monitor nodes or hovered/selected monitor nodes
+        const showLabel = node.ring < 5 || hover || sel;
+        if (showLabel) {
+          orchCtx.save();
+          orchCtx.font        = node.ring === 0 ? 'bold 8px monospace' : '7px monospace';
+          orchCtx.fillStyle   = sel ? '#ffffff' : (node.state === 'idle' ? '#2a4050' : '#7ab8cc');
+          orchCtx.textAlign   = 'center';
+          orchCtx.textBaseline= 'middle';
+          orchCtx.fillText(node.label, node.cx, node.cy + r + 9);
+          orchCtx.restore();
+        }
+      }
+    }
+
+    // ── Controls ─────────────────────────────────────────────────────────────
+    const orchRailBtn   = document.getElementById('orch-rail-btn');
+    const orchToggleVis = document.getElementById('orch-toggle-vis');
+    const orchToggleLnk = document.getElementById('orch-toggle-links');
+    const orchTogglePls = document.getElementById('orch-toggle-pulses');
+    const orchBtnRun    = document.getElementById('orch-btn-run');
+    const orchBtnPause  = document.getElementById('orch-btn-pause');
+    const orchBtnScaleUp= document.getElementById('orch-btn-scale-up');
+    const orchBtnScaleDn= document.getElementById('orch-btn-scale-dn');
+
+    function setOrchRunning(r) {
+      orchRunning = r;
+      orchBtnRun   && orchBtnRun.classList.toggle('active', r);
+      orchBtnPause && orchBtnPause.classList.toggle('active', !r);
+    }
+
+    orchRailBtn && orchRailBtn.addEventListener('click', function () {
+      orchVisible = !orchVisible;
+      orchRailBtn.classList.toggle('active', orchVisible);
+    });
+    orchToggleVis && orchToggleVis.addEventListener('change', function () {
+      orchVisible = orchToggleVis.checked;
+      orchRailBtn && orchRailBtn.classList.toggle('active', orchVisible);
+    });
+    orchToggleLnk && orchToggleLnk.addEventListener('change', function () { orchLinksOn = orchToggleLnk.checked; });
+    orchTogglePls && orchTogglePls.addEventListener('change', function () { orchPulsesOn = orchTogglePls.checked; });
+    orchBtnRun    && orchBtnRun.addEventListener('click',   function () { setOrchRunning(true);  });
+    orchBtnPause  && orchBtnPause.addEventListener('click', function () { setOrchRunning(false); });
+    orchBtnScaleUp && orchBtnScaleUp.addEventListener('click', function () {
+      orchScale = Math.min(orchScale + 0.1, 1.4);
+      buildNodes();
+    });
+    orchBtnScaleDn && orchBtnScaleDn.addEventListener('click', function () {
+      orchScale = Math.max(orchScale - 0.1, 0.4);
+      buildNodes();
+    });
+
+    // Mark rail button active initially
+    orchRailBtn && orchRailBtn.classList.add('active');
+
+    // Kick off render loop
+    drawOrch();
+  }());
 
   // ── WebSocket ──
   function connect() {
