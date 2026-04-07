@@ -549,6 +549,77 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     /* ── Globe Boundary Navigation ─────────────────────────────────────────── */
     #globe-boundary-label { position: absolute; pointer-events: none; z-index: 25; background: #07080cee; border: 1px solid #1f5e5a; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 4px 8px; border-radius: 3px; white-space: nowrap; display: none; box-shadow: 0 0 8px #1f5e5a88, 0 0 2px #3ec9b844; transition: opacity 120ms; }
     #globe-boundary-label.visible { display: block; }
+    /* ── Multi-View Dashboard System ──────────────────────────────────────── */
+    #screen-nav { background: #05060a; border-bottom: 1px solid #141e2a; padding: 0; display: flex; align-items: stretch; flex-shrink: 0; min-height: 32px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .screen-tab { border: none; border-bottom: 2px solid transparent; background: transparent; color: #3a5060; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 0 16px; cursor: pointer; transition: color 160ms, border-color 160ms, background 160ms; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .screen-tab:hover { color: #6ab0c8; background: #0a1018; }
+    .screen-tab.active { color: #3ec9b8; border-bottom-color: #3ec9b8; }
+    #screen-nav-sep { flex: 1; }
+    #grid-mode-btn { border: none; border-left: 1px solid #141e2a; border-bottom: 2px solid transparent; background: #07080c; color: #4e7888; font-size: .58rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 0 14px; cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; flex-shrink: 0; }
+    #grid-mode-btn:hover { background: #0a1018; color: #8abccc; }
+    #grid-mode-btn.active { background: #0a2422; color: #3ec9b8; border-bottom-color: #3ec9b8; }
+    /* ── Screen Panels ─────────────────────────────────────────────────────── */
+    .screen-panel { position: absolute; z-index: 16; background: #07080cee; border: 1px solid #1a2d3a; display: flex; flex-direction: column; overflow: hidden; pointer-events: auto; opacity: 1; transform: translateX(0); transition: transform 280ms cubic-bezier(.4,0,.2,1), opacity 220ms ease; }
+    .screen-panel.hidden { opacity: 0; pointer-events: none; transform: translateX(14px); }
+    .screen-panel.minimized { display: none !important; }
+    .screen-panel-hdr { display: flex; align-items: center; padding: 5px 10px; border-bottom: 1px solid #141e2a; flex-shrink: 0; gap: 6px; background: #050609; }
+    .screen-panel-icon { font-size: .76rem; color: #3ec9b8; flex-shrink: 0; line-height: 1; }
+    .screen-panel-title { font-size: .57rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; }
+    .screen-panel-actions { display: flex; gap: 2px; flex-shrink: 0; }
+    .screen-panel-btn { border: 1px solid #141e2a; background: #08090d; color: #2e4050; border-radius: 2px; font-size: .66rem; cursor: pointer; padding: 1px 5px; line-height: 1.4; transition: color 160ms, background 160ms; }
+    .screen-panel-btn:hover { color: #6898aa; background: #0e1828; }
+    .screen-panel-body { flex: 1; overflow-y: auto; padding: 8px 10px; min-height: 0; font-size: .66rem; font-family: 'Cascadia Code', 'Fira Code', monospace; color: #4e7888; }
+    /* Single-screen: panel overlaid on right side */
+    #screen-overview, #screen-trajectory, #screen-environmental, #screen-log { right: 0; top: 0; bottom: 48px; width: 290px; border-right: none; border-top: none; border-bottom: none; }
+    #screen-overview { border-left-color: #1f5e5a; }
+    #screen-trajectory { border-left-color: #1a3a70; }
+    #screen-environmental { border-left-color: #1a4a30; }
+    #screen-log { border-left-color: #2a2050; }
+    /* ── Grid Mode ─────────────────────────────────────────────────────────── */
+    body.grid-mode .screen-panel { background: #07080cd0; border: 1px solid #1a2d3a !important; border-radius: 0; transition: transform 280ms cubic-bezier(.4,0,.2,1), opacity 220ms ease, width 280ms cubic-bezier(.4,0,.2,1), height 280ms cubic-bezier(.4,0,.2,1); }
+    body.grid-mode .screen-panel.hidden { opacity: 0; pointer-events: none; }
+    body.grid-mode #screen-overview  { top: 0; left: 0; right: auto; bottom: auto; width: calc(50% - 1px); height: calc(50% - 24px - 1px); }
+    body.grid-mode #screen-trajectory { top: 0; right: 0; left: auto; bottom: auto; width: calc(50%); height: calc(50% - 24px - 1px); border-left: none !important; }
+    body.grid-mode #screen-environmental { bottom: 49px; left: 0; top: auto; right: auto; width: calc(50% - 1px); height: calc(50% - 24px - 1px); border-top: none !important; }
+    body.grid-mode #screen-log { bottom: 49px; right: 0; top: auto; left: auto; width: calc(50%); height: calc(50% - 24px - 1px); border-left: none !important; border-top: none !important; }
+    body.grid-mode .screen-panel-hdr { cursor: zoom-in; }
+    /* Focused panel expands to fill viewport */
+    body.grid-mode .screen-panel.focused { width: 100% !important; height: calc(100% - 48px) !important; top: 0 !important; left: 0 !important; right: auto !important; bottom: auto !important; z-index: 17; border: 1px solid #1f5e5a !important; }
+    body.grid-mode .screen-panel.focused .screen-panel-hdr { cursor: zoom-out; }
+    /* ── Minimized Tray ────────────────────────────────────────────────────── */
+    #screen-tray { position: absolute; bottom: 48px; left: 160px; right: 0; height: 0; display: flex; align-items: flex-end; gap: 4px; padding: 0; z-index: 22; pointer-events: none; transition: height 200ms ease, padding 200ms ease; }
+    #screen-tray.has-items { height: 32px; padding: 0 8px 4px; }
+    .tray-chip { border: 1px solid #1f5e5a; background: #07080cf0; color: #3ec9b8; border-radius: 3px; font-size: .57rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 4px 10px; cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace; transition: background 160ms, color 160ms; display: flex; align-items: center; gap: 5px; white-space: nowrap; pointer-events: auto; backdrop-filter: blur(4px); }
+    .tray-chip:hover { background: #0a2422; }
+    /* ── Panel content helpers ─────────────────────────────────────────────── */
+    .sp-section { font-size: .54rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: #1e3040; padding: 8px 0 3px; border-bottom: 1px solid #0e1820; margin-bottom: 4px; }
+    .sp-section:first-child { padding-top: 0; }
+    .sp-kv { display: flex; justify-content: space-between; align-items: baseline; padding: 3px 0; border-bottom: 1px solid #0e1820; }
+    .sp-kv:last-child { border-bottom: none; }
+    .sp-key { color: #2e4050; letter-spacing: .08em; text-transform: uppercase; font-size: .56rem; flex-shrink: 0; }
+    .sp-val { color: #7ab8cc; font-weight: 600; text-align: right; font-size: .66rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+    .sp-alert { padding: 4px 7px; border-left: 2px solid; border-radius: 2px; margin-bottom: 4px; font-size: .64rem; background: #07080c; }
+    .sp-alert.ok { border-color: #2ab8a4; color: #3ec9b8; }
+    .sp-alert.warn { border-color: #b89040; color: #c8a848; }
+    .sp-alert.err { border-color: #d05050; color: #e05858; }
+    .sp-log-entry { padding: 3px 0; border-bottom: 1px solid #0e1218; font-size: .62rem; line-height: 1.4; color: #4e6878; }
+    .sp-log-entry .sp-ts { color: #283038; margin-right: 4px; font-size: .54rem; }
+    .sp-log-agent { color: #3ec9b8 !important; }
+    .sp-log-system { color: #8060b8 !important; }
+    .sp-log-region { color: #b89040 !important; }
+    .sp-compass-wrap { display: flex; align-items: center; justify-content: center; padding: 10px 0; }
+    .sp-compass-ring { width: 80px; height: 80px; border-radius: 50%; border: 2px solid #1a3a70; position: relative; display: flex; align-items: center; justify-content: center; background: #06080e; flex-shrink: 0; }
+    .sp-compass-lbl { position: absolute; font-size: .5rem; color: #3ec9b8; font-weight: 700; }
+    .sp-compass-lbl.n { top: 3px; left: 50%; transform: translateX(-50%); }
+    .sp-compass-lbl.s { bottom: 3px; left: 50%; transform: translateX(-50%); color: #4e7888; }
+    .sp-compass-lbl.e { right: 3px; top: 50%; transform: translateY(-50%); color: #4e7888; }
+    .sp-compass-lbl.w { left: 3px; top: 50%; transform: translateY(-50%); color: #4e7888; }
+    #sp-compass-needle { width: 2px; height: 34px; background: linear-gradient(#3ec9b8 50%, #c05050 50%); transform-origin: center; border-radius: 1px; transition: transform 400ms ease; }
+    .sp-env-bar { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+    .sp-env-lbl { color: #2e4050; font-size: .56rem; letter-spacing: .08em; text-transform: uppercase; width: 58px; flex-shrink: 0; }
+    .sp-env-track { flex: 1; height: 4px; background: #111820; border-radius: 2px; overflow: hidden; }
+    .sp-env-fill { height: 100%; border-radius: 2px; transition: width 600ms ease; }
+    .sp-env-val { color: #7ab8cc; font-size: .6rem; width: 38px; text-align: right; flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -564,6 +635,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <span id="style-indicator">mode: crt</span>
   <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
 </header>
+<nav id="screen-nav" role="navigation" aria-label="Dashboard Screens">
+  <button class="screen-tab active" data-screen="overview" type="button" title="Mission Overview">⊙ Overview</button>
+  <button class="screen-tab" data-screen="trajectory" type="button" title="Trajectory">◎ Trajectory</button>
+  <button class="screen-tab" data-screen="environmental" type="button" title="Environmental">◈ Environmental</button>
+  <button class="screen-tab" data-screen="log" type="button" title="Mission Log">◉ Mission Log</button>
+  <div id="screen-nav-sep" aria-hidden="true"></div>
+  <button id="grid-mode-btn" type="button" title="Toggle 2×2 Grid View" aria-pressed="false">⊞ Grid</button>
+</nav>
 <div id="globe-shell">
 
   <!-- Left command panel -->
@@ -943,13 +1022,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <canvas id="orch-canvas" aria-hidden="true"></canvas>
 
   <!-- Orchestration node inspector — right-side panel, opens on node click -->
-  <div id="orch-inspector" role="complementary" aria-label="Node Inspector">
+  <div id="orch-inspector" class="closed" role="complementary" aria-label="Node Inspector" aria-hidden="true">
     <div class="oi-header">
       <span class="oi-title">Node Inspector</span>
       <button class="oi-close" id="orch-inspector-close" type="button" aria-label="Close inspector">✕</button>
     </div>
     <div class="oi-body" id="orch-inspector-body">
       <div class="oi-field"><span class="oi-field-label">Select a node</span></div>
+    </div>
+  </div>
   <!-- Bottom action bar + Timeline Engine -->
   <div id="timeline-bar" role="region" aria-label="Bottom Action Bar">
     <div id="bottom-quick-actions">
@@ -1163,6 +1244,117 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  <!-- ── Multi-View Dashboard Screen Panels ──────────────────────────────── -->
+
+  <!-- Mission Overview Panel -->
+  <div id="screen-overview" class="screen-panel" role="region" aria-label="Mission Overview">
+    <div class="screen-panel-hdr">
+      <span class="screen-panel-icon">⊙</span>
+      <span class="screen-panel-title">Mission Overview</span>
+      <div class="screen-panel-actions">
+        <button class="screen-panel-btn" data-action="minimize" data-panel="overview" type="button" title="Minimize panel" aria-label="Minimize Mission Overview">_</button>
+      </div>
+    </div>
+    <div class="screen-panel-body" id="sp-body-overview">
+      <div class="sp-section">System Status</div>
+      <div class="sp-kv"><span class="sp-key">Tick</span><span class="sp-val" id="sp-ov-tick">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Mode</span><span class="sp-val" id="sp-ov-mode">LIVE</span></div>
+      <div class="sp-kv"><span class="sp-key">Uptime</span><span class="sp-val" id="sp-ov-uptime">—</span></div>
+      <div class="sp-section">Active Entities</div>
+      <div class="sp-kv"><span class="sp-key">Agents</span><span class="sp-val" id="sp-ov-agents">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Regions</span><span class="sp-val" id="sp-ov-regions">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Flights</span><span class="sp-val" id="sp-ov-flights">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Satellites</span><span class="sp-val" id="sp-ov-sats">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Vehicles</span><span class="sp-val" id="sp-ov-vehicles">—</span></div>
+      <div class="sp-section">Alerts</div>
+      <div class="sp-alert ok" id="sp-ov-alert">All systems nominal</div>
+    </div>
+  </div>
+
+  <!-- Trajectory Panel -->
+  <div id="screen-trajectory" class="screen-panel hidden" role="region" aria-label="Trajectory">
+    <div class="screen-panel-hdr">
+      <span class="screen-panel-icon">◎</span>
+      <span class="screen-panel-title">Trajectory</span>
+      <div class="screen-panel-actions">
+        <button class="screen-panel-btn" data-action="minimize" data-panel="trajectory" type="button" title="Minimize panel" aria-label="Minimize Trajectory">_</button>
+      </div>
+    </div>
+    <div class="screen-panel-body" id="sp-body-trajectory">
+      <div class="sp-compass-wrap">
+        <div class="sp-compass-ring">
+          <span class="sp-compass-lbl n">N</span>
+          <span class="sp-compass-lbl s">S</span>
+          <span class="sp-compass-lbl e">E</span>
+          <span class="sp-compass-lbl w">W</span>
+          <div id="sp-compass-needle"></div>
+        </div>
+      </div>
+      <div class="sp-section">Camera Position</div>
+      <div class="sp-kv"><span class="sp-key">Latitude</span><span class="sp-val" id="sp-tr-lat">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Longitude</span><span class="sp-val" id="sp-tr-lng">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Altitude</span><span class="sp-val" id="sp-tr-alt">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Heading</span><span class="sp-val" id="sp-tr-heading">—</span></div>
+      <div class="sp-section">Waypoints</div>
+      <div class="sp-kv"><span class="sp-key">Next WP</span><span class="sp-val">—</span></div>
+      <div class="sp-kv"><span class="sp-key">ETA</span><span class="sp-val">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Speed</span><span class="sp-val">—</span></div>
+    </div>
+  </div>
+
+  <!-- Environmental Panel -->
+  <div id="screen-environmental" class="screen-panel hidden" role="region" aria-label="Environmental">
+    <div class="screen-panel-hdr">
+      <span class="screen-panel-icon">◈</span>
+      <span class="screen-panel-title">Environmental</span>
+      <div class="screen-panel-actions">
+        <button class="screen-panel-btn" data-action="minimize" data-panel="environmental" type="button" title="Minimize panel" aria-label="Minimize Environmental">_</button>
+      </div>
+    </div>
+    <div class="screen-panel-body" id="sp-body-environmental">
+      <div class="sp-section">Atmosphere</div>
+      <div class="sp-env-bar">
+        <span class="sp-env-lbl">Visibility</span>
+        <div class="sp-env-track"><div class="sp-env-fill" id="sp-env-vis-fill" style="width:78%;background:#2ab8a4;"></div></div>
+        <span class="sp-env-val" id="sp-env-vis-val">78%</span>
+      </div>
+      <div class="sp-env-bar">
+        <span class="sp-env-lbl">Wind</span>
+        <div class="sp-env-track"><div class="sp-env-fill" id="sp-env-wind-fill" style="width:35%;background:#b89040;"></div></div>
+        <span class="sp-env-val" id="sp-env-wind-val">35%</span>
+      </div>
+      <div class="sp-env-bar">
+        <span class="sp-env-lbl">Cloud Cover</span>
+        <div class="sp-env-track"><div class="sp-env-fill" id="sp-env-cloud-fill" style="width:52%;background:#4e7888;"></div></div>
+        <span class="sp-env-val" id="sp-env-cloud-val">52%</span>
+      </div>
+      <div class="sp-section">Conditions</div>
+      <div class="sp-kv"><span class="sp-key">Temperature</span><span class="sp-val" id="sp-env-temp">—°C</span></div>
+      <div class="sp-kv"><span class="sp-key">Pressure</span><span class="sp-val" id="sp-env-pressure">—hPa</span></div>
+      <div class="sp-kv"><span class="sp-key">Humidity</span><span class="sp-val" id="sp-env-humidity">—%</span></div>
+      <div class="sp-section">Weather Cells</div>
+      <div class="sp-kv"><span class="sp-key">Active Cells</span><span class="sp-val" id="sp-env-cells">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Status</span><span class="sp-val" id="sp-env-status">NOMINAL</span></div>
+    </div>
+  </div>
+
+  <!-- Mission Log Panel -->
+  <div id="screen-log" class="screen-panel hidden" role="region" aria-label="Mission Log">
+    <div class="screen-panel-hdr">
+      <span class="screen-panel-icon">◉</span>
+      <span class="screen-panel-title">Mission Log</span>
+      <div class="screen-panel-actions">
+        <button class="screen-panel-btn" data-action="minimize" data-panel="log" type="button" title="Minimize panel" aria-label="Minimize Mission Log">_</button>
+      </div>
+    </div>
+    <div class="screen-panel-body" id="sp-body-log">
+      <div style="color:#2e4050;font-style:italic;">Awaiting events…</div>
+    </div>
+  </div>
+
+  <!-- Minimized panel tray -->
+  <div id="screen-tray" role="region" aria-label="Minimized Panels"></div>
 
 </div>
 
@@ -2103,16 +2295,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const BOUNDARY_MAX_POSITIONS    = 20000;     // skip entities with more positions to prevent RangeError
   const GEOJSON_MAX_BYTES         = 1048576;   // 1 MB — reject oversized datasets before loading
 
-  // CRT palette
-  const BOUNDARY_COLOR_COUNTRY_IDLE    = new Cesium.Color(0.12, 0.6, 0.55, 0.55);
-  const BOUNDARY_COLOR_COUNTRY_HOVER   = new Cesium.Color(0.24, 0.79, 0.72, 0.95);
-  const BOUNDARY_COLOR_COUNTRY_ACTIVE  = new Cesium.Color(0.35, 0.95, 0.85, 1.00);
-  const BOUNDARY_COLOR_STATE_IDLE      = new Cesium.Color(0.08, 0.45, 0.42, 0.40);
-  const BOUNDARY_COLOR_STATE_HOVER     = new Cesium.Color(0.20, 0.70, 0.65, 0.90);
-  const BOUNDARY_COLOR_STATE_ACTIVE    = new Cesium.Color(0.30, 0.88, 0.78, 0.98);
-  const BOUNDARY_FILL_IDLE             = new Cesium.Color(0.12, 0.60, 0.55, 0.04);
-  const BOUNDARY_FILL_HOVER            = new Cesium.Color(0.24, 0.79, 0.72, 0.12);
-  const BOUNDARY_FILL_ACTIVE           = new Cesium.Color(0.30, 0.88, 0.78, 0.20);
+  // CRT palette — guarded in case Cesium is not yet loaded (e.g. CDN blocked in dev)
+  const CESIUM_AVAIL = typeof Cesium !== 'undefined';
+  const BOUNDARY_COLOR_COUNTRY_IDLE    = CESIUM_AVAIL ? new Cesium.Color(0.12, 0.6, 0.55, 0.55)  : null;
+  const BOUNDARY_COLOR_COUNTRY_HOVER   = CESIUM_AVAIL ? new Cesium.Color(0.24, 0.79, 0.72, 0.95) : null;
+  const BOUNDARY_COLOR_COUNTRY_ACTIVE  = CESIUM_AVAIL ? new Cesium.Color(0.35, 0.95, 0.85, 1.00) : null;
+  const BOUNDARY_COLOR_STATE_IDLE      = CESIUM_AVAIL ? new Cesium.Color(0.08, 0.45, 0.42, 0.40) : null;
+  const BOUNDARY_COLOR_STATE_HOVER     = CESIUM_AVAIL ? new Cesium.Color(0.20, 0.70, 0.65, 0.90) : null;
+  const BOUNDARY_COLOR_STATE_ACTIVE    = CESIUM_AVAIL ? new Cesium.Color(0.30, 0.88, 0.78, 0.98) : null;
+  const BOUNDARY_FILL_IDLE             = CESIUM_AVAIL ? new Cesium.Color(0.12, 0.60, 0.55, 0.04) : null;
+  const BOUNDARY_FILL_HOVER            = CESIUM_AVAIL ? new Cesium.Color(0.24, 0.79, 0.72, 0.12) : null;
+  const BOUNDARY_FILL_ACTIVE           = CESIUM_AVAIL ? new Cesium.Color(0.30, 0.88, 0.78, 0.20) : null;
 
   let globeBoundaryCountryDs  = null;
   let globeBoundaryStateDs    = null;
@@ -6269,6 +6462,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         + entityHtml;
 
       orchInspEl.classList.remove('closed');
+      orchInspEl.setAttribute('aria-hidden', 'false');
       // Shift left if right drawer is open
       const drawerRight = document.getElementById('drawer-right');
       orchInspEl.classList.toggle('shift-left', drawerRight && drawerRight.classList.contains('open'));
@@ -6276,7 +6470,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     function closeInspector() {
       orchSelId = null;
-      // Reset body to idle state; panel remains visible unless .closed class is applied
+      orchInspEl.classList.add('closed');
+      orchInspEl.setAttribute('aria-hidden', 'true');
+      // Reset body to idle state
       if (orchBodyEl) orchBodyEl.innerHTML = '<div class="oi-field"><span class="oi-field-label">Select a node</span></div>';
     }
 
@@ -6564,6 +6760,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           renderSelectedPanel();
           updateStats();
           updateLayerStatusBadges();
+          updateDashboardPanels();
           draw();
         }
         snapshotQueue.push(msg.data);
@@ -6577,6 +6774,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         if (paused) return;
         if (msg.data.patch) Object.assign(state, msg.data.patch);
         renderSelectedPanel();
+        updateLogPanel();
         draw();
       } else if (msg.type === 'timeline_ack') {
         if (msg.data) {
@@ -6604,6 +6802,282 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     ws.onerror = function () { ws.close(); };
   }
+
+  // ── Multi-View Dashboard System ────────────────────────────────────────────
+  var dashboardState = {
+    activeScreen: 'overview',
+    gridMode: false,
+    minimized: {},   // { screenName: true }
+    focused: null,   // focused grid panel name, or null
+  };
+
+  var SCREENS = ['overview', 'trajectory', 'environmental', 'log'];
+  var SCREEN_ICONS  = { overview: '⊙', trajectory: '◎', environmental: '◈', log: '◉' };
+  var SCREEN_LABELS = { overview: 'OVERVIEW', trajectory: 'TRAJECTORY', environmental: 'ENVIRON', log: 'MISSION LOG' };
+
+  function switchScreen(name) {
+    if (SCREENS.indexOf(name) === -1) return;
+    dashboardState.activeScreen = name;
+    dashboardState.focused = null;
+    // Update nav tabs
+    document.querySelectorAll('.screen-tab').forEach(function (tab) {
+      tab.classList.toggle('active', tab.dataset.screen === name);
+    });
+    // In single-screen mode, show only the active panel
+    if (!dashboardState.gridMode) {
+      SCREENS.forEach(function (s) {
+        var panel = document.getElementById('screen-' + s);
+        if (!panel) return;
+        if (dashboardState.minimized[s]) return;
+        panel.classList.toggle('hidden', s !== name);
+      });
+    }
+  }
+
+  function toggleGridMode() {
+    dashboardState.gridMode = !dashboardState.gridMode;
+    dashboardState.focused = null;
+    var btn = document.getElementById('grid-mode-btn');
+    if (btn) {
+      btn.classList.toggle('active', dashboardState.gridMode);
+      btn.setAttribute('aria-pressed', dashboardState.gridMode ? 'true' : 'false');
+    }
+    document.body.classList.toggle('grid-mode', dashboardState.gridMode);
+    SCREENS.forEach(function (s) {
+      var panel = document.getElementById('screen-' + s);
+      if (!panel || dashboardState.minimized[s]) return;
+      panel.classList.remove('focused');
+      if (dashboardState.gridMode) {
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.toggle('hidden', s !== dashboardState.activeScreen);
+      }
+    });
+  }
+
+  function focusGridPanel(name) {
+    if (!dashboardState.gridMode) return;
+    if (dashboardState.focused === name) {
+      // Un-focus — restore all panels
+      dashboardState.focused = null;
+      SCREENS.forEach(function (s) {
+        var panel = document.getElementById('screen-' + s);
+        if (!panel || dashboardState.minimized[s]) return;
+        panel.classList.remove('hidden');
+        panel.classList.remove('focused');
+      });
+    } else {
+      dashboardState.focused = name;
+      SCREENS.forEach(function (s) {
+        var panel = document.getElementById('screen-' + s);
+        if (!panel || dashboardState.minimized[s]) return;
+        panel.classList.toggle('hidden', s !== name);
+        panel.classList.toggle('focused', s === name);
+      });
+    }
+  }
+
+  function minimizePanel(name) {
+    dashboardState.minimized[name] = true;
+    var panel = document.getElementById('screen-' + name);
+    if (panel) panel.classList.add('minimized');
+
+    // Show tray chip
+    var tray = document.getElementById('screen-tray');
+    if (tray) {
+      var existing = tray.querySelector('[data-tray="' + name + '"]');
+      if (!existing) {
+        var chip = document.createElement('button');
+        chip.className = 'tray-chip';
+        chip.dataset.tray = name;
+        chip.type = 'button';
+        chip.title = 'Restore ' + SCREEN_LABELS[name];
+        chip.setAttribute('aria-label', 'Restore ' + SCREEN_LABELS[name]);
+        chip.innerHTML = SCREEN_ICONS[name] + ' ' + SCREEN_LABELS[name];
+        chip.addEventListener('click', function () { restorePanel(name); });
+        tray.appendChild(chip);
+      }
+      tray.classList.add('has-items');
+    }
+
+    // If minimizing the active screen in single-screen mode, switch to next available
+    if (!dashboardState.gridMode && dashboardState.activeScreen === name) {
+      var next = null;
+      for (var i = 0; i < SCREENS.length; i++) {
+        if (!dashboardState.minimized[SCREENS[i]]) { next = SCREENS[i]; break; }
+      }
+      if (next) switchScreen(next);
+    }
+  }
+
+  function restorePanel(name) {
+    delete dashboardState.minimized[name];
+    var panel = document.getElementById('screen-' + name);
+    if (panel) {
+      panel.classList.remove('minimized');
+      if (dashboardState.gridMode) {
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.toggle('hidden', name !== dashboardState.activeScreen);
+      }
+    }
+    // Remove tray chip
+    var tray = document.getElementById('screen-tray');
+    if (tray) {
+      var chip = tray.querySelector('[data-tray="' + name + '"]');
+      if (chip) tray.removeChild(chip);
+      if (!tray.querySelector('.tray-chip')) tray.classList.remove('has-items');
+    }
+  }
+
+  // ── Dashboard Panel Content Updaters ────────────────────────────────────────
+  function updateDashboardPanels() {
+    updateOverviewPanel();
+    updateTrajectoryPanel();
+    updateEnvironmentalPanel();
+    updateLogPanel();
+  }
+
+  function updateOverviewPanel() {
+    var tick = state.tick || 0;
+    var agentCount = Object.keys(state.agents || {}).length;
+    var regionCount = Object.keys(state.regions || {}).length;
+    var flightCount = lastFlightDebugCounts ? (lastFlightDebugCounts.drawn || 0) : 0;
+    var satCount = lastCesiumRenderCounts ? (lastCesiumRenderCounts.satellites || 0) : 0;
+
+    var tickEl = document.getElementById('sp-ov-tick');
+    if (tickEl) tickEl.textContent = tick;
+    var modeEl = document.getElementById('sp-ov-mode');
+    if (modeEl) modeEl.textContent = (typeof timelineEngine !== 'undefined' && timelineEngine.mode === 'replay') ? 'REPLAY' : 'LIVE';
+    var uptimeEl = document.getElementById('sp-ov-uptime');
+    if (uptimeEl && state.started) {
+      var sec = Math.floor((Date.now() - new Date(state.started)) / 1000);
+      var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+      uptimeEl.textContent = (h ? h + 'h ' : '') + m + 'm ' + s + 's';
+    }
+    var agentsEl = document.getElementById('sp-ov-agents');
+    if (agentsEl) agentsEl.textContent = agentCount;
+    var regionsEl = document.getElementById('sp-ov-regions');
+    if (regionsEl) regionsEl.textContent = regionCount;
+    var flightsEl = document.getElementById('sp-ov-flights');
+    if (flightsEl) flightsEl.textContent = flightCount;
+    var satsEl = document.getElementById('sp-ov-sats');
+    if (satsEl) satsEl.textContent = satCount;
+    var vehicleCount = typeof liveEntityState !== 'undefined' ? Object.keys(liveEntityState.vehicles || {}).length : 0;
+    var vehiclesEl = document.getElementById('sp-ov-vehicles');
+    if (vehiclesEl) vehiclesEl.textContent = vehicleCount;
+  }
+
+  function updateTrajectoryPanel() {
+    var lat = '—', lng = '—', alt = '—', heading = 0, headingStr = '—';
+    try {
+      if (cesiumViewer) {
+        var cam = cesiumViewer.camera;
+        var pos = Cesium.Cartographic.fromCartesian(cam.position);
+        lat = Cesium.Math.toDegrees(pos.latitude).toFixed(4) + '°';
+        lng = Cesium.Math.toDegrees(pos.longitude).toFixed(4) + '°';
+        alt = (pos.height / 1000).toFixed(1) + ' km';
+        heading = ((Cesium.Math.toDegrees(cam.heading) % 360) + 360) % 360;
+        headingStr = heading.toFixed(1) + '°';
+      }
+    } catch (_e) {}
+
+    var latEl = document.getElementById('sp-tr-lat');
+    if (latEl) latEl.textContent = lat;
+    var lngEl = document.getElementById('sp-tr-lng');
+    if (lngEl) lngEl.textContent = lng;
+    var altEl = document.getElementById('sp-tr-alt');
+    if (altEl) altEl.textContent = alt;
+    var hdgEl = document.getElementById('sp-tr-heading');
+    if (hdgEl) hdgEl.textContent = headingStr;
+    var needle = document.getElementById('sp-compass-needle');
+    if (needle) needle.style.transform = 'rotate(' + heading.toFixed(1) + 'deg)';
+  }
+
+  function updateEnvironmentalPanel() {
+    var weatherCellCount = typeof liveEntityState !== 'undefined' ? Object.keys(liveEntityState.weather || {}).length : 0;
+    var cellsEl = document.getElementById('sp-env-cells');
+    if (cellsEl) cellsEl.textContent = weatherCellCount;
+    var envStatusEl = document.getElementById('sp-env-status');
+    if (envStatusEl) {
+      envStatusEl.textContent = weatherCellCount > 0 ? 'ACTIVE' : 'NOMINAL';
+      envStatusEl.style.color = weatherCellCount > 0 ? '#c8a848' : '#3ec9b8';
+    }
+  }
+
+  var LOG_MESSAGE_MAX_LENGTH = 90;
+
+  function updateLogPanel() {
+    var el = document.getElementById('sp-body-log');
+    if (!el) return;
+    var entries = eventLog.slice(-40).reverse();
+    if (!entries.length) {
+      el.innerHTML = '<div style="color:#2e4050;font-style:italic;padding:4px 0;">No events yet.</div>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      var ts = (e._tick != null) ? 'T' + e._tick : '—';
+      var cls = 'sp-log-entry';
+      if (e.kind === 'agent') cls += ' sp-log-agent';
+      else if (e.kind === 'system') cls += ' sp-log-system';
+      else if (e.kind === 'region') cls += ' sp-log-region';
+      var msg = String(e.msg || '').slice(0, LOG_MESSAGE_MAX_LENGTH);
+      html += '<div class="' + cls + '"><span class="sp-ts">' + ts + '</span>' + msg + '</div>';
+    }
+    el.innerHTML = html;
+  }
+
+  // ── Dashboard Initialization ────────────────────────────────────────────────
+  (function initDashboard() {
+    // Nav tab clicks
+    document.querySelectorAll('.screen-tab').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        if (dashboardState.gridMode) {
+          // Exit grid mode and switch to the clicked screen
+          toggleGridMode();
+        }
+        switchScreen(tab.dataset.screen);
+      });
+    });
+
+    // Grid mode toggle
+    var gridBtn = document.getElementById('grid-mode-btn');
+    if (gridBtn) gridBtn.addEventListener('click', toggleGridMode);
+
+    // Panel header click (for grid focus) and minimize buttons
+    SCREENS.forEach(function (name) {
+      var panel = document.getElementById('screen-' + name);
+      if (!panel) return;
+
+      // Header click → focus in grid mode
+      var hdr = panel.querySelector('.screen-panel-hdr');
+      if (hdr) {
+        hdr.addEventListener('click', function (e) {
+          if (e.target.closest('.screen-panel-btn')) return;
+          if (dashboardState.gridMode) focusGridPanel(name);
+        });
+      }
+
+      // Minimize button
+      var minBtn = panel.querySelector('[data-action="minimize"]');
+      if (minBtn) {
+        minBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          minimizePanel(name);
+        });
+      }
+    });
+
+    // Set initial state: show only overview
+    switchScreen('overview');
+  }());
+
+  // Periodically refresh trajectory panel for live camera position
+  setInterval(function () {
+    if (cesiumViewer) updateTrajectoryPanel();
+  }, 2000);
 
   connect();
 })();
