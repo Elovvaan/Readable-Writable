@@ -7889,7 +7889,7 @@ function seededRand(key, slot) {
   return (h >>> 0) / 0xFFFFFFFF;
 }
 
-const LIVE_ENTITY_UPDATE_MS = 800;  // refresh interval for simulated live entities (match simulation loop for smooth motion)
+const LIVE_ENTITY_UPDATE_MS = 800;  // refresh interval for simulated live entities — matches the 800ms simulationLoop interval so positions update every tick for smooth, continuous motion
 let lastLiveEntityUpdateAt = 0;
 
 /**
