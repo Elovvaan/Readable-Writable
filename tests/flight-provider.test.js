@@ -8,6 +8,8 @@ const {
   normalizeAdsbBatch,
   getSimFlights,
   selectActiveFlights,
+  isRecentPoll,
+  REAL_FLIGHT_PROVIDERS,
   openSkyLiveState,
   adsbExchangeState,
   flightProviderState,
@@ -278,19 +280,20 @@ describe('selectActiveFlights', () => {
     assert.ok(Object.keys(flights).length >= 8);
   });
 
-  test('selects opensky when it has recent non-empty data and no error', () => {
+  test('ignores opensky data — opensky is not in the active cascade', () => {
+    // Even with fresh, non-errored OpenSky data the cascade must not select it
+    // (OpenSky is commented-out of REAL_FLIGHT_PROVIDERS pending access approval).
     const mockFlight = { id: 'flight-test01', type: 'flight', lat: 45, lng: -90,
       icao24: 'test01', source: 'opensky', state: 'airborne' };
     openSkyLiveState.flights = { 'flight-test01': mockFlight };
     openSkyLiveState.lastPollAt = new Date().toISOString();
     openSkyLiveState.lastErrorAt = null;
 
-    const { provider, flights } = selectActiveFlights();
-    assert.equal(provider, 'opensky');
-    assert.ok('flight-test01' in flights);
+    const { provider } = selectActiveFlights();
+    assert.equal(provider, 'sim', 'OpenSky must not be selected — it is not in REAL_FLIGHT_PROVIDERS');
   });
 
-  test('falls back from opensky to sim when opensky has an error', () => {
+  test('falls back to sim when opensky has an error (opensky not in cascade)', () => {
     const mockFlight = { id: 'flight-test02', type: 'flight', lat: 45, lng: -90,
       icao24: 'test02', source: 'opensky', state: 'airborne' };
     openSkyLiveState.flights = { 'flight-test02': mockFlight };
@@ -301,7 +304,7 @@ describe('selectActiveFlights', () => {
     assert.equal(provider, 'sim');
   });
 
-  test('falls back from opensky to sim when opensky data is stale (no poll)', () => {
+  test('falls back to sim when opensky data is stale (opensky not in cascade)', () => {
     const mockFlight = { id: 'flight-test03', type: 'flight', lat: 45, lng: -90,
       icao24: 'test03', source: 'opensky', state: 'airborne' };
     openSkyLiveState.flights = { 'flight-test03': mockFlight };
@@ -324,5 +327,55 @@ describe('selectActiveFlights', () => {
     assert.ok(Object.keys(flights).length > 0);
     assert.ok(flightProviderState.fetched > 0);
     assert.ok(flightProviderState.visible >= 0);
+  });
+});
+
+// ─── REAL_FLIGHT_PROVIDERS registry ─────────────────────────────────────────
+
+describe('REAL_FLIGHT_PROVIDERS', () => {
+  test('is an array', () => {
+    assert.ok(Array.isArray(REAL_FLIGHT_PROVIDERS));
+  });
+
+  test('each entry has name, isReady, and getFlights', () => {
+    for (const p of REAL_FLIGHT_PROVIDERS) {
+      assert.ok(typeof p.name === 'string' && p.name.length > 0, 'entry must have a non-empty name');
+      assert.ok(typeof p.isReady === 'function', 'entry must have isReady function');
+      assert.ok(typeof p.getFlights === 'function', 'entry must have getFlights function');
+    }
+  });
+
+  test('opensky is not an active entry (access pending)', () => {
+    const names = REAL_FLIGHT_PROVIDERS.map(p => p.name);
+    assert.ok(!names.includes('opensky'), 'OpenSky must not be in the active provider registry');
+  });
+
+  test('adsb-exchange entry reports not ready when no key configured', () => {
+    const adsb = REAL_FLIGHT_PROVIDERS.find(p => p.name === 'adsb-exchange');
+    if (!adsb) return; // no adsb entry configured in this env — skip
+    // adsbExchangeState is already cleared by resetProviderState in beforeEach above
+    // and ADSB_EXCHANGE_API_KEY is empty in the test env, so isReady must be false
+    assert.equal(adsb.isReady(), false);
+  });
+});
+
+// ─── isRecentPoll ─────────────────────────────────────────────────────────────
+
+describe('isRecentPoll', () => {
+  test('returns false for null', () => {
+    assert.equal(isRecentPoll(null), false);
+  });
+
+  test('returns false for undefined', () => {
+    assert.equal(isRecentPoll(undefined), false);
+  });
+
+  test('returns true for a recent timestamp', () => {
+    assert.equal(isRecentPoll(new Date().toISOString()), true);
+  });
+
+  test('returns false for a timestamp older than the stale window', () => {
+    const old = new Date(Date.now() - 200000).toISOString(); // 200 s ago
+    assert.equal(isRecentPoll(old), false);
   });
 });
