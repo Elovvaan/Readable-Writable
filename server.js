@@ -7,7 +7,8 @@ const path = require('path');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4001;
-const RW_OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED || 'true';
+// OpenSky is an optional future integration — disabled by default until access is confirmed.
+const RW_OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED || 'false';
 const OPENSKY_ENABLED = RW_OPENSKY_ENABLED === 'true';
 const OPENSKY_PUBLIC_STATES_URL = 'https://opensky-network.org/api/states/all';
 const OPENSKY_STATES_URL = process.env.OPENSKY_STATES_URL || OPENSKY_PUBLIC_STATES_URL;
@@ -134,7 +135,7 @@ const adsbExchangeState = {
 
 // Tracks the result of the current provider cascade selection.
 const flightProviderState = {
-  activeProvider: 'sim',   // 'adsb-exchange' | 'opensky' | 'sim'
+  activeProvider: 'sim',   // 'adsb-exchange' | <future-provider> | 'sim'
   fetched: 0,
   visible: 0,
   drawn: 0,
@@ -6841,6 +6842,9 @@ function snapshot() {
         lastErrorAt: adsbExchangeState.lastErrorAt,
       },
       opensky: {
+        // OpenSky is not in the active provider cascade (access pending).
+        // It is preserved here for diagnostics and optional future use.
+        inActiveCascade: false,
         enabled:     OPENSKY_ENABLED,
         fetched:     openSkyLiveState.lastFetchedCount,
         normalized:  openSkyLiveState.lastNormalizedCount,
@@ -7100,43 +7104,65 @@ function getSimFlights() {
 }
 
 /**
+ * Returns true if the given ISO timestamp is within the provider-stale window.
+ * @param {string|null} pollAt  ISO timestamp of the last successful poll
+ * @returns {boolean}
+ */
+function isRecentPoll(pollAt) {
+  if (!pollAt) return false;
+  return Date.now() - new Date(pollAt).getTime() < FLIGHT_PROVIDER_STALE_MS;
+}
+
+/**
+ * Ordered list of real flight providers.  selectActiveFlights() walks this
+ * list and picks the first entry whose isReady() returns true.
+ *
+ * To add a new provider: append an object with { name, isReady, getFlights }.
+ *
+ * OpenSky is intentionally excluded from the active cascade while access is
+ * pending / unreliable.  The commented-out entry below shows how to re-enable
+ * it once access is confirmed — no other code changes required.
+ */
+const REAL_FLIGHT_PROVIDERS = [
+  {
+    name:       'adsb-exchange',
+    isReady:    () =>
+      !!ADSB_EXCHANGE_API_KEY &&
+      !adsbExchangeState.lastErrorAt &&
+      isRecentPoll(adsbExchangeState.lastPollAt) &&
+      Object.keys(adsbExchangeState.flights).length > 0,
+    getFlights: () => adsbExchangeState.flights,
+  },
+  // ── OpenSky (optional — uncomment once access is confirmed) ───────────────
+  // {
+  //   name:       'opensky',
+  //   isReady:    () =>
+  //     OPENSKY_ENABLED &&
+  //     !openSkyLiveState.lastErrorAt &&
+  //     isRecentPoll(openSkyLiveState.lastPollAt) &&
+  //     Object.keys(openSkyLiveState.flights).length > 0,
+  //   getFlights: () => openSkyLiveState.flights,
+  // },
+];
+
+/**
  * Select the active flight provider using the priority cascade:
- *   1. ADS-B Exchange  — if key is configured, last poll is recent and non-empty
- *   2. OpenSky         — if enabled, last poll is recent and non-empty
- *   3. Simulated       — deterministic orbital flights, always available
+ *   1. First ready entry in REAL_FLIGHT_PROVIDERS (e.g. ADS-B Exchange)
+ *   2. Simulated — deterministic orbital flights, always available as fallback
  *
  * Side-effect: updates flightProviderState.
  * @returns {{ provider: string, flights: object }}
  */
 function selectActiveFlights() {
-  const now = Date.now();
-  const isRecent = (pollAt) => {
-    if (!pollAt) return false;
-    return now - new Date(pollAt).getTime() < FLIGHT_PROVIDER_STALE_MS;
-  };
-
   let provider, flights;
 
-  // 1. ADS-B Exchange
-  if (
-    ADSB_EXCHANGE_API_KEY &&
-    !adsbExchangeState.lastErrorAt &&
-    isRecent(adsbExchangeState.lastPollAt) &&
-    Object.keys(adsbExchangeState.flights).length > 0
-  ) {
-    provider = 'adsb-exchange';
-    flights  = adsbExchangeState.flights;
-  // 2. OpenSky
-  } else if (
-    OPENSKY_ENABLED &&
-    !openSkyLiveState.lastErrorAt &&
-    isRecent(openSkyLiveState.lastPollAt) &&
-    Object.keys(openSkyLiveState.flights).length > 0
-  ) {
-    provider = 'opensky';
-    flights  = openSkyLiveState.flights;
-  // 3. Simulated fallback — always-on so the globe keeps moving
+  // Walk real providers in priority order; use the first that is ready.
+  const active = REAL_FLIGHT_PROVIDERS.find(p => p.isReady());
+  if (active) {
+    provider = active.name;
+    flights  = active.getFlights();
   } else {
+    // Simulated fallback — always-on so the globe keeps moving.
     provider = 'sim';
     flights  = getSimFlights();
   }
@@ -8990,7 +9016,7 @@ if (require.main === module) {
   setInterval(pruneOldTasks, 60000);
   startAdsbExchangePolling();   // primary live source
   startAviationstackPolling();
-  startOpenSkyPolling();        // secondary fallback
+  startOpenSkyPolling();        // optional future integration (disabled by default; see REAL_FLIGHT_PROVIDERS)
   startOpenSkyFileWatcher();
 
   server.listen(PORT, '0.0.0.0', () => {
@@ -9015,6 +9041,8 @@ module.exports = {
   normalizeAdsbBatch,
   getSimFlights,
   selectActiveFlights,
+  isRecentPoll,
+  REAL_FLIGHT_PROVIDERS,
   emit,
   wsSend,
   wsParse,
