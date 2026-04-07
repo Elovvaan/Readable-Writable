@@ -219,3 +219,69 @@ describe('unknown routes', () => {
     assert.equal(callRouter('POST', '/health').statusCode, 404);
   });
 });
+
+// ─── GET /api/ground-vehicles ────────────────────────────────────────────────
+
+describe('GET /api/ground-vehicles', () => {
+  test('returns 200', () => {
+    assert.equal(callRouter('GET', '/api/ground-vehicles').statusCode, 200);
+  });
+
+  test('Content-Type is application/json', () => {
+    const res = callRouter('GET', '/api/ground-vehicles');
+    assert.ok(res.headers['Content-Type'].includes('application/json'));
+  });
+
+  test('body has generated, visible, drawn, entities, ts fields', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok('generated' in body, 'must have generated');
+    assert.ok('visible'   in body, 'must have visible');
+    assert.ok('drawn'     in body, 'must have drawn');
+    assert.ok('entities'  in body, 'must have entities');
+    assert.ok('ts'        in body, 'must have ts');
+  });
+
+  test('generated >= 10 after live entity refresh', () => {
+    const { refreshLiveEntityLayers } = require('../server');
+    refreshLiveEntityLayers();
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok(body.generated >= 10, 'expected >= 10 generated vehicles, got ' + body.generated);
+  });
+
+  test('visible <= generated', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok(body.visible <= body.generated, 'visible must not exceed generated');
+  });
+
+  test('drawn <= visible', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok(body.drawn <= body.visible, 'drawn must not exceed visible');
+  });
+
+  test('entities is an array', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok(Array.isArray(body.entities));
+  });
+
+  test('entities have id, type, lat, lng fields', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    for (const e of body.entities) {
+      assert.ok('id'  in e, 'entity must have id');
+      assert.ok('type' in e, 'entity must have type');
+      assert.ok('lat'  in e, 'entity must have lat');
+      assert.ok('lng'  in e, 'entity must have lng');
+    }
+  });
+
+  test('entities count matches drawn count', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.equal(body.entities.length, body.drawn, 'entities.length must equal drawn');
+  });
+
+  test('ts is a recent timestamp', () => {
+    const before = Date.now();
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    const after = Date.now();
+    assert.ok(body.ts >= before && body.ts <= after, 'ts must be between before and after');
+  });
+});
