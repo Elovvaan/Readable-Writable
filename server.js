@@ -5774,7 +5774,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   document.querySelectorAll('.rail-btn[data-panel]').forEach(function (btn) {
     btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
   });
-  // Bottom action bar panel triggers (Logs button)
+  // Bottom action bar panel triggers (buttons with data-panel attribute)
   document.querySelectorAll('.bottom-action-btn[data-panel]').forEach(function (btn) {
     btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
   });
@@ -6276,7 +6276,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     function closeInspector() {
       orchSelId = null;
-      // Reset body to idle state but keep the panel anchored and visible
+      // Reset body to idle state; panel remains visible unless .closed class is applied
       if (orchBodyEl) orchBodyEl.innerHTML = '<div class="oi-field"><span class="oi-field-label">Select a node</span></div>';
     }
 
