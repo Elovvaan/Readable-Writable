@@ -1299,6 +1299,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <div class="sp-kv"><span class="sp-key">Flights</span><span class="sp-val" id="sp-ov-flights">—</span></div>
       <div class="sp-kv"><span class="sp-key">Satellites</span><span class="sp-val" id="sp-ov-sats">—</span></div>
       <div class="sp-kv"><span class="sp-key">Vehicles</span><span class="sp-val" id="sp-ov-vehicles">—</span></div>
+      <div class="sp-kv"><span class="sp-key" style="padding-left:8px;font-size:.56rem;color:#2e4a5a">↳ gen/drawn</span><span class="sp-val" id="sp-ov-vehicles-drawn" style="font-size:.56rem;color:#4e8098">—</span></div>
       <div class="sp-section">Alerts</div>
       <div class="sp-alert ok" id="sp-ov-alert">All systems nominal</div>
     </div>
@@ -7024,9 +7025,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (flightsEl) flightsEl.textContent = flightCount;
     var satsEl = document.getElementById('sp-ov-sats');
     if (satsEl) satsEl.textContent = satCount;
-    var vehicleCount = typeof liveEntityState !== 'undefined' ? Object.keys(liveEntityState.vehicles || {}).length : 0;
+    // Read vehicle counts from snapshot data (state.liveEntities) — liveEntityState is server-side only
+    var vehicleList = (state && state.liveEntities && state.liveEntities.vehicles) || [];
+    var vehicleGenerated = vehicleList.length;
+    var vehicleDrawn = lastCesiumRenderCounts ? (lastCesiumRenderCounts.vehiclesDrawn || 0) : 0;
     var vehiclesEl = document.getElementById('sp-ov-vehicles');
-    if (vehiclesEl) vehiclesEl.textContent = vehicleCount;
+    if (vehiclesEl) vehiclesEl.textContent = vehicleGenerated;
+    var vehiclesDrawnEl = document.getElementById('sp-ov-vehicles-drawn');
+    if (vehiclesDrawnEl) vehiclesDrawnEl.textContent = vehicleGenerated + ' gen / ' + vehicleDrawn + ' drawn';
   }
 
   function updateTrajectoryPanel() {
@@ -7883,7 +7889,7 @@ function seededRand(key, slot) {
   return (h >>> 0) / 0xFFFFFFFF;
 }
 
-const LIVE_ENTITY_UPDATE_MS = 8000; // refresh interval for simulated live entities
+const LIVE_ENTITY_UPDATE_MS = 800;  // refresh interval for simulated live entities (match simulation loop for smooth motion)
 let lastLiveEntityUpdateAt = 0;
 
 /**
@@ -7897,12 +7903,23 @@ function refreshLiveEntityLayers() {
 
   // ── Vehicles (ground traffic in major city corridors) ──────────────────────
   const vehicleSeeds = [
+    // Original 6 seeds — kept for backward compatibility with tests
     { id: 'v001', baseLat: 40.71, baseLng: -74.01, label: 'UNIT-01', subtype: 'police' },
     { id: 'v002', baseLat: 51.50, baseLng: -0.12,  label: 'UNIT-02', subtype: 'ambulance' },
     { id: 'v003', baseLat: 48.85, baseLng: 2.35,   label: 'TRK-03',  subtype: 'truck' },
     { id: 'v004', baseLat: 35.68, baseLng: 139.69, label: 'CAR-04',  subtype: 'car' },
     { id: 'v005', baseLat: 34.05, baseLng: -118.24, label: 'UNIT-05', subtype: 'fire' },
     { id: 'v006', baseLat: 19.43, baseLng: -99.13, label: 'TRK-06',  subtype: 'truck' },
+    // Additional seeds for global coverage and visible density
+    { id: 'v007', baseLat: 41.88, baseLng: -87.63, label: 'CAR-07',  subtype: 'car' },
+    { id: 'v008', baseLat: 37.77, baseLng: -122.42, label: 'TRK-08', subtype: 'truck' },
+    { id: 'v009', baseLat: 55.75, baseLng: 37.62,  label: 'UNIT-09', subtype: 'police' },
+    { id: 'v010', baseLat: 28.61, baseLng: 77.21,  label: 'BUS-10',  subtype: 'bus' },
+    { id: 'v011', baseLat: -23.55, baseLng: -46.63, label: 'CAR-11', subtype: 'car' },
+    { id: 'v012', baseLat: 1.35,  baseLng: 103.82, label: 'TRK-12',  subtype: 'truck' },
+    { id: 'v013', baseLat: 37.57, baseLng: 126.98, label: 'UNIT-13', subtype: 'ambulance' },
+    { id: 'v014', baseLat: -33.87, baseLng: 151.21, label: 'BUS-14', subtype: 'bus' },
+    { id: 'v015', baseLat: 52.52, baseLng: 13.40,  label: 'CAR-15',  subtype: 'car' },
   ];
   for (const s of vehicleSeeds) {
     // Orbital motion: radius ~2 km, one full lap per 30 s — visibly moves on globe
@@ -8021,6 +8038,11 @@ function seedSensorNodes() {
     { id: 'sn006', lat: 1.35,  lng: 103.82,  label: 'CAM-SIN-06', subtype: 'cctv',   source: 'infra' },
     { id: 'sn007', lat: 25.20, lng: 55.27,   label: 'WX-DXB-07',  subtype: 'weather',source: 'noaa'  },
     { id: 'sn008', lat: -33.86, lng: 151.21, label: 'CAM-SYD-08', subtype: 'cctv',   source: 'infra' },
+    // Traffic camera nodes — support for future traffic camera feeds
+    { id: 'tc001', lat: 40.75, lng: -74.00, label: 'TCAM-NYC-01', subtype: 'traffic_cam', source: 'infra' },
+    { id: 'tc002', lat: 51.52, lng: -0.10,  label: 'TCAM-LON-02', subtype: 'traffic_cam', source: 'infra' },
+    { id: 'tc003', lat: 34.07, lng: -118.26, label: 'TCAM-LAX-03', subtype: 'traffic_cam', source: 'infra' },
+    { id: 'tc004', lat: 35.69, lng: 139.70, label: 'TCAM-TKY-04', subtype: 'traffic_cam', source: 'infra' },
   ];
   for (const s of sensorSeeds) {
     if (!liveEntityState.sensors[s.id]) {
@@ -9453,6 +9475,22 @@ function router(req, res) {
     return;
   }
 
+  // ── GET /api/ground-vehicles  → ground vehicle runtime stats and entity list
+  if (req.method === 'GET' && url === '/api/ground-vehicles') {
+    const allVehicles = Object.values(liveEntityState.vehicles);
+    const visible = allVehicles.filter(v => Number.isFinite(v.lat) && Number.isFinite(v.lng));
+    const entities = visible.map(sanitizeEntityForRender).filter(Boolean);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      generated: allVehicles.length,
+      visible:   visible.length,
+      drawn:     entities.length,
+      entities,
+      ts: Date.now(),
+    }));
+    return;
+  }
+
   // ── GET /api/traffic  → traffic layer data
   if (req.method === 'GET' && url === '/api/traffic') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -9594,4 +9632,5 @@ module.exports = {
   refreshTrafficLayer,
   recordTimelineSnapshot,
   seedSensorNodes,
+  LIVE_ENTITY_UPDATE_MS,
 };
