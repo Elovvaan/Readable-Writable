@@ -187,37 +187,39 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { height: 100%; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #08090b; color: #8fa8bb; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-    /* ── Header ──────────────────────────────────────────────────────────── */
-    header { background: #09090d; border-bottom: 1px solid #141820; padding: 5px 14px; display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-height: 40px; }
-    header h1 { font-size: .95rem; font-weight: 600; letter-spacing: .06em; color: #2ab8a4; margin-right: auto; }
-    #status { font-size: .72rem; padding: 2px 7px; border-radius: 999px; background: #0d2218; color: #3ecb92; border: 1px solid #1a4a32; white-space: nowrap; }
+    /* ── Top Status Bar ──────────────────────────────────────────────────── */
+    header { background: #05060a; border-bottom: 1px solid #1f2d3a; padding: 0 14px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; min-height: 38px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    header h1 { font-size: .72rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; margin-right: auto; border-right: 1px solid #1a2530; padding-right: 12px; }
+    #status { font-size: .65rem; padding: 2px 8px; border-radius: 2px; background: #0d2218; color: #3ecb92; border: 1px solid #1a4a32; white-space: nowrap; letter-spacing: .08em; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     #status.disconnected { background: #1e0d0d; color: #c05050; border-color: #3d1a1a; }
-    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .6rem; color: #4e7a8c; border: 1px solid #161e28; border-radius: 6px; padding: 3px 7px; background: #06080ccc; }
-    .telemetry-item { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
-    .telemetry-label { color: #354e5e; letter-spacing: .07em; }
-    .telemetry-value { color: #6fa8bc; }
+    #telemetry-bar { display: inline-flex; align-items: center; gap: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .62rem; color: #4e7a8c; border: 1px solid #161e28; border-radius: 2px; padding: 3px 10px; background: #06080c; }
+    .telemetry-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .telemetry-label { color: #2a4050; letter-spacing: .1em; text-transform: uppercase; font-size: .56rem; }
+    .telemetry-value { color: #7ab8cc; font-weight: 600; }
     #telemetry-rec.live { color: #d05858; text-shadow: 0 0 8px rgba(200,60,60,.3); animation: rec-pulse 1.4s ease-in-out infinite; }
     @keyframes rec-pulse { 0%, 100% { opacity: .62; } 50% { opacity: 1; } }
-    #pause-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+    #pause-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 2px; font-size: .62rem; padding: 3px 9px; cursor: pointer; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; letter-spacing: .08em; text-transform: uppercase; }
     #pause-btn.active { background: #1a0f0f; color: #c28080; border-color: #3d2020; }
     /* ── Globe shell — fills remaining space ─────────────────────────────── */
-    #globe-shell { position: relative; flex: 1; overflow: hidden; background: #04050a; min-height: 0; }
+    #globe-shell { position: relative; flex: 1; overflow: hidden; background: #04050a; min-height: 0; box-shadow: inset 0 0 80px rgba(62, 201, 184, 0.06); }
     #cesium-world { position: absolute; inset: 0; z-index: 1; display: block; width: 100%; height: 100%; }
     canvas#world { position: absolute; inset: 0; z-index: 2; display: block; width: 100%; height: 100%; pointer-events: none; }
     #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .35; transition: opacity 320ms ease, background 320ms ease, filter 320ms ease; }
     #fx-overlay .scanlines, #fx-overlay .noise, #fx-overlay .vignette, #fx-overlay .pixel-grid { position: absolute; inset: 0; }
-    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(180,255,240,.05) 0, rgba(180,255,240,.05) 1px, transparent 1px, transparent 3px); opacity: .18; }
+    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(180,255,240,.06) 0, rgba(180,255,240,.06) 1px, transparent 1px, transparent 3px); opacity: .22; }
     #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.07) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .1; }
     #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px); background-size: 10px 10px; opacity: .05; }
     #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 42%, rgba(0,0,0,.72) 100%); opacity: .65; }
-    /* ── Launcher rail ───────────────────────────────────────────────────── */
-    #rail { position: absolute; left: 0; top: 0; bottom: 0; width: 44px; z-index: 20; display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 4px; background: #07080cdd; border-right: 1px solid #141820; backdrop-filter: blur(6px); }
-    .rail-btn { width: 34px; height: 34px; border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 6px; font-size: .9rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 160ms, border-color 160ms, color 160ms, transform 160ms; user-select: none; }
-    .rail-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; transform: translateY(-1px); }
-    .rail-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
-    .rail-sep { width: 22px; height: 1px; background: #141e28; margin: 4px 0; flex-shrink: 0; }
+    /* ── Left command panel ──────────────────────────────────────────────── */
+    #rail { position: absolute; left: 0; top: 0; bottom: 0; width: 160px; z-index: 20; display: flex; flex-direction: column; align-items: stretch; padding: 0; gap: 0; background: #06070add; border-right: 1px solid #141e2a; backdrop-filter: blur(6px); overflow-y: auto; overflow-x: hidden; }
+    .rail-section-title { font-size: .5rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: #1e3040; padding: 8px 10px 4px; border-bottom: 1px solid #0e1820; background: #05060a; flex-shrink: 0; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .rail-btn { width: 100%; height: auto; min-height: 32px; border: none; border-bottom: 1px solid #0e1520; background: #07080c; color: #3a5060; border-radius: 0; font-size: .62rem; cursor: pointer; display: flex; align-items: center; justify-content: flex-start; flex-shrink: 0; gap: 8px; padding: 7px 10px; transition: background 160ms, color 160ms; user-select: none; font-family: 'Cascadia Code', 'Fira Code', monospace; letter-spacing: .06em; text-align: left; }
+    .rail-btn:hover { background: #0d1828; color: #6ab0c8; }
+    .rail-btn.active { background: #0a2018; color: #3ec9b8; border-left: 2px solid #3ec9b8; }
+    .rail-btn .rail-icon { font-size: .82rem; flex-shrink: 0; width: 16px; text-align: center; }
+    .rail-sep { width: 100%; height: 1px; background: #141e28; margin: 2px 0; flex-shrink: 0; }
     /* ── Viewport controls ───────────────────────────────────────────────── */
-    #viewport-controls { position: absolute; bottom: 14px; left: 56px; display: grid; gap: 5px; z-index: 10; pointer-events: auto; }
+    #viewport-controls { position: absolute; bottom: 14px; left: 172px; display: grid; gap: 5px; z-index: 10; pointer-events: auto; }
     .viewport-row { display: flex; gap: 4px; }
     .viewport-btn { border: 1px solid #1c2e3a; background: #07101acc; color: #4e8898; border-radius: 4px; font-size: .66rem; padding: 5px 9px; cursor: pointer; transition: all 180ms ease; backdrop-filter: blur(4px); }
     .viewport-btn:hover { background: #0e2030e0; border-color: #2a5060; color: #7abcc8; transform: translateY(-1px); }
@@ -226,10 +228,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     /* ── Drawers — all position:absolute inside #globe-shell ─────────────── */
     .drawer { position: absolute; z-index: 15; background: #09090d; display: flex; flex-direction: column; overflow: hidden; pointer-events: none; opacity: 0; transition: transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
     .drawer.open { pointer-events: auto; opacity: 1; }
-    .drawer-left  { left: 44px; top: 0; bottom: 0; width: 240px; border-right: 1px solid #141820; transform: translateX(-240px); }
+    .drawer-left  { left: 160px; top: 0; bottom: 0; width: 240px; border-right: 1px solid #141820; transform: translateX(-240px); }
     .drawer-right { right: 0; top: 0; bottom: 0; width: 280px; border-left: 1px solid #141820; transform: translateX(280px); }
-    .drawer-bottom { left: 44px; right: 0; bottom: 0; height: 280px; border-top: 1px solid #141820; transform: translateY(280px); }
-    .drawer-top { left: 44px; right: 0; top: 0; border-bottom: 1px solid #141820; transform: translateY(-100%); }
+    .drawer-bottom { left: 160px; right: 0; bottom: 0; height: 280px; border-top: 1px solid #141820; transform: translateY(280px); }
+    .drawer-top { left: 160px; right: 0; top: 0; border-bottom: 1px solid #141820; transform: translateY(-100%); }
     .drawer-left.open  { transform: translateX(0); }
     .drawer-right.open { transform: translateX(0); }
     .drawer-bottom.open { transform: translateY(0); }
@@ -345,87 +347,35 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .lp-title, .selected-label, .stat-label, .drawer-title { color: color-mix(in srgb, var(--style-shell, #4ab8ac) 38%, #2a3840); }
     /* ── Global transitions ──────────────────────────────────────────────── */
     #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
-  /* === RW NEW LAYOUT === */
-
-#sidebar {
-  position: absolute;
-  left: 0;
-  top: 60px;
-  width: 200px;
-  bottom: 0;
-  background: rgba(0,0,0,0.85);
-  padding: 12px;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-#sidebar button {
-  background: #111;
-  color: #0ff;
-  border: 1px solid #0ff;
-  padding: 8px;
-  cursor: pointer;
-  text-align: left;
-}
-
-#sidebar button:hover {
-  background: #0ff;
-  color: #000;
-}
-
-#worldview {
-  position: absolute;
-  left: 200px;
-  top: 60px;
-  right: 0;
-  bottom: 0;
-}
-
-.panel {
-  position: absolute;
-  left: 200px;
-  right: 0;
-  bottom: 0;
-  height: 240px;
-  background: rgba(0,0,0,0.92);
-  color: white;
-  display: none;
-  z-index: 30;
-  overflow: auto;
-  padding: 12px;
-  border-top: 1px solid #0ff;
-}
     /* ── Orchestration overlay ──────────────────────────────────────────── */
     #orch-canvas { position: absolute; inset: 0; z-index: 4; pointer-events: none; display: block; }
     #orch-inspector {
       position: absolute; right: 0; top: 0; bottom: 0; width: 268px; z-index: 26;
-      background: #07080ce8; border-left: 1px solid #1a2530; backdrop-filter: blur(8px);
-      display: flex; flex-direction: column; transform: translateX(268px);
+      background: #06070bec; border-left: 1px solid #1a2d3a; backdrop-filter: blur(8px);
+      display: flex; flex-direction: column; transform: translateX(0);
       transition: transform 200ms cubic-bezier(.4,0,.2,1); pointer-events: auto;
     }
-    #orch-inspector.open { transform: translateX(0); }
+    #orch-inspector.closed { transform: translateX(268px); pointer-events: none; }
     #orch-inspector.shift-left { right: 280px; }
-    .oi-header { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #111820; flex-shrink: 0; gap: 8px; }
-    .oi-title { font-size: .6rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; flex: 1; }
+    .oi-header { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #1a2d3a; flex-shrink: 0; gap: 8px; background: #05060a; }
+    .oi-title { font-size: .58rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: #3ec9b8; flex: 1; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .oi-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; }
     .oi-close:hover { color: #6898aa; }
-    .oi-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .oi-badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 8px; font-size: .6rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; border: 1px solid; }
+    .oi-body { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+    .oi-badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 2px; padding: 2px 8px; font-size: .6rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; border: 1px solid; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .oi-badge.idle  { color: #4e7888; border-color: #1a2a38; background: #0c1620; }
     .oi-badge.active{ color: #3ec9b8; border-color: #1f5e5a; background: #0a2422; }
     .oi-badge.error { color: #e05050; border-color: #4a1818; background: #1a0a0a; }
     .oi-badge.high-load { color: #f0a020; border-color: #4a3010; background: #1a1005; }
-    .oi-field { display: grid; gap: 2px; font-size: .66rem; }
-    .oi-field-label { color: #2a3a48; letter-spacing: .06em; text-transform: uppercase; font-size: .58rem; }
-    .oi-field-value { color: #7098a8; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .oi-field { display: grid; gap: 2px; font-size: .64rem; }
+    .oi-field-label { color: #1e3040; letter-spacing: .1em; text-transform: uppercase; font-size: .56rem; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .oi-field-value { color: #6898a8; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .oi-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .oi-metric { border: 1px solid #111820; border-radius: 4px; padding: 6px 8px; }
-    .oi-metric-val { color: #6ab0c8; font-family: monospace; font-size: .82rem; }
-    .oi-metric-key { color: #2a3840; font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; }
+    .oi-metric { border: 1px solid #111820; border-radius: 2px; padding: 6px 8px; background: #06080d; }
+    .oi-metric-val { color: #6ab0c8; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .8rem; }
+    .oi-metric-key { color: #1e3040; font-size: .56rem; letter-spacing: .08em; text-transform: uppercase; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .oi-section { border-top: 1px solid #111820; padding-top: 8px; margin-top: 4px; }
-    .oi-section-title { font-size: .58rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #1e3040; margin-bottom: 6px; }
+    .oi-section-title { font-size: .56rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #1e3040; margin-bottom: 6px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     /* Orchestration layer controls in layers drawer */
     .orch-ctrl-row { display: flex; gap: 5px; flex-wrap: wrap; padding: 4px 12px; }
     .orch-ctrl-btn { border: 1px solid #182430; background: #0b1018; color: #4e8096; border-radius: 4px; font-size: .62rem; padding: 4px 8px; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; }
@@ -528,12 +478,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .header-tab { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; transition: background 160ms, border-color 160ms, color 160ms; }
     .header-tab:hover { background: #111e2a; border-color: #254056; color: #8abccc; }
     .header-tab.active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
-    /* ── Timeline Engine bar ─────────────────────────────────────────────── */
-    #timeline-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 44px; background: #07080cee; border-top: 1px solid #141820; z-index: 25; display: flex; align-items: center; padding: 0 10px; gap: 10px; backdrop-filter: blur(6px); }
+    /* ── Timeline Engine bar / Bottom action bar ─────────────────────────── */
+    #timeline-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 48px; background: #05060aee; border-top: 1px solid #1a2530; z-index: 25; display: flex; align-items: center; padding: 0 10px; gap: 6px; backdrop-filter: blur(6px); }
+    #bottom-quick-actions { display: flex; gap: 4px; flex-shrink: 0; border-right: 1px solid #1a2530; padding-right: 8px; margin-right: 4px; }
+    .bottom-action-btn { border: 1px solid #1a2d3a; background: #0a1018; color: #5a8898; border-radius: 2px; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 5px 10px; cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; }
+    .bottom-action-btn:hover { background: #0e1e2e; border-color: #2a5060; color: #8abccc; }
+    .bottom-action-btn.active { background: #0a2018; color: #3ec9b8; border-color: #1f5e5a; }
+    .tl-divider { width: 1px; height: 24px; background: #1a2530; flex-shrink: 0; margin: 0 4px; }
     #timeline-controls { display: flex; gap: 4px; flex-shrink: 0; }
-    .tl-btn { border: 1px solid #1c2a36; background: #0e1520; color: #4e7888; border-radius: 3px; font-size: .62rem; font-weight: 700; letter-spacing: .08em; padding: 4px 8px; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; }
+    .tl-btn { border: 1px solid #1c2a36; background: #0e1520; color: #4e7888; border-radius: 2px; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 4px 8px; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .tl-btn:hover { background: #111e2a; border-color: #254056; color: #7abcc8; }
-    .tl-btn.tl-btn-active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
+    .tl-btn.tl-btn-active { background: #0a2018; color: #3ec9b8; border-color: #1f5e5a; }
     .tl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
     #timeline-scrub-area { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
     .tl-time-label { font-size: .55rem; color: #3a5060; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; flex-shrink: 0; }
@@ -557,10 +512,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .profile-history-entry:last-child { border-bottom: none; }
     .profile-history-entry .phe-ts { color: #2a3840; margin-right: 5px; }
     .profile-history-entry .phe-kind { color: #3ec9b8; margin-right: 5px; }
-    /* ── Adjust globe shell bottom to make room for timeline ─────────────── */
-    #globe-shell { padding-bottom: 44px; }
+    /* ── Adjust globe shell bottom to make room for bottom action bar ────── */
+    #globe-shell { padding-bottom: 48px; }
     /* ── Mode Drawer: right-side slide-in console (Street Level / Ground Level) ── */
-    #mode-drawer { position: absolute; right: 0; top: 0; bottom: 44px; width: 268px; z-index: 18; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; transform: translateX(268px); opacity: 0; pointer-events: none; transition: transform 260ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
+    #mode-drawer { position: absolute; right: 0; top: 0; bottom: 48px; width: 268px; z-index: 18; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; transform: translateX(268px); opacity: 0; pointer-events: none; transition: transform 260ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
     #mode-drawer.open { transform: translateX(0); opacity: 1; pointer-events: auto; }
     #mode-drawer-hdr { display: flex; align-items: center; padding: 6px 10px; border-bottom: 1px solid #1f5e5a; flex-shrink: 0; gap: 6px; background: #07080c; }
     #mode-drawer-indicator { color: #c05050; font-size: .66rem; animation: rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0; }
@@ -611,18 +566,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 </header>
 <div id="globe-shell">
 
-  <!-- Launcher rail -->
-  <nav id="rail" aria-label="Panel launcher">
-    <button class="rail-btn" type="button" data-panel="layers" title="Data Layers" aria-label="Toggle Layers panel">☰</button>
-    <button class="rail-btn" type="button" data-panel="events" title="Event Stream" aria-label="Toggle Events panel">◉</button>
-    <button class="rail-btn" type="button" data-panel="target" title="Selected Target" aria-label="Toggle Target panel">⊕</button>
-    <button class="rail-btn" type="button" data-panel="stats"  title="Stats" aria-label="Toggle Stats panel">▦</button>
-    <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel">◈</button>
-    <div class="rail-sep"></div>
-    <button class="rail-btn" id="orch-rail-btn" type="button" title="Orchestration Overlay" aria-label="Toggle Orchestration Overlay">⬡</button>
-    <button class="rail-btn" type="button" data-panel="tactical" title="Tactical Controls" aria-label="Toggle Tactical panel">⊙</button>
-    <button class="rail-btn" id="rail-btn-street-level" type="button" title="Street Level" aria-label="Street Level" aria-pressed="false">⊞</button>
-    <button class="rail-btn" id="rail-btn-ground-level" type="button" title="Ground Level" aria-label="Ground Level" aria-pressed="false">▣</button>
+  <!-- Left command panel -->
+  <nav id="rail" aria-label="Command panel">
+    <div class="rail-section-title">SYSTEM</div>
+    <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel"><span class="rail-icon">◈</span> Style / FX</button>
+    <button class="rail-btn" type="button" data-panel="tactical" title="Tactical Controls" aria-label="Toggle Tactical panel"><span class="rail-icon">⊙</span> Tactical</button>
+    <button class="rail-btn" id="orch-rail-btn" type="button" title="Orchestration Overlay" aria-label="Toggle Orchestration Overlay"><span class="rail-icon">⬡</span> Orchestration</button>
+    <button class="rail-btn" id="rail-btn-street-level" type="button" title="Street Level" aria-label="Street Level" aria-pressed="false"><span class="rail-icon">⊞</span> Street Level</button>
+    <button class="rail-btn" id="rail-btn-ground-level" type="button" title="Ground Level" aria-label="Ground Level" aria-pressed="false"><span class="rail-icon">▣</span> Ground Level</button>
+    <div class="rail-section-title">LAYERS</div>
+    <button class="rail-btn" type="button" data-panel="layers" title="Data Layers" aria-label="Toggle Layers panel"><span class="rail-icon">☰</span> Data Layers</button>
+    <div class="rail-section-title">ACTIONS</div>
+    <button class="rail-btn" type="button" data-panel="events" title="Event Stream" aria-label="Toggle Events panel"><span class="rail-icon">◉</span> Events</button>
+    <button class="rail-btn" type="button" data-panel="target" title="Selected Target" aria-label="Toggle Target panel"><span class="rail-icon">⊕</span> Target</button>
+    <button class="rail-btn" type="button" data-panel="stats"  title="Stats" aria-label="Toggle Stats panel"><span class="rail-icon">▦</span> Stats</button>
   </nav>
 
   <!-- Layers drawer (left) -->
@@ -993,8 +950,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
     <div class="oi-body" id="orch-inspector-body">
       <div class="oi-field"><span class="oi-field-label">Select a node</span></div>
-  <!-- Timeline Engine bar -->
-  <div id="timeline-bar" role="region" aria-label="Timeline Engine">
+  <!-- Bottom action bar + Timeline Engine -->
+  <div id="timeline-bar" role="region" aria-label="Bottom Action Bar">
+    <div id="bottom-quick-actions">
+      <button class="bottom-action-btn" id="act-write-btn" type="button" title="Write note or event">✍ WRITE</button>
+      <button class="bottom-action-btn" id="act-mission-btn" type="button" title="Mission planner">⊛ MISSION</button>
+      <button class="bottom-action-btn" id="act-logs-btn" type="button" title="Open event logs" data-panel="events">◉ LOGS</button>
+    </div>
+    <div class="tl-divider"></div>
     <div id="timeline-controls">
       <button id="tl-live-btn" class="tl-btn tl-btn-active" type="button" title="Switch to live mode" aria-pressed="true">⬤ LIVE</button>
       <button id="tl-replay-btn" class="tl-btn" type="button" title="Switch to replay mode" aria-pressed="false">⏪ REPLAY</button>
@@ -5811,6 +5774,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   document.querySelectorAll('.rail-btn[data-panel]').forEach(function (btn) {
     btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
   });
+  // Bottom action bar panel triggers (buttons with data-panel attribute)
+  document.querySelectorAll('.bottom-action-btn[data-panel]').forEach(function (btn) {
+    btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
+  });
   document.querySelectorAll('.drawer-close').forEach(function (btn) {
     btn.addEventListener('click', closePanel);
   });
@@ -6301,7 +6268,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         + (metricsHtml ? '<div class="oi-section"><div class="oi-section-title">Metrics</div>' + metricsHtml + '</div>' : '')
         + entityHtml;
 
-      orchInspEl.classList.add('open');
+      orchInspEl.classList.remove('closed');
       // Shift left if right drawer is open
       const drawerRight = document.getElementById('drawer-right');
       orchInspEl.classList.toggle('shift-left', drawerRight && drawerRight.classList.contains('open'));
@@ -6309,7 +6276,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     function closeInspector() {
       orchSelId = null;
-      orchInspEl.classList.remove('open');
+      // Reset body to idle state; panel remains visible unless .closed class is applied
+      if (orchBodyEl) orchBodyEl.innerHTML = '<div class="oi-field"><span class="oi-field-label">Select a node</span></div>';
     }
 
     orchCloseEl && orchCloseEl.addEventListener('click', closeInspector);
