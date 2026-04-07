@@ -211,7 +211,27 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px); background-size: 10px 10px; opacity: .05; }
     #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 42%, rgba(0,0,0,.72) 100%); opacity: .65; }
     /* ── Left command panel ──────────────────────────────────────────────── */
-    #rail { position: absolute; left: 0; top: 0; bottom: 0; width: 160px; z-index: 20; display: flex; flex-direction: column; align-items: stretch; padding: 0; gap: 0; background: #06070add; border-right: 1px solid #141e2a; backdrop-filter: blur(6px); overflow-y: auto; overflow-x: hidden; }
+    #rail { position: absolute; left: 0; top: 0; bottom: 0; width: 160px; z-index: 20; display: flex; flex-direction: column; align-items: stretch; padding: 0; gap: 0; background: #06070add; border-right: 1px solid #141e2a; backdrop-filter: blur(6px); overflow-y: auto; overflow-x: hidden; transition: transform 220ms cubic-bezier(.4,0,.2,1); }
+    /* ── Rail tab — slim left-edge toggle strip ──────────────────────────── */
+    #rail-tab { position: absolute; left: 0; top: 0; bottom: 0; width: 16px; z-index: 21; background: #04050900; border-right: 1px solid transparent; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; cursor: pointer; user-select: none; transition: background 180ms, border-color 180ms; }
+    #rail-tab:hover { background: #0a182888; border-color: #1a3040; }
+    #rail-tab-arrow { display: block; font-size: .62rem; color: #1e3848; line-height: 1; transition: color 180ms, transform 220ms cubic-bezier(.4,0,.2,1); pointer-events: none; }
+    #rail-tab:hover #rail-tab-arrow { color: #3e8098; }
+    #rail-tab-label { writing-mode: vertical-lr; transform: rotate(180deg); font-size: .38rem; font-weight: 700; letter-spacing: .22em; text-transform: uppercase; color: #131e28; font-family: 'Cascadia Code', 'Fira Code', monospace; pointer-events: none; transition: color 180ms; white-space: nowrap; }
+    #rail-tab:hover #rail-tab-label { color: #2a5060; }
+    /* Rail-open state: arrow points left (collapse action) */
+    body:not(.rail-collapsed) #rail-tab-arrow { transform: rotate(180deg); color: #1a3040; }
+    body:not(.rail-collapsed) #rail-tab:hover #rail-tab-arrow { color: #3e8098; }
+    /* Rail-collapsed state: entire rail slides off left */
+    body.rail-collapsed #rail { transform: translateX(-160px); }
+    body.rail-collapsed #rail-tab { border-color: #1a2e3a; }
+    body.rail-collapsed #rail-tab-arrow { color: #2a5878; }
+    body.rail-collapsed #rail-tab:hover { background: #0e1e30aa; border-color: #1f4e5a; }
+    body.rail-collapsed #rail-tab:hover #rail-tab-arrow { color: #3ec9b8; }
+    body.rail-collapsed #rail-tab-label { color: #1e3848; }
+    body.rail-collapsed #rail-tab:hover #rail-tab-label { color: #3ec9b8; }
+    /* Active/live indicator on tab */
+    #rail-tab.tab-live #rail-tab-arrow { color: #3ec9b8; animation: rec-pulse 1.4s ease-in-out infinite; }
     .rail-section-title { font-size: .5rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: #1e3040; padding: 8px 10px 4px; border-bottom: 1px solid #0e1820; background: #05060a; flex-shrink: 0; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .rail-btn { width: 100%; height: auto; min-height: 32px; border: none; border-bottom: 1px solid #0e1520; background: #07080c; color: #3a5060; border-radius: 0; font-size: .62rem; cursor: pointer; display: flex; align-items: center; justify-content: flex-start; flex-shrink: 0; gap: 8px; padding: 7px 10px; transition: background 160ms, color 160ms; user-select: none; font-family: 'Cascadia Code', 'Fira Code', monospace; letter-spacing: .06em; text-align: left; }
     .rail-btn:hover { background: #0d1828; color: #6ab0c8; }
@@ -219,7 +239,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .rail-btn .rail-icon { font-size: .82rem; flex-shrink: 0; width: 16px; text-align: center; }
     .rail-sep { width: 100%; height: 1px; background: #141e28; margin: 2px 0; flex-shrink: 0; }
     /* ── Viewport controls ───────────────────────────────────────────────── */
-    #viewport-controls { position: absolute; bottom: 14px; left: 172px; display: grid; gap: 5px; z-index: 10; pointer-events: auto; }
+    #viewport-controls { position: absolute; bottom: 14px; left: 172px; display: grid; gap: 5px; z-index: 10; pointer-events: auto; transition: left 220ms cubic-bezier(.4,0,.2,1); }
+    body.rail-collapsed #viewport-controls { left: 28px; }
     .viewport-row { display: flex; gap: 4px; }
     .viewport-btn { border: 1px solid #1c2e3a; background: #07101acc; color: #4e8898; border-radius: 4px; font-size: .66rem; padding: 5px 9px; cursor: pointer; transition: all 180ms ease; backdrop-filter: blur(4px); }
     .viewport-btn:hover { background: #0e2030e0; border-color: #2a5060; color: #7abcc8; transform: translateY(-1px); }
@@ -228,14 +249,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     /* ── Drawers — all position:absolute inside #globe-shell ─────────────── */
     .drawer { position: absolute; z-index: 15; background: #09090d; display: flex; flex-direction: column; overflow: hidden; pointer-events: none; opacity: 0; transition: transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
     .drawer.open { pointer-events: auto; opacity: 1; }
-    .drawer-left  { left: 160px; top: 0; bottom: 0; width: 240px; border-right: 1px solid #141820; transform: translateX(-240px); }
+    .drawer-left  { left: 160px; top: 0; bottom: 0; width: 240px; border-right: 1px solid #141820; transform: translateX(-240px); transition: left 220ms cubic-bezier(.4,0,.2,1), transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
     .drawer-right { right: 0; top: 0; bottom: 0; width: 280px; border-left: 1px solid #141820; transform: translateX(280px); }
-    .drawer-bottom { left: 160px; right: 0; bottom: 0; height: 280px; border-top: 1px solid #141820; transform: translateY(280px); }
-    .drawer-top { left: 160px; right: 0; top: 0; border-bottom: 1px solid #141820; transform: translateY(-100%); }
+    .drawer-bottom { left: 160px; right: 0; bottom: 0; height: 280px; border-top: 1px solid #141820; transform: translateY(280px); transition: left 220ms cubic-bezier(.4,0,.2,1), transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
+    .drawer-top { left: 160px; right: 0; top: 0; border-bottom: 1px solid #141820; transform: translateY(-100%); transition: left 220ms cubic-bezier(.4,0,.2,1), transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
     .drawer-left.open  { transform: translateX(0); }
     .drawer-right.open { transform: translateX(0); }
     .drawer-bottom.open { transform: translateY(0); }
     .drawer-top.open { transform: translateY(0); }
+    /* Shift drawers left when rail is collapsed */
+    body.rail-collapsed .drawer-left  { left: 16px; }
+    body.rail-collapsed .drawer-bottom { left: 16px; }
+    body.rail-collapsed .drawer-top   { left: 16px; }
     .drawer-header { display: flex; align-items: center; padding: 7px 12px; border-bottom: 1px solid #111820; flex-shrink: 0; gap: 8px; }
     .drawer-title { font-size: .6rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; flex: 1; }
     .drawer-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; line-height: 1; transition: color 160ms; flex-shrink: 0; }
@@ -587,8 +612,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     body.grid-mode .screen-panel.focused { width: 100% !important; height: calc(100% - 48px) !important; top: 0 !important; left: 0 !important; right: auto !important; bottom: auto !important; z-index: 17; border: 1px solid #1f5e5a !important; }
     body.grid-mode .screen-panel.focused .screen-panel-hdr { cursor: zoom-out; }
     /* ── Minimized Tray ────────────────────────────────────────────────────── */
-    #screen-tray { position: absolute; bottom: 48px; left: 160px; right: 0; height: 0; display: flex; align-items: flex-end; gap: 4px; padding: 0; z-index: 22; pointer-events: none; transition: height 200ms ease, padding 200ms ease; }
+    #screen-tray { position: absolute; bottom: 48px; left: 160px; right: 0; height: 0; display: flex; align-items: flex-end; gap: 4px; padding: 0; z-index: 22; pointer-events: none; transition: left 220ms cubic-bezier(.4,0,.2,1), height 200ms ease, padding 200ms ease; }
     #screen-tray.has-items { height: 32px; padding: 0 8px 4px; }
+    body.rail-collapsed #screen-tray { left: 16px; }
     .tray-chip { border: 1px solid #1f5e5a; background: #07080cf0; color: #3ec9b8; border-radius: 3px; font-size: .57rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 4px 10px; cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace; transition: background 160ms, color 160ms; display: flex; align-items: center; gap: 5px; white-space: nowrap; pointer-events: auto; backdrop-filter: blur(4px); }
     .tray-chip:hover { background: #0a2422; }
     /* ── Panel content helpers ─────────────────────────────────────────────── */
@@ -644,6 +670,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <button id="grid-mode-btn" type="button" title="Toggle 2×2 Grid View" aria-pressed="false">⊞ Grid</button>
 </nav>
 <div id="globe-shell">
+
+  <!-- Rail drawer tab — slim left-edge toggle strip -->
+  <button id="rail-tab" type="button" aria-label="Toggle command panel" title="Toggle command panel" aria-expanded="true">
+    <span id="rail-tab-arrow">❯</span>
+    <span id="rail-tab-label">CTRL</span>
+  </button>
 
   <!-- Left command panel -->
   <nav id="rail" aria-label="Command panel">
@@ -5983,6 +6015,35 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       });
     });
   });
+
+  // ── Rail tab collapsible drawer ────────────────────────────────────────────
+  (function () {
+    const railTabEl  = document.getElementById('rail-tab');
+    const railEl     = document.getElementById('rail');
+    let   _railOpen  = true;
+
+    function setRailOpen(open) {
+      _railOpen = open;
+      document.body.classList.toggle('rail-collapsed', !open);
+      if (railTabEl) railTabEl.setAttribute('aria-expanded', String(open));
+    }
+
+    if (railTabEl) {
+      railTabEl.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setRailOpen(!_railOpen);
+      });
+    }
+
+    // Outside-click: auto-collapse rail when user interacts with globe or other panels.
+    // Guard prevents redundant calls when rail is already collapsed.
+    document.addEventListener('click', function (e) {
+      if (!_railOpen) return;                                    // already collapsed
+      if (railEl    && railEl.contains(e.target))    return;    // click inside rail
+      if (railTabEl && railTabEl.contains(e.target)) return;    // click on tab itself
+      setRailOpen(false);
+    }, false);
+  }());
 
   speedSelectEl.addEventListener('change', function () {
     const nextSpeed = Number(speedSelectEl.value);
