@@ -328,10 +328,11 @@ describe('collapseSimLocation', () => {
 
   test('winning branch has highest utility × confidence', () => {
     const loc = createSimLocation(0, 0);
-    // Force known values
+    // Force known values; set cost=0 so score = u×c×iw
     loc.branches.forEach((b, i) => {
       b.confidence = (i + 1) / BRANCH_COUNT;
       b.utility    = (i + 1) / BRANCH_COUNT;
+      b.cost       = 0;
     });
     const winner = collapseSimLocation(loc.id);
     const expectedScore = 1.0 * 1.0;  // last branch has both = 1
@@ -445,9 +446,9 @@ describe('collapseAllSimLocations', () => {
   test('winner has the highest utility × confidence score globally', () => {
     const locA = createSimLocation(0, 0, 'A');
     const locB = createSimLocation(10, 10, 'B');
-    // Force known scores: locA branch 0 gets score 0.9, locB branch 0 gets score 0.99
-    locA.branches.forEach(function (b) { b.utility = 0.3; b.confidence = 0.3; });
-    locB.branches.forEach(function (b) { b.utility = 0.3; b.confidence = 0.3; });
+    // Force known scores: set cost=0 so score = u×c×iw; locB branch 0 should win
+    locA.branches.forEach(function (b) { b.utility = 0.3; b.confidence = 0.3; b.cost = 0; });
+    locB.branches.forEach(function (b) { b.utility = 0.3; b.confidence = 0.3; b.cost = 0; });
     locB.branches[0].utility = 0.99;
     locB.branches[0].confidence = 1.0;
     const result = collapseAllSimLocations();
@@ -802,6 +803,8 @@ describe('runContinuousCollapseTick', () => {
 
   test('seats first leader when no leader has been recorded yet', () => {
     const loc = createSimLocation(0, 0, 'tick-test');
+    // Set cost=0 on all branches so leaderScore = u×c×iw, which is always positive
+    loc.branches.forEach(function (b) { b.cost = 0; });
     runContinuousCollapseTick();
     const cs = loc.continuousState;
     assert.ok(cs.leaderId, 'leader should be set after first tick');
@@ -1021,7 +1024,7 @@ describe('computeStrategicWeight', () => {
       'coverage strategicWeight should be 0.25 × avgCoverage');
   });
 
-  test('all strategy returns a non-negative number ≤ 0.30', () => {
+  test('all strategies return a non-negative number ≤ 0.30', () => {
     const b = makeBranch(0.9, 0.9, 0.1, 6);
     for (const key of Object.keys(STRATEGY_PRESETS)) {
       const sw = computeStrategicWeight(b, key);

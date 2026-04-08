@@ -9643,6 +9643,7 @@ function computeStrategicWeight(branch, strategyKey) {
 
     case 'coverage': {
       // Reward broad agent layer awareness across the team.
+      if (!branch.agents.length) return 0;
       const totalLayers = EARTH_SPACE_LAYERS.length;
       const avgCoverage = branch.agents.reduce(function (s, a) {
         return s + a.layers.length / totalLayers;
@@ -9723,7 +9724,7 @@ function applyInterference() {
 }
 
 /**
- * Collapse all active branches for a location.
+ * Collapse active branches for a single location.
  * Calls applyInterference() first, then selects the winner by the full
  * adjusted score formula:
  *   adjustedScore = (utility × confidence × interferenceWeight) - cost + strategicWeight
