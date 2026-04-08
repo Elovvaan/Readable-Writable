@@ -175,6 +175,32 @@ const fileCredentials = {
   credentialType: '', // 'username_password' | 'client_credentials'
 };
 
+// ─── Quantum Simulation (Hilbert-Space Earth Engine) ─────────────────────────
+// Each clicked globe location spawns N parallel world-state branches.
+// Every branch carries agents with Earth+space roles, confidence, utility,
+// lineage, and cost.  Branches evolve independently until a collapse operator
+// picks the best outcome (utility × confidence) and archives an audit trail.
+
+const BRANCH_COUNT = 5;           // parallel futures per location click
+
+const BRANCH_AGENT_ROLES = [
+  'pilot', 'driver', 'operator', 'weather',
+  'satellite', 'logistics', 'response',
+];
+
+const EARTH_SPACE_LAYERS = [
+  'cities', 'traffic', 'sensors', 'aircraft',
+  'vessels', 'weather', 'satellites', 'orbital_signals',
+];
+
+// Probability threshold for an agent to include a given Earth/space layer
+// in its initial awareness set. 0.6 → each agent covers ~60% of layers on average.
+const AGENT_LAYER_COVERAGE_THRESHOLD = 0.4;
+const quantumSimState = {
+  locations: {},   // locationId → { id, lat, lng, label, createdAt, branches: [], collapsed: null }
+  auditTrail: [],  // collapsed events (last 200)
+};
+
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
 const FRONTEND_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -646,6 +672,48 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .sp-env-track { flex: 1; height: 4px; background: #111820; border-radius: 2px; overflow: hidden; }
     .sp-env-fill { height: 100%; border-radius: 2px; transition: width 600ms ease; }
     .sp-env-val { color: #7ab8cc; font-size: .6rem; width: 38px; text-align: right; flex-shrink: 0; }
+
+    /* ── Quantum Simulation Engine (Hilbert-Space Earth) ──────────────────── */
+    #sim-drawer { position: absolute; left: 160px; top: 0; bottom: 48px; width: 260px; z-index: 17;
+      background: #05060aee; border-right: 1px solid #141820; display: flex; flex-direction: column;
+      overflow: hidden; transform: translateX(-260px); opacity: 0; pointer-events: none;
+      transition: transform 260ms cubic-bezier(.4,0,.2,1), opacity 180ms ease, left 220ms cubic-bezier(.4,0,.2,1); }
+    #sim-drawer.open { transform: translateX(0); opacity: 1; pointer-events: auto; }
+    body.rail-collapsed #sim-drawer { left: 16px; }
+    #sim-header { display: flex; align-items: center; padding: 7px 10px; border-bottom: 1px solid #111820; gap: 6px; flex-shrink: 0; }
+    #sim-title { font-size: .6rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; flex: 1; }
+    #sim-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; }
+    #sim-close:hover { color: #3ec9b8; }
+    #sim-controls { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-bottom: 1px solid #0e1820; flex-shrink: 0; }
+    .sim-ctrl-btn { border: 1px solid #1a2d3a; background: #0a1018; color: #5a8898; border-radius: 2px;
+      font-size: .57rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: 4px 8px;
+      cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace;
+      transition: background 140ms, color 140ms, border-color 140ms; }
+    .sim-ctrl-btn:hover { background: #0e1e2e; border-color: #2a5060; color: #3ec9b8; }
+    .sim-ctrl-btn:disabled { opacity: .35; cursor: not-allowed; }
+    #sim-hint { font-size: .6rem; color: #2a4050; padding: 6px 10px 4px; font-style: italic; flex-shrink: 0; line-height: 1.5; }
+    #sim-locations-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0; }
+    .sim-loc-card { border-bottom: 1px solid #0e1820; padding: 7px 10px; }
+    .sim-loc-label { font-size: .62rem; font-weight: 700; color: #5ab8ac; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 3px; }
+    .sim-loc-coords { font-size: .56rem; color: #2a4050; font-family: 'Cascadia Code', 'Fira Code', monospace; margin-bottom: 4px; }
+    .sim-loc-actions { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 5px; }
+    .sim-loc-btn { border: 1px solid #141e28; background: #080c14; color: #3a6070;
+      border-radius: 2px; font-size: .54rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+      padding: 3px 6px; cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace;
+      transition: background 120ms, color 120ms; }
+    .sim-loc-btn:hover { background: #0c1a28; color: #3ec9b8; border-color: #1f5e5a; }
+    .sim-branch-list { display: flex; flex-direction: column; gap: 2px; }
+    .sim-branch-row { display: flex; align-items: center; gap: 5px; padding: 2px 0; }
+    .sim-branch-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .sim-branch-dot.active   { background: #3ec9b8; box-shadow: 0 0 4px #3ec9b830; }
+    .sim-branch-dot.pruned   { background: #3a3a4a; }
+    .sim-branch-dot.collapsed{ background: #f0b040; box-shadow: 0 0 4px #f0b04030; }
+    .sim-branch-info { font-size: .56rem; color: #4a6878; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sim-branch-score { font-size: .56rem; color: #2a8070; font-family: 'Cascadia Code', 'Fira Code', monospace; flex-shrink: 0; }
+    .sim-collapsed-badge { display: inline-block; margin-top: 3px; font-size: .54rem; color: #f0b040; letter-spacing: .08em; text-transform: uppercase; padding: 1px 5px; border: 1px solid #4a3800; border-radius: 2px; background: #1a1000; }
+    #sim-audit { flex-shrink: 0; border-top: 1px solid #0e1820; padding: 5px 10px; max-height: 90px; overflow-y: auto; }
+    #sim-audit-title { font-size: .54rem; color: #1e3040; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
+    .sim-audit-row { font-size: .54rem; color: #2a4a58; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   </style>
 </head>
 <body>
@@ -1069,6 +1137,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <button class="bottom-action-btn" id="act-write-btn" type="button" title="Write note or event">✍ WRITE</button>
       <button class="bottom-action-btn" id="act-mission-btn" type="button" title="Mission planner">⊛ MISSION</button>
       <button class="bottom-action-btn" id="act-logs-btn" type="button" title="Open event logs" data-panel="events">◉ LOGS</button>
+      <button class="bottom-action-btn" id="act-sim-btn" type="button" title="Quantum simulation engine — click globe to spawn world states">⟁ SIM</button>
     </div>
     <div class="tl-divider"></div>
     <div id="timeline-controls">
@@ -1383,6 +1452,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
     <div class="screen-panel-body" id="sp-body-log">
       <div style="color:#2e4050;font-style:italic;">Awaiting events…</div>
+    </div>
+  </div>
+
+  <!-- Quantum Simulation Drawer -->
+  <div id="sim-drawer" role="region" aria-label="Quantum Simulation Engine">
+    <div id="sim-header">
+      <span id="sim-title">⟁ Simulation Engine</span>
+      <button id="sim-close" type="button" aria-label="Close simulation panel">✕</button>
+    </div>
+    <div id="sim-hint">Click anywhere on the globe to spawn parallel world states at that location.</div>
+    <div id="sim-controls">
+      <button class="sim-ctrl-btn" id="sim-btn-evolve-all" type="button" title="Advance all branches one generation">▶ Evolve All</button>
+      <button class="sim-ctrl-btn" id="sim-btn-prune-all" type="button" title="Prune low-confidence branches">✂ Prune All</button>
+      <button class="sim-ctrl-btn" id="sim-btn-clear-all" type="button" title="Remove all simulation locations">⊘ Clear</button>
+    </div>
+    <div id="sim-locations-list"></div>
+    <div id="sim-audit">
+      <div id="sim-audit-title">Collapse Audit Trail</div>
+      <div id="sim-audit-rows"></div>
     </div>
   </div>
 
@@ -7146,6 +7234,369 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (cesiumViewer) updateTrajectoryPanel();
   }, 2000);
 
+  // ── Quantum Simulation Engine (client) ─────────────────────────────────────
+  (function initQuantumSim() {
+    var simOpen = false;
+    var simLocations = [];       // local cache from server
+    var simGlobeEntities = {};   // locationId → [cesium entities]
+    var simPickMode = false;     // true when SIM drawer is open → globe clicks go to sim
+
+    // Branch colour palette for globe visualisation
+    var BRANCH_COLOURS = [
+      '#3ec9b8', '#56b8f0', '#f0c040', '#e05878', '#78d878',
+      '#c878e0', '#e09840', '#80b0ff',
+    ];
+
+    // ── Panel open/close ───────────────────────────────────────────────────
+    function openSimDrawer() {
+      document.getElementById('sim-drawer').classList.add('open');
+      document.getElementById('act-sim-btn').classList.add('active');
+      simOpen = true;
+      simPickMode = true;
+      refreshSimPanel();
+    }
+
+    function closeSimDrawer() {
+      document.getElementById('sim-drawer').classList.remove('open');
+      document.getElementById('act-sim-btn').classList.remove('active');
+      simOpen = false;
+      simPickMode = false;
+    }
+
+    document.getElementById('act-sim-btn').addEventListener('click', function () {
+      simOpen ? closeSimDrawer() : openSimDrawer();
+    });
+    document.getElementById('sim-close').addEventListener('click', closeSimDrawer);
+
+    // ── Globe click → generate world states ───────────────────────────────
+    // Intercepts Cesium LEFT_CLICK when sim panel is open and the click
+    // lands on empty terrain (not on an entity already handled by pickCesiumTarget).
+    function hookSimGlobeClick() {
+      if (!cesiumViewer) return;
+      var handler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
+      handler.setInputAction(function (click) {
+        if (!simPickMode) return;
+        // Only intercept if no entity was picked (let existing entity selection pass through)
+        var picks = cesiumViewer.scene.drillPick(click.position, 5) || [];
+        var hasEntity = picks.some(function (p) { return p && p.id && p.id.rwMeta; });
+        if (hasEntity) return;
+        var cartesian = cesiumViewer.scene.pickPosition(click.position);
+        if (!cartesian) {
+          // Fallback: ray from camera
+          var ray = cesiumViewer.camera.getPickRay(click.position);
+          if (ray) cartesian = cesiumViewer.scene.globe.pick(ray, cesiumViewer.scene);
+        }
+        if (!cartesian) return;
+        var carto = Cesium.Cartographic.fromCartesian(cartesian);
+        var lat = Cesium.Math.toDegrees(carto.latitude);
+        var lng = Cesium.Math.toDegrees(carto.longitude);
+        generateSimAtLatLng(lat, lng);
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    }
+
+    // ── API helpers ────────────────────────────────────────────────────────
+    function generateSimAtLatLng(lat, lng) {
+      var label = lat.toFixed(2) + '°, ' + lng.toFixed(2) + '°';
+      fetch('/api/sim/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat: lat, lng: lng, label: label }),
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data.location) {
+          simLocations.push(data.location);
+          renderSimLocationOnGlobe(data.location);
+          refreshSimPanel();
+        }
+      }).catch(function () {});
+    }
+
+    function evolveLocation(locationId) {
+      fetch('/api/sim/evolve/' + encodeURIComponent(locationId), { method: 'POST' })
+        .then(function (r) { return r.json(); }).then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    }
+
+    function pruneLocation(locationId) {
+      fetch('/api/sim/prune/' + encodeURIComponent(locationId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threshold: 0.2 }),
+      }).then(function (r) { return r.json(); }).then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    }
+
+    function collapseLocation(locationId) {
+      fetch('/api/sim/collapse/' + encodeURIComponent(locationId), { method: 'POST' })
+        .then(function (r) { return r.json(); }).then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    }
+
+    function entanglePair(id1, id2) {
+      fetch('/api/sim/entangle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branchId1: id1, branchId2: id2 }),
+      }).then(function (r) { return r.json(); }).then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    }
+
+    function fetchAndRefresh() {
+      fetch('/api/sim/locations').then(function (r) { return r.json(); }).then(function (data) {
+        simLocations = data.locations || [];
+        // Re-render all globe overlays
+        clearAllSimGlobeEntities();
+        simLocations.forEach(function (loc) { renderSimLocationOnGlobe(loc); });
+        refreshSimPanel(data.auditTrail || []);
+      }).catch(function () {});
+    }
+
+    // ── Globe visualisation ────────────────────────────────────────────────
+    function clearAllSimGlobeEntities() {
+      if (!cesiumViewer) return;
+      Object.values(simGlobeEntities).forEach(function (entities) {
+        entities.forEach(function (e) {
+          try { cesiumViewer.entities.remove(e); } catch (ex) {}
+        });
+      });
+      simGlobeEntities = {};
+    }
+
+    function renderSimLocationOnGlobe(loc) {
+      if (!cesiumViewer) return;
+      var entities = [];
+      var origin = Cesium.Cartesian3.fromDegrees(loc.lng, loc.lat, 0);
+
+      // Origin point (pulsing glow)
+      var originEnt = cesiumViewer.entities.add({
+        position: origin,
+        point: {
+          pixelSize: 10,
+          color: Cesium.Color.fromCssColorString('#3ec9b8').withAlpha(0.9),
+          outlineColor: Cesium.Color.fromCssColorString('#3ec9b8').withAlpha(0.3),
+          outlineWidth: 4,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: loc.label,
+          font: '10px monospace',
+          fillColor: Cesium.Color.fromCssColorString('#3ec9b8'),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(0, -14),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+      entities.push(originEnt);
+
+      // Branch trajectories as glowing polylines
+      loc.branches.forEach(function (branch, i) {
+        if (!branch.trajectory || branch.trajectory.length < 2) return;
+        var colourHex = BRANCH_COLOURS[i % BRANCH_COLOURS.length];
+        var alpha = branch.status === 'active' ? 0.85
+                  : branch.status === 'collapsed' ? 1.0
+                  : 0.2;  // pruned
+
+        var positions = branch.trajectory.map(function (wp) {
+          return Cesium.Cartesian3.fromDegrees(wp.lng, wp.lat, wp.alt || 0);
+        });
+
+        var lineEnt = cesiumViewer.entities.add({
+          polyline: {
+            positions: positions,
+            width: branch.status === 'collapsed' ? 3 : (branch.status === 'active' ? 2 : 1),
+            material: new Cesium.PolylineGlowMaterialProperty({
+              glowPower: branch.status === 'collapsed' ? 0.4 : 0.2,
+              color: Cesium.Color.fromCssColorString(colourHex).withAlpha(alpha),
+            }),
+            arcType: Cesium.ArcType.NONE,
+            clampToGround: false,
+          },
+        });
+        entities.push(lineEnt);
+
+        // Endpoint dot for each branch
+        var tip = branch.trajectory[branch.trajectory.length - 1];
+        var tipEnt = cesiumViewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(tip.lng, tip.lat, tip.alt || 0),
+          point: {
+            pixelSize: branch.status === 'collapsed' ? 8 : 5,
+            color: Cesium.Color.fromCssColorString(colourHex).withAlpha(alpha),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+        entities.push(tipEnt);
+      });
+
+      simGlobeEntities[loc.id] = entities;
+    }
+
+    // ── Panel UI ───────────────────────────────────────────────────────────
+    function refreshSimPanel(auditTrail) {
+      var list = document.getElementById('sim-locations-list');
+      list.innerHTML = '';
+
+      if (!simLocations.length) {
+        var hint = document.createElement('div');
+        hint.style.cssText = 'padding:12px 10px;color:#1e3040;font-size:.6rem;font-style:italic;';
+        hint.textContent = 'No simulation locations yet. Open the panel and click the globe.';
+        list.appendChild(hint);
+        return;
+      }
+
+      simLocations.forEach(function (loc) {
+        var card = document.createElement('div');
+        card.className = 'sim-loc-card';
+
+        var labelEl = document.createElement('div');
+        labelEl.className = 'sim-loc-label';
+        labelEl.textContent = loc.label;
+        card.appendChild(labelEl);
+
+        var coordEl = document.createElement('div');
+        coordEl.className = 'sim-loc-coords';
+        coordEl.textContent = loc.lat.toFixed(4) + ', ' + loc.lng.toFixed(4);
+        card.appendChild(coordEl);
+
+        // Action buttons
+        var actions = document.createElement('div');
+        actions.className = 'sim-loc-actions';
+
+        var btnEvolve = document.createElement('button');
+        btnEvolve.className = 'sim-loc-btn';
+        btnEvolve.textContent = '▶ Evolve';
+        btnEvolve.title = 'Advance branches one generation';
+        btnEvolve.addEventListener('click', function () { evolveLocation(loc.id); });
+        actions.appendChild(btnEvolve);
+
+        var btnPrune = document.createElement('button');
+        btnPrune.className = 'sim-loc-btn';
+        btnPrune.textContent = '✂ Prune';
+        btnPrune.title = 'Remove low-confidence branches';
+        btnPrune.addEventListener('click', function () { pruneLocation(loc.id); });
+        actions.appendChild(btnPrune);
+
+        var btnCollapse = document.createElement('button');
+        btnCollapse.className = 'sim-loc-btn';
+        btnCollapse.textContent = '⊙ Collapse';
+        btnCollapse.title = 'Select best branch (utility × confidence)';
+        btnCollapse.addEventListener('click', function () { collapseLocation(loc.id); });
+        actions.appendChild(btnCollapse);
+
+        // Entangle: if exactly two locs selected, show entangle btn on second
+        if (simLocations.length >= 2) {
+          var btnEntangle = document.createElement('button');
+          btnEntangle.className = 'sim-loc-btn';
+          btnEntangle.textContent = '⊗ Entangle';
+          btnEntangle.title = 'Entangle first branch of this location with the previous location';
+          btnEntangle.addEventListener('click', function () {
+            var myIdx = simLocations.findIndex(function (l) { return l.id === loc.id; });
+            if (myIdx < 1) return;
+            var other = simLocations[myIdx - 1];
+            if (other && loc.branches.length && other.branches.length) {
+              entanglePair(loc.branches[0].id, other.branches[0].id);
+            }
+          });
+          actions.appendChild(btnEntangle);
+        }
+
+        card.appendChild(actions);
+
+        // Branch rows
+        var branchList = document.createElement('div');
+        branchList.className = 'sim-branch-list';
+        (loc.branches || []).forEach(function (branch) {
+          var row = document.createElement('div');
+          row.className = 'sim-branch-row';
+          var dot = document.createElement('div');
+          dot.className = 'sim-branch-dot ' + branch.status;
+          row.appendChild(dot);
+          var info = document.createElement('div');
+          info.className = 'sim-branch-info';
+          info.textContent = branch.agents.map(function (a) { return (a.role && a.role.length) ? a.role[0].toUpperCase() : '?'; }).join('');
+          info.title = branch.agents.map(function (a) { return a.role + ':' + a.skill.toFixed(2); }).join(' ');
+          row.appendChild(info);
+          var score = document.createElement('div');
+          score.className = 'sim-branch-score';
+          score.textContent = (branch.confidence * branch.utility).toFixed(2);
+          row.appendChild(score);
+          branchList.appendChild(row);
+        });
+        card.appendChild(branchList);
+
+        // Collapsed badge
+        if (loc.collapsed) {
+          var badge = document.createElement('div');
+          badge.className = 'sim-collapsed-badge';
+          badge.textContent = '⊙ COLLAPSED · score ' + loc.collapsed.score.toFixed(3);
+          card.appendChild(badge);
+        }
+
+        list.appendChild(card);
+      });
+
+      // Audit trail
+      if (auditTrail && auditTrail.length) {
+        var auditRows = document.getElementById('sim-audit-rows');
+        auditRows.innerHTML = '';
+        auditTrail.slice().reverse().slice(0, 10).forEach(function (entry) {
+          var row = document.createElement('div');
+          row.className = 'sim-audit-row';
+          var t = new Date(entry.at);
+          var hm = t.toTimeString().slice(0, 5);
+          row.textContent = hm + ' · ' + entry.label + ' → ' + entry.score.toFixed(3);
+          auditRows.appendChild(row);
+        });
+      }
+    }
+
+    // ── Global controls ────────────────────────────────────────────────────
+    document.getElementById('sim-btn-evolve-all').addEventListener('click', function () {
+      var ids = simLocations.map(function (l) { return l.id; });
+      var chain = Promise.resolve();
+      ids.forEach(function (id) {
+        chain = chain.then(function () {
+          return fetch('/api/sim/evolve/' + encodeURIComponent(id), { method: 'POST' }).then(function (r) { return r.json(); });
+        });
+      });
+      chain.then(function () { fetchAndRefresh(); }).catch(function () {});
+    });
+
+    document.getElementById('sim-btn-prune-all').addEventListener('click', function () {
+      var ids = simLocations.map(function (l) { return l.id; });
+      var chain = Promise.resolve();
+      ids.forEach(function (id) {
+        chain = chain.then(function () {
+          return fetch('/api/sim/prune/' + encodeURIComponent(id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ threshold: 0.2 }),
+          }).then(function (r) { return r.json(); });
+        });
+      });
+      chain.then(function () { fetchAndRefresh(); }).catch(function () {});
+    });
+
+    document.getElementById('sim-btn-clear-all').addEventListener('click', function () {
+      clearAllSimGlobeEntities();
+      simLocations = [];
+      refreshSimPanel([]);
+    });
+
+    // Hook globe click after Cesium viewer is ready (cesiumViewer is set during initCesium)
+    var _simHookTries = 0;
+    function tryHookSimClick() {
+      if (cesiumViewer) { hookSimGlobeClick(); return; }
+      if (_simHookTries++ < 40) setTimeout(tryHookSimClick, 250);
+    }
+    tryHookSimClick();
+
+    // Periodic refresh when drawer is open
+    setInterval(function () {
+      if (simOpen) fetchAndRefresh();
+    }, 5000);
+  }());
+
   connect();
 })();
 </script>
@@ -8701,6 +9152,224 @@ function tickAgent(agent) {
   }
 }
 
+// ─── Quantum Simulation Engine ────────────────────────────────────────────────
+
+/**
+ * Build a single simulation branch with randomised initial state.
+ * Agents in BRANCH_AGENT_ROLES are seeded with Earth+space layer awareness.
+ */
+function _buildBranch(locationId, branchIndex, parentBranchId) {
+  const id = uid('branch');
+  const agents = BRANCH_AGENT_ROLES.map(function (role) {
+    return {
+      role,
+      id: uid('ba'),
+      confidence: 0.5 + Math.random() * 0.5,
+      skill: Math.random(),
+      layers: EARTH_SPACE_LAYERS.filter(function () { return Math.random() > AGENT_LAYER_COVERAGE_THRESHOLD; }),
+      trainingSteps: 0,
+    };
+  });
+  // Weighted initial branch state
+  const confidence = agents.reduce(function (s, a) { return s + a.confidence; }, 0) / agents.length;
+  const utility    = Math.random();
+  const cost       = 0.1 + Math.random() * 0.9;
+  return {
+    id,
+    locationId,
+    branchIndex,
+    parentBranchId: parentBranchId || null,
+    agents,
+    confidence,
+    utility,
+    cost,
+    generation: 0,
+    status: 'active',          // 'active' | 'pruned' | 'collapsed'
+    entangledWith: [],          // branchIds this branch is linked to
+    lineage: parentBranchId ? [parentBranchId] : [],
+    createdAt: new Date().toISOString(),
+    evolvedAt: null,
+    trajectory: [],             // [{lat,lng,alt,ts}] — projected path on globe
+  };
+}
+
+/**
+ * Create a simulation location at (lat, lng) and spawn N parallel branches.
+ * Returns the location object.
+ */
+function createSimLocation(lat, lng, label) {
+  const id = uid('simloc');
+  const branches = [];
+  for (let i = 0; i < BRANCH_COUNT; i++) {
+    branches.push(_buildBranch(id, i, null));
+  }
+  // Generate initial trajectories for each branch
+  branches.forEach(function (b) { _generateTrajectory(b, lat, lng); });
+
+  const loc = {
+    id,
+    lat,
+    lng,
+    label: label || ('loc@' + lat.toFixed(3) + ',' + lng.toFixed(3)),
+    createdAt: new Date().toISOString(),
+    branches,
+    collapsed: null,
+  };
+  quantumSimState.locations[id] = loc;
+  return loc;
+}
+
+/**
+ * Generate a branching trajectory for globe visualisation.
+ * Produces a series of (lat,lng,alt) waypoints fanning out from the origin.
+ */
+function _generateTrajectory(branch, originLat, originLng) {
+  const STEPS = 8;
+  const bearing = (branch.branchIndex / BRANCH_COUNT) * 360;
+  const spreadDeg = 0.5 + branch.utility * 2.0;
+  const trail = [];
+  for (let s = 0; s <= STEPS; s++) {
+    const frac = s / STEPS;
+    const rad = (bearing * Math.PI) / 180;
+    const dlat = Math.cos(rad) * spreadDeg * frac;
+    const dlng = Math.sin(rad) * spreadDeg * frac;
+    trail.push({
+      lat: originLat + dlat,
+      lng: originLng + dlng,
+      alt: 5000 + frac * 50000 * branch.utility,
+      ts: Date.now() + s * 60000,
+    });
+  }
+  branch.trajectory = trail;
+}
+
+/**
+ * Advance all branches at a location by one evolution tick.
+ * Agents train, confidence drifts, and trajectories are extended.
+ */
+function evolveSimBranches(locationId) {
+  const loc = quantumSimState.locations[locationId];
+  if (!loc) return null;
+  const active = loc.branches.filter(function (b) { return b.status === 'active'; });
+  active.forEach(function (branch) {
+    branch.generation++;
+    // Train agents: each accumulates a small skill delta weighted by layer coverage
+    branch.agents.forEach(function (agent) {
+      const layerBonus = agent.layers.length / EARTH_SPACE_LAYERS.length;
+      agent.skill = Math.min(1, agent.skill + layerBonus * 0.05 * Math.random());
+      agent.confidence = Math.min(1, agent.confidence + 0.02 * Math.random());
+      agent.trainingSteps++;
+    });
+    // Recalculate branch-level confidence and utility
+    branch.confidence = branch.agents.reduce(function (s, a) { return s + a.confidence; }, 0) / branch.agents.length;
+    branch.utility    = Math.min(1, branch.utility + 0.05 * Math.random() - 0.02);
+    branch.cost       = Math.max(0, branch.cost - 0.01 * Math.random());
+    branch.evolvedAt  = new Date().toISOString();
+    // Extend trajectory
+    const last = branch.trajectory[branch.trajectory.length - 1];
+    if (last) {
+      const jitterLat = (Math.random() - 0.5) * 0.3;
+      const jitterLng = (Math.random() - 0.5) * 0.3;
+      branch.trajectory.push({
+        lat: last.lat + jitterLat,
+        lng: last.lng + jitterLng,
+        alt: Math.max(5000, last.alt + (Math.random() - 0.4) * 8000),
+        ts: Date.now(),
+      });
+    }
+  });
+  return active.length;
+}
+
+/**
+ * Remove branches whose confidence × utility falls below `threshold`.
+ * Returns the count of pruned branches.
+ */
+function pruneSimBranches(locationId, threshold) {
+  const loc = quantumSimState.locations[locationId];
+  if (!loc) return 0;
+  const thresh = typeof threshold === 'number' ? threshold : 0.2;
+  let pruned = 0;
+  loc.branches.forEach(function (b) {
+    if (b.status !== 'active') return;
+    if (b.confidence * b.utility < thresh) {
+      b.status = 'pruned';
+      pruned++;
+    }
+  });
+  return pruned;
+}
+
+/**
+ * Entangle two branches so their confidence co-evolves.
+ * Both branches receive a mutual reference.
+ */
+function entangleSimBranches(branchId1, branchId2) {
+  let b1 = null;
+  let b2 = null;
+  for (const loc of Object.values(quantumSimState.locations)) {
+    for (const b of loc.branches) {
+      if (b.id === branchId1) b1 = b;
+      if (b.id === branchId2) b2 = b;
+    }
+  }
+  if (!b1 || !b2) return false;
+  if (!b1.entangledWith.includes(branchId2)) b1.entangledWith.push(branchId2);
+  if (!b2.entangledWith.includes(branchId1)) b2.entangledWith.push(branchId1);
+  // Average their confidence to create correlation
+  const avg = (b1.confidence + b2.confidence) / 2;
+  b1.confidence = avg;
+  b2.confidence = avg;
+  b1.lineage.push(branchId2);
+  b2.lineage.push(branchId1);
+  return true;
+}
+
+/**
+ * Collapse all active branches for a location.
+ * Selects the winner by max(utility × confidence), marks losers pruned,
+ * stamps the winner as 'collapsed', and writes an audit trail entry.
+ * Returns the winning branch, or null if no active branches exist.
+ */
+function collapseSimLocation(locationId) {
+  const loc = quantumSimState.locations[locationId];
+  if (!loc) return null;
+  const active = loc.branches.filter(function (b) { return b.status === 'active'; });
+  if (!active.length) return null;
+
+  // Rank by utility × confidence
+  active.sort(function (a, b) { return (b.utility * b.confidence) - (a.utility * a.confidence); });
+  const winner = active[0];
+  winner.status = 'collapsed';
+
+  // Mark all other active branches as pruned
+  active.slice(1).forEach(function (b) { b.status = 'pruned'; });
+
+  // Record collapse in location
+  loc.collapsed = {
+    winnerId: winner.id,
+    score: winner.utility * winner.confidence,
+    at: new Date().toISOString(),
+    survivingAgents: winner.agents.map(function (a) { return { role: a.role, skill: a.skill, confidence: a.confidence, trainingSteps: a.trainingSteps }; }),
+  };
+
+  // Append audit trail entry (cap at 200)
+  quantumSimState.auditTrail.push({
+    locationId,
+    label: loc.label,
+    winnerId: winner.id,
+    score: loc.collapsed.score,
+    generation: winner.generation,
+    branchCount: loc.branches.length,
+    at: loc.collapsed.at,
+  });
+  if (quantumSimState.auditTrail.length > 200) {
+    quantumSimState.auditTrail = quantumSimState.auditTrail.slice(-200);
+  }
+
+  return winner;
+}
+
 function simulationLoop() {
   worldview.tick++;
   for (const agent of Object.values(worldview.agents)) {
@@ -9529,6 +10198,114 @@ function router(req, res) {
     return;
   }
 
+  // ── Quantum Simulation Engine routes ─────────────────────────────────────
+  // GET /api/sim/locations  → all locations with their branches
+  if (req.method === 'GET' && url === '/api/sim/locations') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      locations: Object.values(quantumSimState.locations),
+      auditTrail: quantumSimState.auditTrail.slice(-50),
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // POST /api/sim/generate  → { lat, lng, label? }  create a new sim location
+  if (req.method === 'POST' && url === '/api/sim/generate') {
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      let parsed;
+      try { parsed = JSON.parse(body); } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const lat = Number(parsed.lat);
+      const lng = Number(parsed.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'lat and lng are required numbers' }));
+        return;
+      }
+      const loc = createSimLocation(lat, lng, parsed.label || null);
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ location: loc, ts: Date.now() }));
+    });
+    return;
+  }
+
+  // POST /api/sim/evolve/:locationId  → advance branches one tick
+  if (req.method === 'POST' && url.startsWith('/api/sim/evolve/')) {
+    const locationId = decodeURIComponent(url.slice('/api/sim/evolve/'.length));
+    const count = evolveSimBranches(locationId);
+    if (count === null) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'location not found', locationId }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ locationId, evolvedBranches: count, ts: Date.now() }));
+    return;
+  }
+
+  // POST /api/sim/prune/:locationId  → { threshold? }  prune low-scoring branches
+  if (req.method === 'POST' && url.startsWith('/api/sim/prune/')) {
+    const locationId = decodeURIComponent(url.slice('/api/sim/prune/'.length));
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      if (!quantumSimState.locations[locationId]) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'location not found', locationId }));
+        return;
+      }
+      let threshold;
+      try { threshold = body ? JSON.parse(body).threshold : undefined; } catch (e) { threshold = undefined; }
+      const pruned = pruneSimBranches(locationId, threshold);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ locationId, prunedBranches: pruned, ts: Date.now() }));
+    });
+    return;
+  }
+
+  // POST /api/sim/collapse/:locationId  → collapse to best branch
+  if (req.method === 'POST' && url.startsWith('/api/sim/collapse/')) {
+    const locationId = decodeURIComponent(url.slice('/api/sim/collapse/'.length));
+    const winner = collapseSimLocation(locationId);
+    if (!winner) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'location not found or no active branches', locationId }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ locationId, winner, ts: Date.now() }));
+    return;
+  }
+
+  // POST /api/sim/entangle  → { branchId1, branchId2 }  entangle two branches
+  if (req.method === 'POST' && url === '/api/sim/entangle') {
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      let parsed;
+      try { parsed = JSON.parse(body); } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const ok = entangleSimBranches(parsed.branchId1, parsed.branchId2);
+      if (!ok) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'one or both branches not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ entangled: true, branchId1: parsed.branchId1, branchId2: parsed.branchId2, ts: Date.now() }));
+    });
+    return;
+  }
+
   // 404
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'not found', path: url }));
@@ -9633,4 +10410,14 @@ module.exports = {
   recordTimelineSnapshot,
   seedSensorNodes,
   LIVE_ENTITY_UPDATE_MS,
+  // ── Quantum Simulation Engine exports ──────────────────────────────────────
+  quantumSimState,
+  BRANCH_COUNT,
+  BRANCH_AGENT_ROLES,
+  EARTH_SPACE_LAYERS,
+  createSimLocation,
+  evolveSimBranches,
+  pruneSimBranches,
+  collapseSimLocation,
+  entangleSimBranches,
 };
