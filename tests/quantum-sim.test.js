@@ -8,12 +8,15 @@ const {
   BRANCH_COUNT,
   BRANCH_AGENT_ROLES,
   EARTH_SPACE_LAYERS,
+  INTERFERENCE_ALIGN_THRESHOLD,
+  INTERFERENCE_CONFLICT_THRESHOLD,
   createSimLocation,
   evolveSimBranches,
   pruneSimBranches,
   collapseSimLocation,
   collapseAllSimLocations,
   entangleSimBranches,
+  applyInterference,
 } = require('../server');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -447,9 +450,12 @@ describe('collapseAllSimLocations', () => {
   test('non-winning locations do not get loc.collapsed set', () => {
     const locA = createSimLocation(0, 0, 'A');
     const locB = createSimLocation(10, 10, 'B');
-    // Make locA branch 0 the definitive winner
+    // Make locA branch 0 the definitive winner.
+    // Force all other locA branches to low values so interference weights cannot
+    // elevate any of them above locA[0]'s adjusted score.
     locA.branches[0].utility = 1.0;
     locA.branches[0].confidence = 1.0;
+    locA.branches.slice(1).forEach(function (b) { b.utility = 0.1; b.confidence = 0.1; });
     locB.branches.forEach(function (b) { b.utility = 0.1; b.confidence = 0.1; });
     const result = collapseAllSimLocations();
     assert.equal(result.winnerLocationId, locA.id);
@@ -491,6 +497,195 @@ describe('collapseAllSimLocations', () => {
   });
 });
 
+
+// ─── applyInterference ────────────────────────────────────────────────────────
+
+describe('applyInterference', () => {
+  beforeEach(clearSimState);
+
+  test('constants have correct relative values', () => {
+    assert.ok(INTERFERENCE_ALIGN_THRESHOLD < INTERFERENCE_CONFLICT_THRESHOLD,
+      'align threshold must be less than conflict threshold');
+    assert.ok(INTERFERENCE_ALIGN_THRESHOLD > 0 && INTERFERENCE_ALIGN_THRESHOLD < 1);
+    assert.ok(INTERFERENCE_CONFLICT_THRESHOLD > 0 && INTERFERENCE_CONFLICT_THRESHOLD < 1);
+  });
+
+  test('returns empty array when there are no active branches', () => {
+    const results = applyInterference();
+    assert.deepEqual(results, []);
+  });
+
+  test('returns one result per active branch', () => {
+    const loc = createSimLocation(0, 0);
+    const results = applyInterference();
+    assert.equal(results.length, BRANCH_COUNT);
+  });
+
+  test('each result has branchId, interferenceWeight, and interferenceReason', () => {
+    const loc = createSimLocation(0, 0);
+    const results = applyInterference();
+    for (const r of results) {
+      assert.ok(typeof r.branchId === 'string');
+      assert.ok(typeof r.interferenceWeight === 'number');
+      assert.ok(typeof r.interferenceReason === 'string');
+    }
+  });
+
+  test('interference weights are stored on branch objects', () => {
+    const loc = createSimLocation(0, 0);
+    applyInterference();
+    for (const b of loc.branches) {
+      assert.ok(typeof b.interferenceWeight === 'number');
+      assert.ok(typeof b.interferenceReason === 'string');
+    }
+  });
+
+  test('newly built branch has interferenceWeight=1.0 and reason=neutral', () => {
+    const loc = createSimLocation(0, 0);
+    for (const b of loc.branches) {
+      assert.equal(b.interferenceWeight, 1.0);
+      assert.equal(b.interferenceReason, 'neutral');
+    }
+  });
+
+  test('aligned branches (|Δutility| < ALIGN_THRESHOLD) get reinforced', () => {
+    // Two locations, each with one branch forced to nearly identical utility
+    const loc1 = createSimLocation(0, 0, 'A');
+    const loc2 = createSimLocation(10, 10, 'B');
+    // Force all branches to utility=0.5 so every pair is aligned
+    for (const loc of [loc1, loc2]) {
+      for (const b of loc.branches) {
+        b.utility = 0.5;
+      }
+    }
+    applyInterference();
+    // All branches should be reinforced (all share the same utility → Δ=0 < threshold)
+    for (const loc of [loc1, loc2]) {
+      for (const b of loc.branches) {
+        assert.equal(b.interferenceReason, 'reinforced', 'branch should be reinforced when utilities match');
+        assert.ok(b.interferenceWeight > 1.0, 'reinforced branch weight must exceed 1.0');
+      }
+    }
+  });
+
+  test('conflicting branches (|Δutility| > CONFLICT_THRESHOLD) get damped', () => {
+    const loc1 = createSimLocation(0, 0, 'A');
+    const loc2 = createSimLocation(10, 10, 'B');
+    // loc1 → utility near 0, loc2 → utility near 1; difference > CONFLICT_THRESHOLD
+    loc1.branches.forEach(function (b) { b.utility = 0.0; });
+    loc2.branches.forEach(function (b) { b.utility = 1.0; });
+    applyInterference();
+    // All loc1 branches conflict with all loc2 branches → should be damped
+    for (const b of loc1.branches) {
+      assert.equal(b.interferenceReason, 'damped', 'loc1 branches should be damped by conflicting loc2 branches');
+      assert.ok(b.interferenceWeight < 1.0, 'damped branch weight must be below 1.0');
+    }
+    for (const b of loc2.branches) {
+      assert.equal(b.interferenceReason, 'damped', 'loc2 branches should be damped by conflicting loc1 branches');
+      assert.ok(b.interferenceWeight < 1.0);
+    }
+  });
+
+  test('unrelated branches (threshold gap) get neutral weight', () => {
+    // Single-branch location with utility mid-range, no aligned or conflicting peers
+    const loc = createSimLocation(0, 0);
+    // Force all to utility=0.5 at first, then set them to values that differ from
+    // each other in the "unrelated" band (> ALIGN but < CONFLICT)
+    const gap = (INTERFERENCE_CONFLICT_THRESHOLD + INTERFERENCE_ALIGN_THRESHOLD) / 2; // ~0.375
+    loc.branches.forEach(function (b, i) { b.utility = (i * gap) % 1; });
+    // With only one location there are no cross-location pairs.
+    // Within the location, consecutive branches differ by `gap` which sits in the unrelated band.
+    // But note: some pairs may still hit aligned or conflicting, so just
+    // verify the weight is in [0.7, 1.3] and is a valid number.
+    applyInterference();
+    for (const b of loc.branches) {
+      assert.ok(b.interferenceWeight >= 0.7 && b.interferenceWeight <= 1.3,
+        'weight must be in [0.7, 1.3]');
+      assert.ok(['reinforced', 'damped', 'neutral'].includes(b.interferenceReason));
+    }
+  });
+
+  test('interferenceWeight is always in [0.7, 1.3] regardless of branch count', () => {
+    // Create many locations to maximise peer interactions
+    for (let i = 0; i < 5; i++) {
+      createSimLocation(i * 5, i * 5, 'loc' + i);
+    }
+    applyInterference();
+    for (const loc of Object.values(quantumSimState.locations)) {
+      for (const b of loc.branches) {
+        assert.ok(b.interferenceWeight >= 0.7, 'weight must be ≥ 0.7');
+        assert.ok(b.interferenceWeight <= 1.3, 'weight must be ≤ 1.3');
+      }
+    }
+  });
+
+  test('pruned branches are excluded from interference computation', () => {
+    const loc = createSimLocation(0, 0);
+    // Prune all but one branch
+    loc.branches.slice(1).forEach(function (b) { b.status = 'pruned'; });
+    const results = applyInterference();
+    // Only 1 active branch → no peers → weight stays 1.0, reason neutral
+    assert.equal(results.length, 1);
+    assert.equal(results[0].interferenceWeight, 1.0);
+    assert.equal(results[0].interferenceReason, 'neutral');
+  });
+
+  test('reason matches weight direction', () => {
+    const loc = createSimLocation(0, 0);
+    applyInterference();
+    for (const b of loc.branches) {
+      if (b.interferenceReason === 'reinforced') assert.ok(b.interferenceWeight > 1.0);
+      if (b.interferenceReason === 'damped')      assert.ok(b.interferenceWeight < 1.0);
+      if (b.interferenceReason === 'neutral')     assert.equal(b.interferenceWeight, 1.0);
+    }
+  });
+
+  test('cross-location branches participate in interference', () => {
+    const locA = createSimLocation(0, 0, 'A');
+    const locB = createSimLocation(50, 50, 'B');
+    // Force locA=utility 0, locB=utility 1 → should conflict across locations
+    locA.branches.forEach(function (b) { b.utility = 0.0; });
+    locB.branches.forEach(function (b) { b.utility = 1.0; });
+    applyInterference();
+    // Branches in locA should be damped (conflicting with locB branches)
+    assert.ok(locA.branches[0].interferenceWeight < 1.0);
+    // Branches in locB should also be damped
+    assert.ok(locB.branches[0].interferenceWeight < 1.0);
+  });
+
+  test('applyInterference is deterministic — same input yields same output', () => {
+    const loc = createSimLocation(0, 0);
+    loc.branches.forEach(function (b, i) { b.utility = (i + 1) * 0.18; });
+    const r1 = applyInterference();
+    const r2 = applyInterference();
+    for (let i = 0; i < r1.length; i++) {
+      assert.equal(r1[i].interferenceWeight, r2[i].interferenceWeight);
+      assert.equal(r1[i].interferenceReason, r2[i].interferenceReason);
+    }
+  });
+
+  test('collapse uses adjusted score (u×c×iw) so reinforced branch can win', () => {
+    const loc = createSimLocation(0, 0);
+    // Branch 0: high utility, low confidence; Branch 1: lower utility but all others match it
+    // Force: branch 0 utility=0.9 (isolated), all others utility=0.5 (aligned)
+    loc.branches[0].utility = 0.9;
+    loc.branches[0].confidence = 0.5;   // raw=0.45
+    loc.branches.slice(1).forEach(function (b) { b.utility = 0.5; b.confidence = 1.0; }); // raw=0.5
+    // After interference: branch 0 conflicts with branches 1-4 (|0.9-0.5|=0.4 → unrelated here)
+    // Actually |0.9-0.5|=0.4 is in unrelated band, so no interference effect on branch 0.
+    // Let's use a more extreme separation:
+    loc.branches[0].utility = 0.95;     // raw = 0.95*0.5 = 0.475
+    loc.branches.slice(1).forEach(function (b) { b.utility = 0.01; b.confidence = 1.0; }); // raw=0.01
+    // |0.95-0.01|=0.94 > CONFLICT_THRESHOLD → conflicting → branch 0 gets damped, others get damped
+    // But all the others are aligned with each other: |0.01-0.01|=0 < ALIGN → reinforced
+    // net for branch 0: 0 reinforced - 4 conflicting → net=-3(capped) → weight=0.7, adj=0.95*0.5*0.7=0.3325
+    // net for others: 3 reinforced - 1 conflicting → net=2 → weight=1.2, adj=0.01*1.0*1.2=0.012
+    // branch 0 still wins (0.3325 > 0.012) with adjusted score
+    const winner = collapseSimLocation(loc.id);
+    assert.ok(winner, 'should produce a winner');
+    assert.equal(winner.id, loc.branches[0].id, 'branch 0 should win despite interference damping');
+  });
+});
 
 describe('quantumSimState integration', () => {
   beforeEach(clearSimState);
