@@ -203,10 +203,36 @@ const AGENT_LAYER_COVERAGE_THRESHOLD = 0.4;
 const INTERFERENCE_ALIGN_THRESHOLD    = 0.15;
 const INTERFERENCE_CONFLICT_THRESHOLD = 0.60;
 
+// Continuous-collapse engine constants
+// Interval at which active branches are re-scored and winner tracking updated.
+const CONTINUOUS_COLLAPSE_MS = 3000;
+// A new candidate must beat the current leader's score by at least this margin
+// to become the new leader (hysteresis guard against micro-oscillations).
+const HYSTERESIS_THRESHOLD = 0.05;
+// Once a leader's adjusted score reaches this value the branch is considered
+// "locked" — a challenger must also exceed WINNER_LOCK_MARGIN on top of
+// HYSTERESIS_THRESHOLD before it can unseat the locked leader.
+const WINNER_LOCK_THRESHOLD = 0.70;
+const WINNER_LOCK_MARGIN    = 0.12;
+// When the second-best branch score is within this delta of the leader, a
+// near-winner-pressure event is broadcast to the globe and SIM panel.
+const NEAR_WINNER_PRESSURE_THRESHOLD = 0.08;
+
 const quantumSimState = {
-  locations: {},   // locationId → { id, lat, lng, label, createdAt, branches: [], collapsed: null }
+  locations: {},   // locationId → { id, lat, lng, label, createdAt, branches: [], collapsed: null, continuousState: {} }
   auditTrail: [],  // collapsed events (last 200)
+  continuousCollapse: {
+    running: false,
+    intervalMs: CONTINUOUS_COLLAPSE_MS,
+    hysteresisThreshold: HYSTERESIS_THRESHOLD,
+    winnerLockThreshold: WINNER_LOCK_THRESHOLD,
+    winnerLockMargin:    WINNER_LOCK_MARGIN,
+    nearWinnerPressureThreshold: NEAR_WINNER_PRESSURE_THRESHOLD,
+  },
 };
+
+// Internal timer handle — not exported (not serialisable).
+let _continuousCollapseTimer = null;
 
 // ─── Frontend HTML (inline) ───────────────────────────────────────────────────
 const FRONTEND_HTML = `<!DOCTYPE html>
@@ -728,6 +754,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #sim-audit { flex-shrink: 0; border-top: 1px solid #0e1820; padding: 5px 10px; max-height: 90px; overflow-y: auto; }
     #sim-audit-title { font-size: .54rem; color: #1e3040; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
     .sim-audit-row { font-size: .54rem; color: #2a4a58; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Continuous-collapse live status bar */
+    #sim-live-status { font-size: .54rem; color: #1e3040; padding: 3px 10px; min-height: 16px; }
+    #sim-live-status.running { color: #3ec9b8; }
+    .sim-live-event { animation: simFade 2s ease-out forwards; }
+    @keyframes simFade { 0% { opacity:1; } 70% { opacity:1; } 100% { opacity:0.35; } }
+    /* Auto button active state */
+    .sim-ctrl-btn.auto-active { background: #0a2820; border-color: #3ec9b8; color: #3ec9b8; }
+    /* Live leader indicator on branch rows */
+    .sim-branch-row.live-leader { background: #0a1e18; }
+    .sim-live-leader-badge { font-size: .50rem; color: #3ec9b8; padding: 0 3px; flex-shrink: 0; }
+    .sim-live-leader-badge.locked { color: #f0b040; }
+    /* Near-winner pressure flash */
+    .sim-loc-card.pressure-flash { animation: pressureFlash 1s ease-out; }
+    @keyframes pressureFlash { 0%,100% { border-color: transparent; } 50% { border-color: #e05878; } }
   </style>
 </head>
 <body>
@@ -1481,8 +1521,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <button class="sim-ctrl-btn" id="sim-btn-prune-all" type="button" title="Prune low-confidence branches">✂ Prune All</button>
       <button class="sim-ctrl-btn" id="sim-btn-interfere" type="button" title="Apply quantum interference weights across all active branches">⊕ Interfere</button>
       <button class="sim-ctrl-btn" id="sim-btn-collapse-all" type="button" title="Collapse all locations to their best branch">⊙ Collapse</button>
+      <button class="sim-ctrl-btn" id="sim-btn-auto-collapse" type="button" title="Toggle continuous re-scoring loop (hysteresis + winner-lock)">⟳ Auto</button>
       <button class="sim-ctrl-btn" id="sim-btn-clear-all" type="button" title="Remove all simulation locations">⊘ Clear</button>
     </div>
+    <div id="sim-live-status"></div>
     <div id="sim-locations-list"></div>
     <div id="sim-audit">
       <div id="sim-audit-title">Collapse Audit Trail</div>
@@ -6953,6 +6995,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           timelineEngine.replayTs = msg.data.replayTs || null;
         }
         updateTimelineUI();
+      } else if (msg.type === 'sim_winner_change' || msg.type === 'sim_near_winner_pressure' || msg.type === 'sim_collapse') {
+        // Route to the quantum sim module's handler (registered once initQuantumSim runs)
+        if (typeof window._simHandleWsEvent === 'function') {
+          window._simHandleWsEvent(msg.type, msg.data);
+        }
       }
     };
 
@@ -7256,6 +7303,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     var simLocations = [];       // local cache from server
     var simGlobeEntities = {};   // locationId → [cesium entities]
     var simPickMode = false;     // true when SIM drawer is open → globe clicks go to sim
+    var simAutoRunning = false;  // mirrors server continuous-collapse running state
+    // Per-location live leader state: locationId → { leaderId, leaderScore, locked }
+    var simLiveLeaders = {};
 
     // Branch colour palette for globe visualisation
     var BRANCH_COLOURS = [
@@ -7269,6 +7319,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       document.getElementById('act-sim-btn').classList.add('active');
       simOpen = true;
       simPickMode = true;
+      syncAutoState();
       refreshSimPanel();
     }
 
@@ -7481,6 +7532,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       simLocations.forEach(function (loc) {
         var card = document.createElement('div');
         card.className = 'sim-loc-card';
+        card.dataset.locId = loc.id;   // used by pressure-flash targeting
 
         var labelEl = document.createElement('div');
         labelEl.className = 'sim-loc-label';
@@ -7539,9 +7591,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         // Branch rows
         var branchList = document.createElement('div');
         branchList.className = 'sim-branch-list';
+        var liveLeader = simLiveLeaders[loc.id] || null;
         (loc.branches || []).forEach(function (branch) {
           var row = document.createElement('div');
-          row.className = 'sim-branch-row';
+          var isLiveLead = liveLeader && branch.id === liveLeader.leaderId && branch.status === 'active';
+          row.className = 'sim-branch-row' + (isLiveLead ? ' live-leader' : '');
           var dot = document.createElement('div');
           var iwReason = branch.interferenceReason || 'neutral';
           dot.className = 'sim-branch-dot ' + branch.status + (branch.status === 'active' ? ' ' + iwReason : '');
@@ -7564,6 +7618,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
             iwBadge.textContent = (iwReason === 'reinforced' ? '⊕' : iwReason === 'damped' ? '⊖' : '·') + iw.toFixed(2);
             iwBadge.title = 'interference: ' + iwReason + ' (×' + iw.toFixed(2) + ')';
             row.appendChild(iwBadge);
+          }
+          // Live-leader badge (only shown when continuous-collapse is running)
+          if (isLiveLead) {
+            var liveTag = document.createElement('div');
+            liveTag.className = 'sim-live-leader-badge' + (liveLeader.locked ? ' locked' : '');
+            liveTag.textContent = liveLeader.locked ? '⟳🔒' : '⟳';
+            liveTag.title = 'Live leader — score ' + liveLeader.leaderScore.toFixed(3) + (liveLeader.locked ? ' (locked)' : '');
+            row.appendChild(liveTag);
           }
           branchList.appendChild(row);
         });
@@ -7638,9 +7700,89 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         .catch(function () {});
     });
 
+    // Toggle continuous-collapse engine on the server
+    document.getElementById('sim-btn-auto-collapse').addEventListener('click', function () {
+      var action = simAutoRunning ? 'stop' : 'start';
+      fetch('/api/sim/continuous-collapse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: action }),
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        simAutoRunning = data.running;
+        updateAutoBtn();
+        setSimLiveStatus(simAutoRunning ? '⟳ Continuous collapse active — scoring every ' + data.intervalMs + ' ms' : '', simAutoRunning);
+      }).catch(function () {});
+    });
+
+    function updateAutoBtn() {
+      var btn = document.getElementById('sim-btn-auto-collapse');
+      if (!btn) return;
+      if (simAutoRunning) {
+        btn.classList.add('auto-active');
+        btn.title = 'Stop continuous re-scoring loop';
+      } else {
+        btn.classList.remove('auto-active');
+        btn.title = 'Start continuous re-scoring loop (hysteresis + winner-lock)';
+      }
+    }
+
+    function setSimLiveStatus(msg, active) {
+      var el = document.getElementById('sim-live-status');
+      if (!el) return;
+      el.textContent = msg;
+      el.className = active ? 'running' : '';
+    }
+
+    // ── WebSocket sim event handlers ───────────────────────────────────────
+    // Called by the ws.onmessage handler when a sim_* event arrives.
+    function handleSimWsEvent(type, data) {
+      if (type === 'sim_winner_change') {
+        // Update live leader cache
+        simLiveLeaders[data.locationId] = {
+          leaderId:    data.winnerId,
+          leaderScore: data.score,
+          locked:      data.locked,
+        };
+        // Flash live status
+        setSimLiveStatus(
+          '⟳ ' + data.label + ' → leader ' + data.score.toFixed(3) + (data.locked ? ' 🔒' : ''),
+          true
+        );
+        // Refresh panel if open
+        if (simOpen) fetchAndRefresh();
+      } else if (type === 'sim_near_winner_pressure') {
+        setSimLiveStatus(
+          '⚡ ' + data.label + ' under pressure — gap ' + data.gap.toFixed(3),
+          true
+        );
+        // Flash the card if panel is open
+        if (simOpen) {
+          var cards = document.querySelectorAll('.sim-loc-card');
+          cards.forEach(function (card) {
+            if (card.dataset.locId === data.locationId) {
+              card.classList.remove('pressure-flash');
+              // Force reflow so re-adding the class triggers the animation
+              void card.offsetWidth;
+              card.classList.add('pressure-flash');
+            }
+          });
+        }
+      } else if (type === 'sim_collapse') {
+        setSimLiveStatus(
+          '⊙ Collapsed ' + (data.label || '') + ' → ' + (data.score || 0).toFixed(3),
+          false
+        );
+        if (simOpen) fetchAndRefresh();
+      }
+    }
+
+    // Expose to ws.onmessage (hoisted into outer scope via assignment below)
+    window._simHandleWsEvent = handleSimWsEvent;
+
     document.getElementById('sim-btn-clear-all').addEventListener('click', function () {
       clearAllSimGlobeEntities();
       simLocations = [];
+      simLiveLeaders = {};
       refreshSimPanel([]);
     });
 
@@ -7651,6 +7793,15 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (_simHookTries++ < 40) setTimeout(tryHookSimClick, 250);
     }
     tryHookSimClick();
+
+    // Sync auto-collapse running state from server on panel open
+    function syncAutoState() {
+      fetch('/api/sim/continuous-collapse').then(function (r) { return r.json(); }).then(function (data) {
+        simAutoRunning = data.running;
+        updateAutoBtn();
+        if (simAutoRunning) setSimLiveStatus('⟳ Continuous collapse active — scoring every ' + data.intervalMs + ' ms', true);
+      }).catch(function () {});
+    }
 
     // Periodic refresh when drawer is open
     setInterval(function () {
@@ -9277,6 +9428,14 @@ function createSimLocation(lat, lng, label) {
     createdAt: new Date().toISOString(),
     branches,
     collapsed: null,
+    // Continuous-collapse live tracking: updated each tick without permanently
+    // collapsing branches.  leaderId/leaderScore reflect the current scoring leader.
+    continuousState: {
+      leaderId:    null,
+      leaderScore: 0,
+      locked:      false,
+      since:       null,
+    },
   };
   quantumSimState.locations[id] = loc;
   return loc;
@@ -9495,6 +9654,16 @@ function collapseSimLocation(locationId) {
     quantumSimState.auditTrail = quantumSimState.auditTrail.slice(-200);
   }
 
+  // Stream collapse event to all connected clients (globe + SIM panel)
+  broadcast('sim_collapse', {
+    type: 'location',
+    locationId,
+    label: loc.label,
+    winnerId: winner.id,
+    score: loc.collapsed.score,
+    at: loc.collapsed.at,
+  });
+
   return winner;
 }
 
@@ -9576,7 +9745,136 @@ function collapseAllSimLocations() {
     quantumSimState.auditTrail = quantumSimState.auditTrail.slice(-200);
   }
 
+  // Stream global collapse event to all connected clients (globe + SIM panel)
+  broadcast('sim_collapse', {
+    type: 'global',
+    winnerLocationId: winnerLoc.id,
+    label: winnerLoc.label,
+    winnerId: winner.id,
+    score: winnerScore,
+    prunedCount,
+    locationCount: locs.length,
+    at,
+  });
+
   return { winner, winnerLocationId: winnerLoc.id, prunedCount, locationCount: locs.length };
+}
+
+// ─── Continuous Collapse Engine ───────────────────────────────────────────────
+
+/**
+ * One tick of the continuous-collapse scoring loop.
+ *
+ * For every sim location that still has active branches:
+ *  1. Apply interference weights (same as manual collapse).
+ *  2. Score every active branch: utility × confidence × interferenceWeight.
+ *  3. Identify the current leader (highest score).
+ *  4. Apply hysteresis guard: the challenger must exceed the sitting leader by
+ *     at least `hysteresisThreshold` (and `winnerLockMargin` more if the leader
+ *     is above `winnerLockThreshold`) before it takes the leader role.
+ *  5. Broadcast `sim_winner_change` when the leader ID changes.
+ *  6. Broadcast `sim_near_winner_pressure` when the 2nd-place score is within
+ *     `nearWinnerPressureThreshold` of the leader's score.
+ *
+ * Nothing is permanently collapsed — branch.status stays 'active'.
+ * Call startContinuousCollapse() to run this on a repeating timer.
+ */
+function runContinuousCollapseTick() {
+  const cfg = quantumSimState.continuousCollapse;
+  const now  = new Date().toISOString();
+
+  // Run interference once across all active branches before scoring
+  applyInterference();
+
+  for (const loc of Object.values(quantumSimState.locations)) {
+    const active = loc.branches.filter(function (b) { return b.status === 'active'; });
+    if (!active.length) continue;
+
+    // Score and sort descending
+    const scored = active.map(function (b) {
+      return { branch: b, score: b.utility * b.confidence * b.interferenceWeight };
+    }).sort(function (a, b) { return b.score - a.score; });
+
+    const top    = scored[0];
+    const second = scored[1] || null;
+    const cs     = loc.continuousState;
+
+    // --- Hysteresis / winner-lock check ---
+    let newLeader = false;
+    if (!cs.leaderId) {
+      // No leader yet — seat the top scorer immediately
+      newLeader = true;
+    } else if (top.branch.id !== cs.leaderId) {
+      // A different branch is on top — apply thresholds
+      const required = cs.locked
+        ? cfg.hysteresisThreshold + cfg.winnerLockMargin
+        : cfg.hysteresisThreshold;
+      if (top.score - cs.leaderScore >= required) {
+        newLeader = true;
+      }
+    } else {
+      // Same leader — refresh score and lock status
+      cs.leaderScore = top.score;
+      cs.locked      = top.score >= cfg.winnerLockThreshold;
+    }
+
+    if (newLeader) {
+      const prevId = cs.leaderId;
+      cs.leaderId    = top.branch.id;
+      cs.leaderScore = top.score;
+      cs.locked      = top.score >= cfg.winnerLockThreshold;
+      cs.since       = now;
+
+      // Broadcast winner change
+      broadcast('sim_winner_change', {
+        locationId:   loc.id,
+        label:        loc.label,
+        winnerId:     top.branch.id,
+        score:        top.score,
+        prevWinnerId: prevId,
+        locked:       cs.locked,
+        at:           now,
+      });
+    }
+
+    // --- Near-winner pressure check ---
+    if (second && (top.score - second.score) <= cfg.nearWinnerPressureThreshold) {
+      broadcast('sim_near_winner_pressure', {
+        locationId:     loc.id,
+        label:          loc.label,
+        leaderId:       cs.leaderId,
+        leaderScore:    top.score,
+        challengerId:   second.branch.id,
+        challengerScore: second.score,
+        gap:            top.score - second.score,
+        at:             now,
+      });
+    }
+  }
+}
+
+/**
+ * Start the continuous-collapse timer.
+ * Safe to call multiple times — only one timer runs at once.
+ * @param {number} [intervalMs]  Optional override for the tick interval.
+ */
+function startContinuousCollapse(intervalMs) {
+  if (_continuousCollapseTimer) return; // already running
+  const cfg = quantumSimState.continuousCollapse;
+  if (typeof intervalMs === 'number' && intervalMs > 0) cfg.intervalMs = intervalMs;
+  cfg.running = true;
+  _continuousCollapseTimer = setInterval(runContinuousCollapseTick, cfg.intervalMs);
+}
+
+/**
+ * Stop the continuous-collapse timer.
+ */
+function stopContinuousCollapse() {
+  if (_continuousCollapseTimer) {
+    clearInterval(_continuousCollapseTimer);
+    _continuousCollapseTimer = null;
+  }
+  quantumSimState.continuousCollapse.running = false;
 }
 
 function simulationLoop() {
@@ -10542,6 +10840,72 @@ function router(req, res) {
     return;
   }
 
+  // GET /api/sim/continuous-collapse  → current engine config + running status
+  if (req.method === 'GET' && url === '/api/sim/continuous-collapse') {
+    const cfg = quantumSimState.continuousCollapse;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      running:                    cfg.running,
+      intervalMs:                 cfg.intervalMs,
+      hysteresisThreshold:        cfg.hysteresisThreshold,
+      winnerLockThreshold:        cfg.winnerLockThreshold,
+      winnerLockMargin:           cfg.winnerLockMargin,
+      nearWinnerPressureThreshold: cfg.nearWinnerPressureThreshold,
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // POST /api/sim/continuous-collapse  → { action: 'start'|'stop', intervalMs?, hysteresisThreshold?, winnerLockThreshold?, winnerLockMargin?, nearWinnerPressureThreshold? }
+  if (req.method === 'POST' && url === '/api/sim/continuous-collapse') {
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      let parsed = {};
+      if (body) {
+        try { parsed = JSON.parse(body); } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+          return;
+        }
+      }
+      const cfg = quantumSimState.continuousCollapse;
+      // Apply any provided config overrides before start/stop
+      if (typeof parsed.intervalMs === 'number' && parsed.intervalMs > 0)
+        cfg.intervalMs = parsed.intervalMs;
+      if (typeof parsed.hysteresisThreshold === 'number')
+        cfg.hysteresisThreshold = parsed.hysteresisThreshold;
+      if (typeof parsed.winnerLockThreshold === 'number')
+        cfg.winnerLockThreshold = parsed.winnerLockThreshold;
+      if (typeof parsed.winnerLockMargin === 'number')
+        cfg.winnerLockMargin = parsed.winnerLockMargin;
+      if (typeof parsed.nearWinnerPressureThreshold === 'number')
+        cfg.nearWinnerPressureThreshold = parsed.nearWinnerPressureThreshold;
+
+      const action = parsed.action || (cfg.running ? 'stop' : 'start');
+      if (action === 'start') {
+        startContinuousCollapse();
+      } else if (action === 'stop') {
+        stopContinuousCollapse();
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'action must be "start" or "stop"' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        running:                    cfg.running,
+        intervalMs:                 cfg.intervalMs,
+        hysteresisThreshold:        cfg.hysteresisThreshold,
+        winnerLockThreshold:        cfg.winnerLockThreshold,
+        winnerLockMargin:           cfg.winnerLockMargin,
+        nearWinnerPressureThreshold: cfg.nearWinnerPressureThreshold,
+        ts: Date.now(),
+      }));
+    });
+    return;
+  }
+
   // 404
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'not found', path: url }));
@@ -10653,6 +11017,11 @@ module.exports = {
   EARTH_SPACE_LAYERS,
   INTERFERENCE_ALIGN_THRESHOLD,
   INTERFERENCE_CONFLICT_THRESHOLD,
+  CONTINUOUS_COLLAPSE_MS,
+  HYSTERESIS_THRESHOLD,
+  WINNER_LOCK_THRESHOLD,
+  WINNER_LOCK_MARGIN,
+  NEAR_WINNER_PRESSURE_THRESHOLD,
   createSimLocation,
   evolveSimBranches,
   pruneSimBranches,
@@ -10660,4 +11029,7 @@ module.exports = {
   collapseAllSimLocations,
   entangleSimBranches,
   applyInterference,
+  runContinuousCollapseTick,
+  startContinuousCollapse,
+  stopContinuousCollapse,
 };
