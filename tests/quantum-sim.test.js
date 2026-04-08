@@ -587,16 +587,13 @@ describe('applyInterference', () => {
   });
 
   test('unrelated branches (threshold gap) get neutral weight', () => {
-    // Single-branch location with utility mid-range, no aligned or conflicting peers
+    // Place utilities at mid-range intervals to minimize aligned/conflicting pairs.
+    // Not all pairs will necessarily be unrelated due to modulo wrapping, so the
+    // test only validates that all weights are valid numbers in the allowed range
+    // and reasons are from the expected set.
     const loc = createSimLocation(0, 0);
-    // Force all to utility=0.5 at first, then set them to values that differ from
-    // each other in the "unrelated" band (> ALIGN but < CONFLICT)
-    const gap = (INTERFERENCE_CONFLICT_THRESHOLD + INTERFERENCE_ALIGN_THRESHOLD) / 2; // ~0.375
+    const gap = (INTERFERENCE_CONFLICT_THRESHOLD + INTERFERENCE_ALIGN_THRESHOLD) / 2;
     loc.branches.forEach(function (b, i) { b.utility = (i * gap) % 1; });
-    // With only one location there are no cross-location pairs.
-    // Within the location, consecutive branches differ by `gap` which sits in the unrelated band.
-    // But note: some pairs may still hit aligned or conflicting, so just
-    // verify the weight is in [0.7, 1.3] and is a valid number.
     applyInterference();
     for (const b of loc.branches) {
       assert.ok(b.interferenceWeight >= 0.7 && b.interferenceWeight <= 1.3,
@@ -666,21 +663,16 @@ describe('applyInterference', () => {
 
   test('collapse uses adjusted score (u×c×iw) so reinforced branch can win', () => {
     const loc = createSimLocation(0, 0);
-    // Branch 0: high utility, low confidence; Branch 1: lower utility but all others match it
-    // Force: branch 0 utility=0.9 (isolated), all others utility=0.5 (aligned)
-    loc.branches[0].utility = 0.9;
-    loc.branches[0].confidence = 0.5;   // raw=0.45
-    loc.branches.slice(1).forEach(function (b) { b.utility = 0.5; b.confidence = 1.0; }); // raw=0.5
-    // After interference: branch 0 conflicts with branches 1-4 (|0.9-0.5|=0.4 → unrelated here)
-    // Actually |0.9-0.5|=0.4 is in unrelated band, so no interference effect on branch 0.
-    // Let's use a more extreme separation:
-    loc.branches[0].utility = 0.95;     // raw = 0.95*0.5 = 0.475
-    loc.branches.slice(1).forEach(function (b) { b.utility = 0.01; b.confidence = 1.0; }); // raw=0.01
-    // |0.95-0.01|=0.94 > CONFLICT_THRESHOLD → conflicting → branch 0 gets damped, others get damped
-    // But all the others are aligned with each other: |0.01-0.01|=0 < ALIGN → reinforced
-    // net for branch 0: 0 reinforced - 4 conflicting → net=-3(capped) → weight=0.7, adj=0.95*0.5*0.7=0.3325
-    // net for others: 3 reinforced - 1 conflicting → net=2 → weight=1.2, adj=0.01*1.0*1.2=0.012
-    // branch 0 still wins (0.3325 > 0.012) with adjusted score
+    // Branch 0: utility=0.95, confidence=0.5 → raw=0.475
+    // Branches 1-4: utility=0.01, confidence=1.0 → raw=0.01
+    // |0.95-0.01|=0.94 > CONFLICT_THRESHOLD → branch 0 conflicts with branches 1-4 → damped
+    // |0.01-0.01|=0 < ALIGN_THRESHOLD → branches 1-4 are aligned with each other → reinforced
+    // net for branch 0: -3(capped) → weight=0.7, adjusted=0.95*0.5*0.7=0.3325
+    // net for branches 1-4: 3(reinforced)-1(conflict with b0) = 2 → weight=1.2, adjusted=0.01*1.0*1.2=0.012
+    // branch 0 still wins (0.3325 > 0.012), confirming adjusted score is used
+    loc.branches[0].utility = 0.95;
+    loc.branches[0].confidence = 0.5;
+    loc.branches.slice(1).forEach(function (b) { b.utility = 0.01; b.confidence = 1.0; });
     const winner = collapseSimLocation(loc.id);
     assert.ok(winner, 'should produce a winner');
     assert.equal(winner.id, loc.branches[0].id, 'branch 0 should win despite interference damping');

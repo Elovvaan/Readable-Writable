@@ -7411,10 +7411,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       loc.branches.forEach(function (branch, i) {
         if (!branch.trajectory || branch.trajectory.length < 2) return;
         var colourHex = BRANCH_COLOURS[i % BRANCH_COLOURS.length];
-        // Base alpha by status; for active branches, modulate by interferenceWeight
+        // Base alpha by status; for active branches, modulate by interferenceWeight.
+        // interferenceWeight ranges [0.7, 1.3]: normalise against the minimum (0.7)
+        // so damped branches fade toward 0 and reinforced branches remain bright.
         var iw = (branch.status === 'active' && typeof branch.interferenceWeight === 'number')
           ? branch.interferenceWeight : 1.0;
-        var baseAlpha = branch.status === 'active' ? 0.85 * Math.min(1.0, iw / 0.7)
+        var IW_MIN = 0.7; // == 1.0 + (-3 * 0.1) — minimum possible interferenceWeight
+        var baseAlpha = branch.status === 'active' ? 0.85 * Math.min(1.0, iw / IW_MIN)
                       : branch.status === 'collapsed' ? 1.0
                       : 0.2;  // pruned
         var alpha = Math.max(0.1, Math.min(1.0, baseAlpha));
@@ -7424,6 +7427,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         var glowPower = branch.status === 'collapsed' ? 0.4
                       : branch.status === 'active' ? Math.min(0.5, 0.2 * iw)
                       : 0.1;
+        var tipPixelSize = branch.status === 'collapsed' ? 8
+                         : branch.status === 'active' ? Math.max(3, Math.round(5 * iw))
+                         : 3;
 
         var positions = branch.trajectory.map(function (wp) {
           return Cesium.Cartesian3.fromDegrees(wp.lng, wp.lat, wp.alt || 0);
@@ -7448,7 +7454,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         var tipEnt = cesiumViewer.entities.add({
           position: Cesium.Cartesian3.fromDegrees(tip.lng, tip.lat, tip.alt || 0),
           point: {
-            pixelSize: branch.status === 'collapsed' ? 8 : (branch.status === 'active' ? Math.max(3, Math.round(5 * iw)) : 3),
+            pixelSize: tipPixelSize,
             color: Cesium.Color.fromCssColorString(colourHex).withAlpha(alpha),
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
@@ -7555,7 +7561,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           if (branch.status === 'active') {
             var iwBadge = document.createElement('div');
             iwBadge.className = 'sim-branch-iw ' + iwReason;
-            iwBadge.textContent = (iw > 1 ? '⊕' : iw < 1 ? '⊖' : '·') + iw.toFixed(2);
+            iwBadge.textContent = (iwReason === 'reinforced' ? '⊕' : iwReason === 'damped' ? '⊖' : '·') + iw.toFixed(2);
             iwBadge.title = 'interference: ' + iwReason + ' (×' + iw.toFixed(2) + ')';
             row.appendChild(iwBadge);
           }
@@ -9431,7 +9437,7 @@ function applyInterference() {
   const results = [];
   for (let i = 0; i < allActive.length; i++) {
     const net = Math.max(-3, Math.min(3, reinforceCount[i] - conflictCount[i]));
-    const weight = Math.round((1.0 + net * 0.1) * 1e9) / 1e9; // avoid float drift
+    const weight = parseFloat((1.0 + net * 0.1).toFixed(2)); // net is integer so result is exact
     const reason = net > 0 ? 'reinforced' : net < 0 ? 'damped' : 'neutral';
     allActive[i].interferenceWeight = weight;
     allActive[i].interferenceReason = reason;
