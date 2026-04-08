@@ -7363,6 +7363,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       '#c878e0', '#e09840', '#80b0ff',
     ];
 
+    // Signal type icon map — shared by refreshSimPanel and setSimSignalsStatus
+    var SIGNAL_ICONS = { traffic: '🚦', weather: '⛅', aircraft: '✈', vessel: '⛴', satellite: '🛰', sensor: '📡' };
+
     // ── Panel open/close ───────────────────────────────────────────────────
     function openSimDrawer() {
       document.getElementById('sim-drawer').classList.add('open');
@@ -7705,7 +7708,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           if (branch.status === 'active' && branch.sourceInfluence && branch.sourceInfluence.sources && branch.sourceInfluence.sources.length) {
             var signalWrap = document.createElement('div');
             signalWrap.className = 'sim-branch-signals';
-            var SIGNAL_ICONS = { traffic: '🚦', weather: '⛅', aircraft: '✈', vessel: '⛴', satellite: '🛰', sensor: '📡' };
             branch.sourceInfluence.sources.forEach(function (src) {
               var chip = document.createElement('span');
               chip.className = 'sim-signal-chip ' + src.type;
@@ -7847,7 +7849,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (!el) return;
       el.innerHTML = '';
       if (!signalSources || !signalSources.length) return;
-      var SIGNAL_ICONS = { traffic: '🚦', weather: '⛅', aircraft: '✈', vessel: '⛴', satellite: '🛰', sensor: '📡' };
       var label = document.createElement('span');
       label.style.cssText = 'color:#1e3040;font-size:.48rem;letter-spacing:.06em;text-transform:uppercase;margin-right:3px;';
       label.textContent = 'Signals:';
@@ -9537,6 +9538,17 @@ function tickAgent(agent) {
 // Normalised real-world signal contributions for branch scoring.
 // Each field is an additive delta applied to the corresponding scoring component.
 
+// ── Signal model tuning constants ─────────────────────────────────────────────
+// Weights for the weather severity ratio: storms are weighted twice as heavily
+// as fog; adding 1 to the denominator prevents division by zero on an empty
+// weather set and keeps the ratio bounded below 1 even with all storms.
+const WEATHER_STORM_WEIGHT        = 2;    // multiplicative weight of storm cells in severity ratio
+const WEATHER_SEVERITY_DENOM_OFFSET = 1; // denominator offset preventing zero-division
+
+// Controls how strongly interferenceRelevance amplifies a branch's interference
+// weight in _branchAdjustedScore (interferenceWeight × (1 + IR × multiplier)).
+const INTERFERENCE_RELEVANCE_MULTIPLIER = 0.10;
+
 /** Zero-delta fallback used when sourceInfluence is not yet computed. */
 const NULL_SIGNAL_INFLUENCE = Object.freeze({
   utilityDelta:          0,
@@ -9606,7 +9618,7 @@ function computeSignalInfluence() {
   if (weather.length > 0) {
     const stormCount = weather.filter(function (w) { return w.subtype === 'storm'; }).length;
     const fogCount   = weather.filter(function (w) { return w.subtype === 'fog'; }).length;
-    const severityRatio = Math.min(1, (stormCount * 2 + fogCount) / (weather.length * 2 + 1));
+    const severityRatio = Math.min(1, (stormCount * WEATHER_STORM_WEIGHT + fogCount) / (weather.length * WEATHER_STORM_WEIGHT + WEATHER_SEVERITY_DENOM_OFFSET));
     const wUtility = -(0.12 * severityRatio);
     const wConf    = -(0.10 * severityRatio);
     const wCost    =  (0.06 * severityRatio);
@@ -9719,7 +9731,7 @@ function _branchAdjustedScore(branch, strategy) {
   const effectiveU    = Math.max(0, Math.min(1, branch.utility   + si.utilityDelta));
   const effectiveC    = Math.max(0, Math.min(1, branch.confidence + si.confidenceDelta));
   const effectiveCost = Math.max(0, branch.cost + si.costDelta);
-  const effectiveIW   = branch.interferenceWeight * (1 + si.interferenceRelevance * 0.10);
+  const effectiveIW   = branch.interferenceWeight * (1 + si.interferenceRelevance * INTERFERENCE_RELEVANCE_MULTIPLIER);
   const effectiveSW   = computeStrategicWeight(branch, strategy) + si.strategicWeightDelta;
   return (effectiveU * effectiveC * effectiveIW) - effectiveCost + effectiveSW;
 }
