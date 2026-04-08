@@ -1465,6 +1465,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div id="sim-controls">
       <button class="sim-ctrl-btn" id="sim-btn-evolve-all" type="button" title="Advance all branches one generation">▶ Evolve All</button>
       <button class="sim-ctrl-btn" id="sim-btn-prune-all" type="button" title="Prune low-confidence branches">✂ Prune All</button>
+      <button class="sim-ctrl-btn" id="sim-btn-collapse-all" type="button" title="Collapse all locations to their best branch">⊙ Collapse</button>
       <button class="sim-ctrl-btn" id="sim-btn-clear-all" type="button" title="Remove all simulation locations">⊘ Clear</button>
     </div>
     <div id="sim-locations-list"></div>
@@ -7572,6 +7573,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ threshold: 0.2 }),
           }).then(function (r) { return r.json(); });
+        });
+      });
+      chain.then(function () { fetchAndRefresh(); }).catch(function () {});
+    });
+
+    document.getElementById('sim-btn-collapse-all').addEventListener('click', function () {
+      var ids = simLocations.map(function (l) { return l.id; });
+      var chain = Promise.resolve();
+      ids.forEach(function (id) {
+        chain = chain.then(function () {
+          return fetch('/api/sim/collapse/' + encodeURIComponent(id), { method: 'POST' }).then(function (r) { return r.json(); });
         });
       });
       chain.then(function () { fetchAndRefresh(); }).catch(function () {});
