@@ -781,6 +781,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     /* Continuous-collapse live status bar */
     #sim-live-status { font-size: .54rem; color: #1e3040; padding: 3px 10px; min-height: 16px; }
     #sim-live-status.running { color: #3ec9b8; }
+    #sim-signals-status { font-size: .50rem; color: #2a4050; padding: 2px 10px 3px; min-height: 14px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace; display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
     .sim-live-event { animation: simFade 2s ease-out forwards; }
     @keyframes simFade { 0% { opacity:1; } 70% { opacity:1; } 100% { opacity:0.35; } }
     /* Auto button active state */
@@ -792,6 +794,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     /* Near-winner pressure flash */
     .sim-loc-card.pressure-flash { animation: pressureFlash 1s ease-out; }
     @keyframes pressureFlash { 0%,100% { border-color: transparent; } 50% { border-color: #e05878; } }
+    /* Source-influence signal badge — shown per active branch */
+    .sim-branch-signals { display: flex; gap: 2px; flex-wrap: wrap; align-items: center; }
+    .sim-signal-chip { font-size: .48rem; font-family: 'Cascadia Code', 'Fira Code', monospace;
+      padding: 0 3px; border-radius: 2px; flex-shrink: 0; white-space: nowrap; }
+    .sim-signal-chip.traffic  { color: #e09040; background: #1a0e04; }
+    .sim-signal-chip.weather  { color: #4ab0e8; background: #041018; }
+    .sim-signal-chip.aircraft { color: #9870e8; background: #0c0418; }
+    .sim-signal-chip.vessel   { color: #40b8d0; background: #041418; }
+    .sim-signal-chip.satellite{ color: #80d070; background: #061408; }
+    .sim-signal-chip.sensor   { color: #d0a840; background: #141004; }
+    /* Signal-pressure origin dot glow when interferenceRelevance is high */
+    .sim-loc-card.signal-pressure .sim-loc-label { color: #e09050; }
   </style>
 </head>
 <body>
@@ -1560,6 +1574,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       </select>
     </div>
     <div id="sim-live-status"></div>
+    <div id="sim-signals-status" title="Active real-world signal contributions driving branch scoring"></div>
     <div id="sim-locations-list"></div>
     <div id="sim-audit">
       <div id="sim-audit-title">Collapse Audit Trail</div>
@@ -7348,6 +7363,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       '#c878e0', '#e09840', '#80b0ff',
     ];
 
+    // Signal type icon map — shared by refreshSimPanel and setSimSignalsStatus
+    var SIGNAL_ICONS = { traffic: '🚦', weather: '⛅', aircraft: '✈', vessel: '⛴', satellite: '🛰', sensor: '📡' };
+
     // ── Panel open/close ───────────────────────────────────────────────────
     function openSimDrawer() {
       document.getElementById('sim-drawer').classList.add('open');
@@ -7469,16 +7487,34 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       var entities = [];
       var origin = Cesium.Cartesian3.fromDegrees(loc.lng, loc.lat, 0);
 
-      // Origin point (pulsing glow) — gold for global winner, teal otherwise
+      // Compute aggregate signal pressure from active branches
+      var activeBranches = (loc.branches || []).filter(function (b) { return b.status === 'active'; });
+      var maxIR = 0;
+      activeBranches.forEach(function (b) {
+        if (b.sourceInfluence && b.sourceInfluence.interferenceRelevance > maxIR) {
+          maxIR = b.sourceInfluence.interferenceRelevance;
+        }
+      });
+      var hasWeatherPressure = activeBranches.some(function (b) {
+        return b.sourceInfluence && b.sourceInfluence.sources && b.sourceInfluence.sources.some(function (s) { return s.type === 'weather'; });
+      });
+
+      // Origin point (pulsing glow) — gold for global winner, amber-orange when weather pressure
+      // is high (interferenceRelevance > 0.5), teal otherwise
       var isGlobalWinner = !!(loc.collapsed && loc.collapsed.type === 'global');
-      var originColor = isGlobalWinner ? '#f0b040' : '#3ec9b8';
+      var originColor = isGlobalWinner ? '#f0b040'
+                      : (hasWeatherPressure && maxIR > 0.5) ? '#e08030'
+                      : '#3ec9b8';
+      var originSize  = isGlobalWinner ? 14
+                      : (maxIR > 0.5 ? 12 : 10);
+      var originOutlineWidth = isGlobalWinner ? 6 : (maxIR > 0.5 ? 5 : 4);
       var originEnt = cesiumViewer.entities.add({
         position: origin,
         point: {
-          pixelSize: isGlobalWinner ? 14 : 10,
+          pixelSize: originSize,
           color: Cesium.Color.fromCssColorString(originColor).withAlpha(0.9),
           outlineColor: Cesium.Color.fromCssColorString(originColor).withAlpha(0.4),
-          outlineWidth: isGlobalWinner ? 6 : 4,
+          outlineWidth: originOutlineWidth,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
         label: {
@@ -7498,24 +7534,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       loc.branches.forEach(function (branch, i) {
         if (!branch.trajectory || branch.trajectory.length < 2) return;
         var colourHex = BRANCH_COLOURS[i % BRANCH_COLOURS.length];
-        // Base alpha by status; for active branches, modulate by interferenceWeight.
-        // interferenceWeight ranges [0.7, 1.3]: normalise against the minimum (0.7)
-        // so damped branches fade toward 0 and reinforced branches remain bright.
+        // Base alpha by status; for active branches, modulate by interferenceWeight and
+        // signal interferenceRelevance (high IR → amplify glow on the leader branch).
         var iw = (branch.status === 'active' && typeof branch.interferenceWeight === 'number')
           ? branch.interferenceWeight : 1.0;
+        var ir = (branch.status === 'active' && branch.sourceInfluence)
+          ? (branch.sourceInfluence.interferenceRelevance || 0) : 0;
         var IW_MIN = 0.7; // == 1.0 + (-3 * 0.1) — minimum possible interferenceWeight
-        var baseAlpha = branch.status === 'active' ? 0.85 * Math.min(1.0, iw / IW_MIN)
+        var baseAlpha = branch.status === 'active' ? 0.85 * Math.min(1.0, iw / IW_MIN) * (1 + ir * 0.2)
                       : branch.status === 'collapsed' ? 1.0
                       : 0.2;  // pruned
         var alpha = Math.max(0.1, Math.min(1.0, baseAlpha));
         var lineWidth = branch.status === 'collapsed' ? 3
-                      : branch.status === 'active' ? Math.max(1, Math.round(2 * iw))
+                      : branch.status === 'active' ? Math.max(1, Math.round(2 * iw * (1 + ir * 0.3)))
                       : 1;
         var glowPower = branch.status === 'collapsed' ? 0.4
-                      : branch.status === 'active' ? Math.min(0.5, 0.2 * iw)
+                      : branch.status === 'active' ? Math.min(0.6, 0.2 * iw + ir * 0.1)
                       : 0.1;
         var tipPixelSize = branch.status === 'collapsed' ? 8
-                         : branch.status === 'active' ? Math.max(3, Math.round(5 * iw))
+                         : branch.status === 'active' ? Math.max(3, Math.round(5 * iw * (1 + ir * 0.2)))
                          : 3;
 
         var positions = branch.trajectory.map(function (wp) {
@@ -7667,6 +7704,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
             liveTag.title = 'Live leader — score ' + liveLeader.leaderScore.toFixed(3) + (liveLeader.locked ? ' (locked)' : '');
             row.appendChild(liveTag);
           }
+          // Source-influence signal chips — only for active branches
+          if (branch.status === 'active' && branch.sourceInfluence && branch.sourceInfluence.sources && branch.sourceInfluence.sources.length) {
+            var signalWrap = document.createElement('div');
+            signalWrap.className = 'sim-branch-signals';
+            branch.sourceInfluence.sources.forEach(function (src) {
+              var chip = document.createElement('span');
+              chip.className = 'sim-signal-chip ' + src.type;
+              chip.textContent = (SIGNAL_ICONS[src.type] || src.type[0].toUpperCase());
+              var contrib = src.contribution || {};
+              var contribParts = [];
+              if (typeof contrib.utility    === 'number') contribParts.push('u' + (contrib.utility    >= 0 ? '+' : '') + contrib.utility.toFixed(3));
+              if (typeof contrib.confidence === 'number') contribParts.push('c' + (contrib.confidence >= 0 ? '+' : '') + contrib.confidence.toFixed(3));
+              if (typeof contrib.cost       === 'number') contribParts.push('cost' + (contrib.cost    >= 0 ? '+' : '') + contrib.cost.toFixed(3));
+              if (typeof contrib.strategicWeight === 'number') contribParts.push('sw' + (contrib.strategicWeight >= 0 ? '+' : '') + contrib.strategicWeight.toFixed(3));
+              chip.title = src.type + (src.count !== undefined ? ' ×' + src.count : '') + (contribParts.length ? ' → ' + contribParts.join(' ') : '');
+              signalWrap.appendChild(chip);
+            });
+            row.appendChild(signalWrap);
+          }
           branchList.appendChild(row);
         });
         card.appendChild(branchList);
@@ -7675,11 +7731,21 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         if (loc.collapsed) {
           var badge = document.createElement('div');
           badge.className = ['sim-collapsed-badge', loc.collapsed.type === 'global' ? 'sim-global-winner-badge' : ''].filter(Boolean).join(' ');
+          var siSummary = '';
+          if (loc.collapsed.sourceInfluence && loc.collapsed.sourceInfluence.sources && loc.collapsed.sourceInfluence.sources.length) {
+            siSummary = ' [' + loc.collapsed.sourceInfluence.sources.map(function (s) { return s.type[0].toUpperCase(); }).join('') + ']';
+          }
           badge.textContent = loc.collapsed.type === 'global'
-            ? '★ GLOBAL WINNER · score ' + loc.collapsed.score.toFixed(3)
-            : '⊙ COLLAPSED · score ' + loc.collapsed.score.toFixed(3);
+            ? '★ GLOBAL WINNER · score ' + loc.collapsed.score.toFixed(3) + siSummary
+            : '⊙ COLLAPSED · score ' + loc.collapsed.score.toFixed(3) + siSummary;
+          if (siSummary) badge.title = 'Signal sources: ' + (loc.collapsed.sourceInfluence.sources || []).map(function (s) { return s.type; }).join(', ');
           card.appendChild(badge);
         }
+
+        // Flag card with signal-pressure if interferenceRelevance is high across active branches
+        var activeBranches = (loc.branches || []).filter(function (b) { return b.status === 'active'; });
+        var highIR = activeBranches.some(function (b) { return b.sourceInfluence && b.sourceInfluence.interferenceRelevance > 0.5; });
+        if (highIR) card.classList.add('signal-pressure');
 
         list.appendChild(card);
       });
@@ -7694,8 +7760,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           var t = new Date(entry.at);
           var hm = t.toTimeString().slice(0, 5);
           var stratTag = entry.strategy && entry.strategy !== 'balanced' ? ' [' + entry.strategy + ']' : '';
-          row.textContent = hm + ' · ' + entry.label + ' → ' + entry.score.toFixed(3) + stratTag;
-          row.title = 'strategy: ' + (entry.strategy || 'balanced') + ' · score: ' + entry.score.toFixed(4);
+          var sigTag = (entry.sourceInfluenceSources && entry.sourceInfluenceSources.length)
+            ? ' {' + entry.sourceInfluenceSources.map(function (s) { return s[0].toUpperCase(); }).join('') + '}'
+            : '';
+          row.textContent = hm + ' · ' + entry.label + ' → ' + entry.score.toFixed(3) + stratTag + sigTag;
+          row.title = 'strategy: ' + (entry.strategy || 'balanced') + ' · score: ' + entry.score.toFixed(4) + (sigTag ? ' · signals: ' + (entry.sourceInfluenceSources || []).join(',') : '');
           auditRows.appendChild(row);
         });
       }
@@ -7775,6 +7844,30 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       el.className = active ? 'running' : '';
     }
 
+    function setSimSignalsStatus(signalSources, interferenceRelevance) {
+      var el = document.getElementById('sim-signals-status');
+      if (!el) return;
+      el.innerHTML = '';
+      if (!signalSources || !signalSources.length) return;
+      var label = document.createElement('span');
+      label.style.cssText = 'color:#1e3040;font-size:.48rem;letter-spacing:.06em;text-transform:uppercase;margin-right:3px;';
+      label.textContent = 'Signals:';
+      el.appendChild(label);
+      signalSources.forEach(function (type) {
+        var chip = document.createElement('span');
+        chip.className = 'sim-signal-chip ' + type;
+        chip.textContent = (SIGNAL_ICONS[type] || type[0].toUpperCase()) + ' ' + type;
+        el.appendChild(chip);
+      });
+      if (typeof interferenceRelevance === 'number' && interferenceRelevance > 0.1) {
+        var irSpan = document.createElement('span');
+        irSpan.style.cssText = 'color:#3a5060;font-size:.48rem;margin-left:4px;';
+        irSpan.textContent = 'IR:' + interferenceRelevance.toFixed(2);
+        irSpan.title = 'interferenceRelevance — how much external conditions affect branch separation';
+        el.appendChild(irSpan);
+      }
+    }
+
     // ── WebSocket sim event handlers ───────────────────────────────────────
     // Called by the ws.onmessage handler when a sim_* event arrives.
     function handleSimWsEvent(type, data) {
@@ -7785,9 +7878,14 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           leaderScore: data.score,
           locked:      data.locked,
         };
+        // Surface signal sources in the signals strip
+        if (data.signalSources) setSimSignalsStatus(data.signalSources, data.interferenceRelevance);
         // Flash live status
+        var sigSuffix = (data.signalSources && data.signalSources.length)
+          ? ' [' + data.signalSources.map(function (s) { return s[0].toUpperCase(); }).join('') + ']'
+          : '';
         setSimLiveStatus(
-          '⟳ ' + data.label + ' → leader ' + data.score.toFixed(3) + (data.locked ? ' 🔒' : ''),
+          '⟳ ' + data.label + ' → leader ' + data.score.toFixed(3) + (data.locked ? ' 🔒' : '') + sigSuffix,
           true
         );
         // Refresh panel if open
@@ -7810,8 +7908,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           });
         }
       } else if (type === 'sim_collapse') {
+        var colSigSuffix = (data.signalSources && data.signalSources.length)
+          ? ' [' + data.signalSources.map(function (s) { return s[0].toUpperCase(); }).join('') + ']'
+          : '';
         setSimLiveStatus(
-          '⊙ Collapsed ' + (data.label || '') + ' → ' + (data.score || 0).toFixed(3),
+          '⊙ Collapsed ' + (data.label || '') + ' → ' + (data.score || 0).toFixed(3) + colSigSuffix,
           false
         );
         if (simOpen) fetchAndRefresh();
@@ -9433,6 +9534,208 @@ function tickAgent(agent) {
 
 // ─── Quantum Simulation Engine ────────────────────────────────────────────────
 
+// ─── Signal Model ─────────────────────────────────────────────────────────────
+// Normalised real-world signal contributions for branch scoring.
+// Each field is an additive delta applied to the corresponding scoring component.
+
+// ── Signal model tuning constants ─────────────────────────────────────────────
+// Weights for the weather severity ratio: storms are weighted twice as heavily
+// as fog; adding 1 to the denominator prevents division by zero on an empty
+// weather set and keeps the ratio bounded below 1 even with all storms.
+const WEATHER_STORM_WEIGHT        = 2;    // multiplicative weight of storm cells in severity ratio
+const WEATHER_SEVERITY_DENOM_OFFSET = 1; // denominator offset preventing zero-division
+
+// Controls how strongly interferenceRelevance amplifies a branch's interference
+// weight in _branchAdjustedScore (interferenceWeight × (1 + IR × multiplier)).
+const INTERFERENCE_RELEVANCE_MULTIPLIER = 0.10;
+
+/** Zero-delta fallback used when sourceInfluence is not yet computed. */
+const NULL_SIGNAL_INFLUENCE = Object.freeze({
+  utilityDelta:          0,
+  confidenceDelta:       0,
+  costDelta:             0,
+  interferenceRelevance: 0,
+  strategicWeightDelta:  0,
+  sources:               [],
+});
+
+/**
+ * Compute the aggregate signal influence from all live entity layers and the
+ * traffic layer.  Called on branch creation and each evolution tick so that
+ * stored influence reflects current world conditions.
+ *
+ * Signal-to-score mapping (all additive, clamped at use-site):
+ *   traffic    → cost ↑ / utility ↓ when congested; confidence ↓ on incidents
+ *   weather    → utility ↓ / confidence ↓ on severe cells; interferenceRelevance ↑
+ *   aircraft   → utility ↑ / confidence ↑ with density; interferenceRelevance ↑
+ *   vessel     → utility ↑ / confidence ↑ with density
+ *   satellite  → confidence ↑ / strategicWeightDelta ↑
+ *   sensor     → confidence ↑ / strategicWeightDelta ↑
+ *
+ * Returns a frozen sourceInfluence snapshot that is safe to store on a branch.
+ */
+function computeSignalInfluence() {
+  const aircraft = Object.values(liveEntityState.aircraft);
+  const vessels  = Object.values(liveEntityState.vessels);
+  const vehicles = Object.values(liveEntityState.vehicles);
+  const sensors  = Object.values(liveEntityState.sensors);
+  const weather  = Object.values(liveEntityState.weather);
+
+  const segments  = trafficState.segments  || [];
+  const incidents = trafficState.incidents || [];
+  const closures  = trafficState.closures  || [];
+
+  let utilityDelta          = 0;
+  let confidenceDelta       = 0;
+  let costDelta             = 0;
+  let interferenceRelevance = 0;
+  let strategicWeightDelta  = 0;
+  const sources = [];
+
+  // ── Traffic ──────────────────────────────────────────────────────────────
+  if (segments.length > 0) {
+    const heavySegs = segments.filter(function (s) { return s.level === 'heavy'; });
+    const congestionRatio = heavySegs.length / segments.length;
+    const incidentLoad    = Math.min(1, (incidents.length + closures.length) / 5);
+    const tUtility = -(0.10 * congestionRatio);
+    const tCost    =  (0.08 * congestionRatio) + (0.05 * incidentLoad);
+    const tConf    = -(0.06 * incidentLoad);
+    utilityDelta    += tUtility;
+    costDelta       += tCost;
+    confidenceDelta += tConf;
+    if (heavySegs.length > 0 || incidents.length > 0) {
+      sources.push({
+        type: 'traffic',
+        heavySegments: heavySegs.length,
+        totalSegments: segments.length,
+        incidentCount: incidents.length,
+        contribution: { utility: tUtility, cost: tCost, confidence: tConf },
+      });
+    }
+  }
+
+  // ── Weather ───────────────────────────────────────────────────────────────
+  if (weather.length > 0) {
+    const stormCount = weather.filter(function (w) { return w.subtype === 'storm'; }).length;
+    const fogCount   = weather.filter(function (w) { return w.subtype === 'fog'; }).length;
+    const severityRatio = Math.min(1, (stormCount * WEATHER_STORM_WEIGHT + fogCount) / (weather.length * WEATHER_STORM_WEIGHT + WEATHER_SEVERITY_DENOM_OFFSET));
+    const wUtility = -(0.12 * severityRatio);
+    const wConf    = -(0.10 * severityRatio);
+    const wCost    =  (0.06 * severityRatio);
+    utilityDelta          += wUtility;
+    confidenceDelta       += wConf;
+    costDelta             += wCost;
+    interferenceRelevance += severityRatio * 0.40;
+    sources.push({
+      type: 'weather',
+      cellCount: weather.length,
+      stormCount,
+      fogCount,
+      contribution: { utility: wUtility, confidence: wConf, cost: wCost },
+    });
+  }
+
+  // ── Aircraft ──────────────────────────────────────────────────────────────
+  if (aircraft.length > 0) {
+    const avgConf     = aircraft.reduce(function (s, a) { return s + (a.confidence || 0); }, 0) / aircraft.length;
+    const density     = Math.min(1, aircraft.length / 20);
+    const acUtility   = 0.08 * density;
+    const acConf      = 0.06 * avgConf * density;
+    utilityDelta          += acUtility;
+    confidenceDelta       += acConf;
+    interferenceRelevance += density * 0.30;
+    sources.push({
+      type: 'aircraft',
+      count: aircraft.length,
+      avgConfidence: parseFloat(avgConf.toFixed(3)),
+      contribution: { utility: acUtility, confidence: acConf },
+    });
+  }
+
+  // ── Vessels ───────────────────────────────────────────────────────────────
+  if (vessels.length > 0) {
+    const avgConf   = vessels.reduce(function (s, v) { return s + (v.confidence || 0); }, 0) / vessels.length;
+    const density   = Math.min(1, vessels.length / 10);
+    const vsUtility = 0.05 * density;
+    const vsConf    = 0.04 * avgConf * density;
+    utilityDelta    += vsUtility;
+    confidenceDelta += vsConf;
+    sources.push({
+      type: 'vessel',
+      count: vessels.length,
+      avgConfidence: parseFloat(avgConf.toFixed(3)),
+      contribution: { utility: vsUtility, confidence: vsConf },
+    });
+  }
+
+  // ── Satellites ────────────────────────────────────────────────────────────
+  const satAgents = Object.values(worldview.agents).filter(function (a) { return a.type === 'satellite'; });
+  if (satAgents.length > 0) {
+    const satFactor  = Math.min(1, satAgents.length / 2);
+    const satConf    = 0.05 * satFactor;
+    const satSW      = 0.04 * satFactor;
+    confidenceDelta      += satConf;
+    strategicWeightDelta += satSW;
+    sources.push({
+      type: 'satellite',
+      count: satAgents.length,
+      contribution: { confidence: satConf, strategicWeight: satSW },
+    });
+  }
+
+  // ── Sensors ───────────────────────────────────────────────────────────────
+  if (sensors.length > 0) {
+    const active     = sensors.filter(function (s) { return (s.confidence || 0) > 0.5; });
+    const density    = Math.min(1, active.length / 4);
+    const snConf     = 0.06 * density;
+    const snSW       = 0.03 * density;
+    confidenceDelta      += snConf;
+    strategicWeightDelta += snSW;
+    sources.push({
+      type: 'sensor',
+      count: sensors.length,
+      activeCount: active.length,
+      contribution: { confidence: snConf, strategicWeight: snSW },
+    });
+  }
+
+  return Object.freeze({
+    utilityDelta:          parseFloat(utilityDelta.toFixed(4)),
+    confidenceDelta:       parseFloat(confidenceDelta.toFixed(4)),
+    costDelta:             parseFloat(costDelta.toFixed(4)),
+    interferenceRelevance: parseFloat(Math.min(1, interferenceRelevance).toFixed(4)),
+    strategicWeightDelta:  parseFloat(strategicWeightDelta.toFixed(4)),
+    sources,
+    computedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * Compute the full adjusted score for a branch, incorporating both the
+ * mission strategy and any real-world signal contributions stored in
+ * branch.sourceInfluence.
+ *
+ * Formula:
+ *   effectiveU   = clamp(utility  + si.utilityDelta,    0, 1)
+ *   effectiveC   = clamp(confidence + si.confidenceDelta, 0, 1)
+ *   effectiveIW  = interferenceWeight × (1 + si.interferenceRelevance × 0.10)
+ *   effectiveCost= max(0, cost + si.costDelta)
+ *   effectiveSW  = computeStrategicWeight(branch, strategy) + si.strategicWeightDelta
+ *   score        = (effectiveU × effectiveC × effectiveIW) − effectiveCost + effectiveSW
+ *
+ * Deterministic for a given branch snapshot; call computeSignalInfluence() first
+ * to refresh sourceInfluence when world conditions change.
+ */
+function _branchAdjustedScore(branch, strategy) {
+  const si = branch.sourceInfluence || NULL_SIGNAL_INFLUENCE;
+  const effectiveU    = Math.max(0, Math.min(1, branch.utility   + si.utilityDelta));
+  const effectiveC    = Math.max(0, Math.min(1, branch.confidence + si.confidenceDelta));
+  const effectiveCost = Math.max(0, branch.cost + si.costDelta);
+  const effectiveIW   = branch.interferenceWeight * (1 + si.interferenceRelevance * INTERFERENCE_RELEVANCE_MULTIPLIER);
+  const effectiveSW   = computeStrategicWeight(branch, strategy) + si.strategicWeightDelta;
+  return (effectiveU * effectiveC * effectiveIW) - effectiveCost + effectiveSW;
+}
+
 /**
  * Build a single simulation branch with randomised initial state.
  * Agents in BRANCH_AGENT_ROLES are seeded with Earth+space layer awareness.
@@ -9471,6 +9774,7 @@ function _buildBranch(locationId, branchIndex, parentBranchId) {
     trajectory: [],             // [{lat,lng,alt,ts}] — projected path on globe
     interferenceWeight: 1.0,   // adjusted by applyInterference(); used in collapse score
     interferenceReason: 'neutral', // 'reinforced' | 'damped' | 'neutral'
+    sourceInfluence: null,     // set by createSimLocation / evolveSimBranches from computeSignalInfluence()
   };
 }
 
@@ -9484,6 +9788,9 @@ function createSimLocation(lat, lng, label) {
   for (let i = 0; i < BRANCH_COUNT; i++) {
     branches.push(_buildBranch(id, i, null));
   }
+  // Attach initial real-world signal influence snapshot to every branch
+  const initialInfluence = computeSignalInfluence();
+  branches.forEach(function (b) { b.sourceInfluence = initialInfluence; });
   // Generate initial trajectories for each branch
   branches.forEach(function (b) { _generateTrajectory(b, lat, lng); });
 
@@ -9554,6 +9861,8 @@ function evolveSimBranches(locationId) {
     branch.utility    = Math.min(1, branch.utility + 0.05 * Math.random() - 0.02);
     branch.cost       = Math.max(0, branch.cost - 0.01 * Math.random());
     branch.evolvedAt  = new Date().toISOString();
+    // Refresh real-world signal influence snapshot for this branch
+    branch.sourceInfluence = computeSignalInfluence();
     // Extend trajectory
     const last = branch.trajectory[branch.trajectory.length - 1];
     if (last) {
@@ -9726,9 +10035,10 @@ function applyInterference() {
 /**
  * Collapse active branches for a single location.
  * Calls applyInterference() first, then selects the winner by the full
- * adjusted score formula:
- *   adjustedScore = (utility × confidence × interferenceWeight) - cost + strategicWeight
- * where strategicWeight is driven by quantumSimState.activeStrategy.
+ * adjusted score formula incorporating real-world signal influence:
+ *   adjustedScore = (effectiveU × effectiveC × effectiveIW) − effectiveCost + effectiveSW
+ * where effectiveU/C/cost absorb sourceInfluence deltas and effectiveSW adds
+ * both strategicWeight and si.strategicWeightDelta.
  * Marks losers pruned, stamps the winner as 'collapsed', and writes an audit
  * trail entry.  Returns the winning branch, or null if no active branches exist.
  */
@@ -9743,11 +10053,9 @@ function collapseSimLocation(locationId) {
 
   const strategy = quantumSimState.activeStrategy || 'balanced';
 
-  // Rank by full adjusted score: (u × c × iw) - cost + strategicWeight
+  // Rank by full adjusted score incorporating signal influence
   active.sort(function (a, b) {
-    const scoreA = (a.utility * a.confidence * a.interferenceWeight) - a.cost + computeStrategicWeight(a, strategy);
-    const scoreB = (b.utility * b.confidence * b.interferenceWeight) - b.cost + computeStrategicWeight(b, strategy);
-    return scoreB - scoreA;
+    return _branchAdjustedScore(b, strategy) - _branchAdjustedScore(a, strategy);
   });
   const winner = active[0];
   winner.status = 'collapsed';
@@ -9756,13 +10064,15 @@ function collapseSimLocation(locationId) {
   active.slice(1).forEach(function (b) { b.status = 'pruned'; });
 
   // Record collapse in location (score = full adjusted score of winner)
-  const score = (winner.utility * winner.confidence * winner.interferenceWeight) - winner.cost + computeStrategicWeight(winner, strategy);
+  const score = _branchAdjustedScore(winner, strategy);
+  const winnerSI = winner.sourceInfluence || NULL_SIGNAL_INFLUENCE;
   loc.collapsed = {
     winnerId: winner.id,
     score,
     strategy,
     at: new Date().toISOString(),
     survivingAgents: winner.agents.map(function (a) { return { role: a.role, skill: a.skill, confidence: a.confidence, trainingSteps: a.trainingSteps }; }),
+    sourceInfluence: { utilityDelta: winnerSI.utilityDelta, confidenceDelta: winnerSI.confidenceDelta, costDelta: winnerSI.costDelta, interferenceRelevance: winnerSI.interferenceRelevance, strategicWeightDelta: winnerSI.strategicWeightDelta, sources: winnerSI.sources },
   };
 
   // Append audit trail entry (cap at 200)
@@ -9775,6 +10085,7 @@ function collapseSimLocation(locationId) {
     generation: winner.generation,
     branchCount: loc.branches.length,
     at: loc.collapsed.at,
+    sourceInfluenceSources: winnerSI.sources.map(function (s) { return s.type; }),
   });
   if (quantumSimState.auditTrail.length > 200) {
     quantumSimState.auditTrail = quantumSimState.auditTrail.slice(-200);
@@ -9789,6 +10100,7 @@ function collapseSimLocation(locationId) {
     score: loc.collapsed.score,
     strategy,
     at: loc.collapsed.at,
+    signalSources: winnerSI.sources.map(function (s) { return s.type; }),
   });
 
   return winner;
@@ -9820,7 +10132,7 @@ function collapseAllSimLocations() {
         candidates.push({
           branch,
           loc,
-          score: (branch.utility * branch.confidence * branch.interferenceWeight) - branch.cost + computeStrategicWeight(branch, strategy),
+          score: _branchAdjustedScore(branch, strategy),
         });
       }
     }
@@ -9847,6 +10159,7 @@ function collapseAllSimLocations() {
 
   // Record collapse on the winning location
   const at = new Date().toISOString();
+  const winnerSI = winner.sourceInfluence || NULL_SIGNAL_INFLUENCE;
   winnerLoc.collapsed = {
     type: 'global',
     winnerId: winner.id,
@@ -9856,6 +10169,7 @@ function collapseAllSimLocations() {
     survivingAgents: winner.agents.map(function (a) {
       return { role: a.role, skill: a.skill, confidence: a.confidence, trainingSteps: a.trainingSteps };
     }),
+    sourceInfluence: { utilityDelta: winnerSI.utilityDelta, confidenceDelta: winnerSI.confidenceDelta, costDelta: winnerSI.costDelta, interferenceRelevance: winnerSI.interferenceRelevance, strategicWeightDelta: winnerSI.strategicWeightDelta, sources: winnerSI.sources },
   };
 
   // Write a collapse_all audit entry (cap at 200)
@@ -9871,6 +10185,7 @@ function collapseAllSimLocations() {
     prunedCount,
     locationCount: locs.length,
     at,
+    sourceInfluenceSources: winnerSI.sources.map(function (s) { return s.type; }),
   });
   if (quantumSimState.auditTrail.length > 200) {
     quantumSimState.auditTrail = quantumSimState.auditTrail.slice(-200);
@@ -9887,6 +10202,7 @@ function collapseAllSimLocations() {
     prunedCount,
     locationCount: locs.length,
     at,
+    signalSources: winnerSI.sources.map(function (s) { return s.type; }),
   });
 
   return { winner, winnerLocationId: winnerLoc.id, prunedCount, locationCount: locs.length };
@@ -9925,11 +10241,11 @@ function runContinuousCollapseTick() {
     const active = loc.branches.filter(function (b) { return b.status === 'active'; });
     if (!active.length) continue;
 
-    // Score using full adjusted formula and sort descending
+    // Score using full adjusted formula (with signal influence) and sort descending
     const scored = active.map(function (b) {
       return {
         branch: b,
-        score: (b.utility * b.confidence * b.interferenceWeight) - b.cost + computeStrategicWeight(b, strategy),
+        score: _branchAdjustedScore(b, strategy),
       };
     }).sort(function (a, b) { return b.score - a.score; });
 
@@ -9963,7 +10279,8 @@ function runContinuousCollapseTick() {
       cs.locked      = top.score >= cfg.winnerLockThreshold;
       cs.since       = now;
 
-      // Broadcast winner change
+      // Broadcast winner change — include signal source summary for globe + SIM panel
+      const topSI = top.branch.sourceInfluence || NULL_SIGNAL_INFLUENCE;
       broadcast('sim_winner_change', {
         locationId:   loc.id,
         label:        loc.label,
@@ -9973,6 +10290,8 @@ function runContinuousCollapseTick() {
         locked:       cs.locked,
         strategy,
         at:           now,
+        signalSources: topSI.sources.map(function (s) { return s.type; }),
+        interferenceRelevance: topSI.interferenceRelevance,
       });
     }
 
@@ -11208,6 +11527,9 @@ module.exports = {
   entangleSimBranches,
   applyInterference,
   computeStrategicWeight,
+  computeSignalInfluence,
+  NULL_SIGNAL_INFLUENCE,
+  _branchAdjustedScore,
   runContinuousCollapseTick,
   startContinuousCollapse,
   stopContinuousCollapse,
