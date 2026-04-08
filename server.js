@@ -196,6 +196,13 @@ const EARTH_SPACE_LAYERS = [
 // Probability threshold for an agent to include a given Earth/space layer
 // in its initial awareness set. 0.6 → each agent covers ~60% of layers on average.
 const AGENT_LAYER_COVERAGE_THRESHOLD = 0.4;
+
+// Interference thresholds: branches whose utility values are within ALIGN are
+// considered outcome-aligned (constructive); branches further apart than CONFLICT
+// are considered outcome-conflicting (destructive).  Values in between are unrelated.
+const INTERFERENCE_ALIGN_THRESHOLD    = 0.15;
+const INTERFERENCE_CONFLICT_THRESHOLD = 0.60;
+
 const quantumSimState = {
   locations: {},   // locationId → { id, lat, lng, label, createdAt, branches: [], collapsed: null }
   auditTrail: [],  // collapsed events (last 200)
@@ -706,10 +713,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .sim-branch-row { display: flex; align-items: center; gap: 5px; padding: 2px 0; }
     .sim-branch-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .sim-branch-dot.active   { background: #3ec9b8; box-shadow: 0 0 4px #3ec9b830; }
+    .sim-branch-dot.active.reinforced { background: #3ec9b8; box-shadow: 0 0 8px #3ec9b870; }
+    .sim-branch-dot.active.damped     { background: #3ec9b8; opacity: .45; box-shadow: none; }
     .sim-branch-dot.pruned   { background: #3a3a4a; }
     .sim-branch-dot.collapsed{ background: #f0b040; box-shadow: 0 0 4px #f0b04030; }
     .sim-branch-info { font-size: .56rem; color: #4a6878; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sim-branch-score { font-size: .56rem; color: #2a8070; font-family: 'Cascadia Code', 'Fira Code', monospace; flex-shrink: 0; }
+    .sim-branch-iw { font-size: .52rem; font-family: 'Cascadia Code', 'Fira Code', monospace; flex-shrink: 0; padding: 0 3px; border-radius: 2px; }
+    .sim-branch-iw.reinforced { color: #3ec9b8; background: #0a2820; }
+    .sim-branch-iw.damped     { color: #8a5840; background: #180c08; }
+    .sim-branch-iw.neutral    { color: #2a4050; }
     .sim-collapsed-badge { display: inline-block; margin-top: 3px; font-size: .54rem; color: #f0b040; letter-spacing: .08em; text-transform: uppercase; padding: 1px 5px; border: 1px solid #4a3800; border-radius: 2px; background: #1a1000; }
     .sim-global-winner-badge { color: #ffe080; border-color: #8a6000; background: #2a1800; box-shadow: 0 0 6px #f0b04040; }
     #sim-audit { flex-shrink: 0; border-top: 1px solid #0e1820; padding: 5px 10px; max-height: 90px; overflow-y: auto; }
@@ -1466,6 +1479,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div id="sim-controls">
       <button class="sim-ctrl-btn" id="sim-btn-evolve-all" type="button" title="Advance all branches one generation">▶ Evolve All</button>
       <button class="sim-ctrl-btn" id="sim-btn-prune-all" type="button" title="Prune low-confidence branches">✂ Prune All</button>
+      <button class="sim-ctrl-btn" id="sim-btn-interfere" type="button" title="Apply quantum interference weights across all active branches">⊕ Interfere</button>
       <button class="sim-ctrl-btn" id="sim-btn-collapse-all" type="button" title="Collapse all locations to their best branch">⊙ Collapse</button>
       <button class="sim-ctrl-btn" id="sim-btn-clear-all" type="button" title="Remove all simulation locations">⊘ Clear</button>
     </div>
@@ -7397,9 +7411,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       loc.branches.forEach(function (branch, i) {
         if (!branch.trajectory || branch.trajectory.length < 2) return;
         var colourHex = BRANCH_COLOURS[i % BRANCH_COLOURS.length];
-        var alpha = branch.status === 'active' ? 0.85
-                  : branch.status === 'collapsed' ? 1.0
-                  : 0.2;  // pruned
+        // Base alpha by status; for active branches, modulate by interferenceWeight.
+        // interferenceWeight ranges [0.7, 1.3]: normalise against the minimum (0.7)
+        // so damped branches fade toward 0 and reinforced branches remain bright.
+        var iw = (branch.status === 'active' && typeof branch.interferenceWeight === 'number')
+          ? branch.interferenceWeight : 1.0;
+        var IW_MIN = 0.7; // == 1.0 + (-3 * 0.1) — minimum possible interferenceWeight
+        var baseAlpha = branch.status === 'active' ? 0.85 * Math.min(1.0, iw / IW_MIN)
+                      : branch.status === 'collapsed' ? 1.0
+                      : 0.2;  // pruned
+        var alpha = Math.max(0.1, Math.min(1.0, baseAlpha));
+        var lineWidth = branch.status === 'collapsed' ? 3
+                      : branch.status === 'active' ? Math.max(1, Math.round(2 * iw))
+                      : 1;
+        var glowPower = branch.status === 'collapsed' ? 0.4
+                      : branch.status === 'active' ? Math.min(0.5, 0.2 * iw)
+                      : 0.1;
+        var tipPixelSize = branch.status === 'collapsed' ? 8
+                         : branch.status === 'active' ? Math.max(3, Math.round(5 * iw))
+                         : 3;
 
         var positions = branch.trajectory.map(function (wp) {
           return Cesium.Cartesian3.fromDegrees(wp.lng, wp.lat, wp.alt || 0);
@@ -7408,9 +7438,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         var lineEnt = cesiumViewer.entities.add({
           polyline: {
             positions: positions,
-            width: branch.status === 'collapsed' ? 3 : (branch.status === 'active' ? 2 : 1),
+            width: lineWidth,
             material: new Cesium.PolylineGlowMaterialProperty({
-              glowPower: branch.status === 'collapsed' ? 0.4 : 0.2,
+              glowPower: glowPower,
               color: Cesium.Color.fromCssColorString(colourHex).withAlpha(alpha),
             }),
             arcType: Cesium.ArcType.NONE,
@@ -7424,7 +7454,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         var tipEnt = cesiumViewer.entities.add({
           position: Cesium.Cartesian3.fromDegrees(tip.lng, tip.lat, tip.alt || 0),
           point: {
-            pixelSize: branch.status === 'collapsed' ? 8 : 5,
+            pixelSize: tipPixelSize,
             color: Cesium.Color.fromCssColorString(colourHex).withAlpha(alpha),
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
@@ -7513,7 +7543,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           var row = document.createElement('div');
           row.className = 'sim-branch-row';
           var dot = document.createElement('div');
-          dot.className = 'sim-branch-dot ' + branch.status;
+          var iwReason = branch.interferenceReason || 'neutral';
+          dot.className = 'sim-branch-dot ' + branch.status + (branch.status === 'active' ? ' ' + iwReason : '');
           row.appendChild(dot);
           var info = document.createElement('div');
           info.className = 'sim-branch-info';
@@ -7522,8 +7553,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           row.appendChild(info);
           var score = document.createElement('div');
           score.className = 'sim-branch-score';
-          score.textContent = (branch.confidence * branch.utility).toFixed(2);
+          var iw = typeof branch.interferenceWeight === 'number' ? branch.interferenceWeight : 1.0;
+          var adjScore = branch.confidence * branch.utility * iw;
+          score.textContent = adjScore.toFixed(3);
+          score.title = 'u×c×iw = ' + branch.utility.toFixed(2) + '×' + branch.confidence.toFixed(2) + '×' + iw.toFixed(2);
           row.appendChild(score);
+          if (branch.status === 'active') {
+            var iwBadge = document.createElement('div');
+            iwBadge.className = 'sim-branch-iw ' + iwReason;
+            iwBadge.textContent = (iwReason === 'reinforced' ? '⊕' : iwReason === 'damped' ? '⊖' : '·') + iw.toFixed(2);
+            iwBadge.title = 'interference: ' + iwReason + ' (×' + iw.toFixed(2) + ')';
+            row.appendChild(iwBadge);
+          }
           branchList.appendChild(row);
         });
         card.appendChild(branchList);
@@ -7581,6 +7622,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         });
       });
       chain.then(function () { fetchAndRefresh(); }).catch(function () {});
+    });
+
+    document.getElementById('sim-btn-interfere').addEventListener('click', function () {
+      fetch('/api/sim/interfere', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function () { fetchAndRefresh(); })
+        .catch(function () {});
     });
 
     document.getElementById('sim-btn-collapse-all').addEventListener('click', function () {
@@ -9203,6 +9251,8 @@ function _buildBranch(locationId, branchIndex, parentBranchId) {
     createdAt: new Date().toISOString(),
     evolvedAt: null,
     trajectory: [],             // [{lat,lng,alt,ts}] — projected path on globe
+    interferenceWeight: 1.0,   // adjusted by applyInterference(); used in collapse score
+    interferenceReason: 'neutral', // 'reinforced' | 'damped' | 'neutral'
   };
 }
 
@@ -9339,8 +9389,67 @@ function entangleSimBranches(branchId1, branchId2) {
 }
 
 /**
+ * Apply quantum interference across ALL active branches in all sim locations.
+ *
+ * For every pair of active branches, the absolute difference in utility is used
+ * as a similarity measure:
+ *   |Δutility| < INTERFERENCE_ALIGN_THRESHOLD    → outcome-aligned  → reinforce both
+ *   |Δutility| > INTERFERENCE_CONFLICT_THRESHOLD → outcome-conflicting → damp both
+ *   otherwise                                    → unrelated → no effect
+ *
+ * Each branch accumulates reinforceCount and conflictCount.  The net effect
+ * (clamped to [−3, +3]) is multiplied by 0.1 and added to a base weight of 1.0,
+ * giving interferenceWeight in [0.7, 1.3].  The weight and reason are persisted
+ * on the branch so collapse functions and the UI can read them immediately.
+ *
+ * Returns an array of { branchId, interferenceWeight, interferenceReason } for
+ * every active branch that was processed.
+ */
+function applyInterference() {
+  // Gather all active branches across every location
+  const allActive = [];
+  for (const loc of Object.values(quantumSimState.locations)) {
+    for (const b of loc.branches) {
+      if (b.status === 'active') allActive.push(b);
+    }
+  }
+
+  // Per-branch counters (using index into allActive for speed)
+  const reinforceCount = new Array(allActive.length).fill(0);
+  const conflictCount  = new Array(allActive.length).fill(0);
+
+  // O(n²) pairwise comparison — lightweight for typical branch counts
+  for (let i = 0; i < allActive.length; i++) {
+    for (let j = i + 1; j < allActive.length; j++) {
+      const diff = Math.abs(allActive[i].utility - allActive[j].utility);
+      if (diff < INTERFERENCE_ALIGN_THRESHOLD) {
+        reinforceCount[i]++;
+        reinforceCount[j]++;
+      } else if (diff > INTERFERENCE_CONFLICT_THRESHOLD) {
+        conflictCount[i]++;
+        conflictCount[j]++;
+      }
+      // else: unrelated — no effect
+    }
+  }
+
+  // Compute and persist weight + reason on each branch
+  const results = [];
+  for (let i = 0; i < allActive.length; i++) {
+    const net = Math.max(-3, Math.min(3, reinforceCount[i] - conflictCount[i]));
+    const weight = parseFloat((1.0 + net * 0.1).toFixed(2)); // net is integer so result is exact
+    const reason = net > 0 ? 'reinforced' : net < 0 ? 'damped' : 'neutral';
+    allActive[i].interferenceWeight = weight;
+    allActive[i].interferenceReason = reason;
+    results.push({ branchId: allActive[i].id, interferenceWeight: weight, interferenceReason: reason });
+  }
+  return results;
+}
+
+/**
  * Collapse all active branches for a location.
- * Selects the winner by max(utility × confidence), marks losers pruned,
+ * Calls applyInterference() first, then selects the winner by
+ * max(utility × confidence × interferenceWeight), marks losers pruned,
  * stamps the winner as 'collapsed', and writes an audit trail entry.
  * Returns the winning branch, or null if no active branches exist.
  */
@@ -9350,18 +9459,24 @@ function collapseSimLocation(locationId) {
   const active = loc.branches.filter(function (b) { return b.status === 'active'; });
   if (!active.length) return null;
 
-  // Rank by utility × confidence
-  active.sort(function (a, b) { return (b.utility * b.confidence) - (a.utility * a.confidence); });
+  // Apply interference weights before ranking so the adjusted score drives selection
+  applyInterference();
+
+  // Rank by utility × confidence × interferenceWeight (adjusted score)
+  active.sort(function (a, b) {
+    return (b.utility * b.confidence * b.interferenceWeight) - (a.utility * a.confidence * a.interferenceWeight);
+  });
   const winner = active[0];
   winner.status = 'collapsed';
 
   // Mark all other active branches as pruned
   active.slice(1).forEach(function (b) { b.status = 'pruned'; });
 
-  // Record collapse in location
+  // Record collapse in location (score = adjusted)
+  const score = winner.utility * winner.confidence * winner.interferenceWeight;
   loc.collapsed = {
     winnerId: winner.id,
-    score: winner.utility * winner.confidence,
+    score,
     at: new Date().toISOString(),
     survivingAgents: winner.agents.map(function (a) { return { role: a.role, skill: a.skill, confidence: a.confidence, trainingSteps: a.trainingSteps }; }),
   };
@@ -9385,28 +9500,36 @@ function collapseSimLocation(locationId) {
 
 /**
  * Global collapse across ALL sim locations.
- * Gathers every active branch from every location, selects the single highest
- * scoring one (utility × confidence), marks it 'collapsed', prunes every other
- * active branch system-wide, writes a collapse_all audit entry, and returns
- * { winner, winnerLocationId, prunedCount, locationCount }.
+ * Applies interference weights first, then gathers every active branch from
+ * every location, selects the single highest adjusted scoring one
+ * (utility × confidence × interferenceWeight), marks it 'collapsed', prunes
+ * every other active branch system-wide, writes a collapse_all audit entry,
+ * and returns { winner, winnerLocationId, prunedCount, locationCount }.
  * Returns null when there are no locations or no active branches.
  */
 function collapseAllSimLocations() {
   const locs = Object.values(quantumSimState.locations);
   if (!locs.length) return null;
 
-  // Collect all active branches with their parent location
+  // Apply interference weights before scoring so selection uses adjusted scores
+  applyInterference();
+
+  // Collect all active branches with their parent location and adjusted score
   const candidates = [];
   for (const loc of locs) {
     for (const branch of loc.branches) {
       if (branch.status === 'active') {
-        candidates.push({ branch, loc, score: branch.utility * branch.confidence });
+        candidates.push({
+          branch,
+          loc,
+          score: branch.utility * branch.confidence * branch.interferenceWeight,
+        });
       }
     }
   }
   if (!candidates.length) return null;
 
-  // Pick the single global winner (highest score; branch.id breaks ties deterministically)
+  // Pick the single global winner (highest adjusted score; branch.id breaks ties deterministically)
   candidates.sort(function (a, b) {
     const diff = b.score - a.score;
     if (diff !== 0) return diff;
@@ -10411,6 +10534,14 @@ function router(req, res) {
     return;
   }
 
+  // POST /api/sim/interfere  → apply interference weights to all active branches
+  if (req.method === 'POST' && url === '/api/sim/interfere') {
+    const results = applyInterference();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ applied: results.length, results, ts: Date.now() }));
+    return;
+  }
+
   // 404
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'not found', path: url }));
@@ -10520,10 +10651,13 @@ module.exports = {
   BRANCH_COUNT,
   BRANCH_AGENT_ROLES,
   EARTH_SPACE_LAYERS,
+  INTERFERENCE_ALIGN_THRESHOLD,
+  INTERFERENCE_CONFLICT_THRESHOLD,
   createSimLocation,
   evolveSimBranches,
   pruneSimBranches,
   collapseSimLocation,
   collapseAllSimLocations,
   entangleSimBranches,
+  applyInterference,
 };
