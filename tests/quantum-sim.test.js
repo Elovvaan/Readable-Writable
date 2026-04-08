@@ -12,6 +12,7 @@ const {
   evolveSimBranches,
   pruneSimBranches,
   collapseSimLocation,
+  collapseAllSimLocations,
   entangleSimBranches,
 } = require('../server');
 
@@ -364,7 +365,132 @@ describe('collapseSimLocation', () => {
   });
 });
 
-// ─── quantumSimState integration ─────────────────────────────────────────────
+// ─── collapseAllSimLocations ──────────────────────────────────────────────────
+
+describe('collapseAllSimLocations', () => {
+  beforeEach(clearSimState);
+
+  test('returns null when no locations exist', () => {
+    const result = collapseAllSimLocations();
+    assert.strictEqual(result, null);
+  });
+
+  test('returns null when all branches are already pruned', () => {
+    const loc = createSimLocation(0, 0);
+    loc.branches.forEach(function (b) { b.status = 'pruned'; });
+    const result = collapseAllSimLocations();
+    assert.strictEqual(result, null);
+  });
+
+  test('returns winner, winnerLocationId, prunedCount, locationCount', () => {
+    const loc = createSimLocation(0, 0, 'Alpha');
+    const result = collapseAllSimLocations();
+    assert.ok(result);
+    assert.ok(result.winner);
+    assert.equal(result.winnerLocationId, loc.id);
+    assert.equal(result.locationCount, 1);
+    assert.equal(result.prunedCount, BRANCH_COUNT - 1);
+  });
+
+  test('winner branch has status collapsed', () => {
+    createSimLocation(0, 0);
+    const result = collapseAllSimLocations();
+    assert.equal(result.winner.status, 'collapsed');
+  });
+
+  test('exactly one branch has status collapsed across all locations', () => {
+    createSimLocation(0, 0, 'A');
+    createSimLocation(10, 10, 'B');
+    createSimLocation(20, 20, 'C');
+    collapseAllSimLocations();
+    let collapsedCount = 0;
+    for (const loc of Object.values(quantumSimState.locations)) {
+      collapsedCount += loc.branches.filter(function (b) { return b.status === 'collapsed'; }).length;
+    }
+    assert.equal(collapsedCount, 1);
+  });
+
+  test('all other active branches are pruned system-wide', () => {
+    createSimLocation(0, 0, 'A');
+    createSimLocation(10, 10, 'B');
+    collapseAllSimLocations();
+    for (const loc of Object.values(quantumSimState.locations)) {
+      const active = loc.branches.filter(function (b) { return b.status === 'active'; });
+      assert.equal(active.length, 0, 'no active branches should remain after collapse-all');
+    }
+  });
+
+  test('winner has the highest utility × confidence score globally', () => {
+    const locA = createSimLocation(0, 0, 'A');
+    const locB = createSimLocation(10, 10, 'B');
+    // Force known scores: locA branch 0 gets score 0.9, locB branch 0 gets score 0.99
+    locA.branches.forEach(function (b) { b.utility = 0.3; b.confidence = 0.3; });
+    locB.branches.forEach(function (b) { b.utility = 0.3; b.confidence = 0.3; });
+    locB.branches[0].utility = 0.99;
+    locB.branches[0].confidence = 1.0;
+    const result = collapseAllSimLocations();
+    assert.equal(result.winner.id, locB.branches[0].id);
+    assert.equal(result.winnerLocationId, locB.id);
+  });
+
+  test('winning location gets loc.collapsed with type=global', () => {
+    const loc = createSimLocation(0, 0, 'Solo');
+    const result = collapseAllSimLocations();
+    assert.ok(loc.collapsed);
+    assert.equal(loc.collapsed.type, 'global');
+    assert.equal(loc.collapsed.winnerId, result.winner.id);
+    assert.ok(typeof loc.collapsed.score === 'number');
+    assert.ok(loc.collapsed.at);
+    assert.ok(Array.isArray(loc.collapsed.survivingAgents));
+  });
+
+  test('non-winning locations do not get loc.collapsed set', () => {
+    const locA = createSimLocation(0, 0, 'A');
+    const locB = createSimLocation(10, 10, 'B');
+    // Make locA branch 0 the definitive winner
+    locA.branches[0].utility = 1.0;
+    locA.branches[0].confidence = 1.0;
+    locB.branches.forEach(function (b) { b.utility = 0.1; b.confidence = 0.1; });
+    const result = collapseAllSimLocations();
+    assert.equal(result.winnerLocationId, locA.id);
+    assert.strictEqual(locB.collapsed, null);
+  });
+
+  test('writes a collapse_all audit entry', () => {
+    createSimLocation(0, 0);
+    const before = quantumSimState.auditTrail.length;
+    collapseAllSimLocations();
+    assert.equal(quantumSimState.auditTrail.length, before + 1);
+    const entry = quantumSimState.auditTrail[quantumSimState.auditTrail.length - 1];
+    assert.equal(entry.type, 'collapse_all');
+    assert.ok(typeof entry.score === 'number');
+    assert.ok(typeof entry.prunedCount === 'number');
+    assert.ok(typeof entry.locationCount === 'number');
+  });
+
+  test('audit trail remains capped at 200 after collapse-all', () => {
+    for (let i = 0; i < 200; i++) {
+      quantumSimState.auditTrail.push({ type: 'collapse_all', at: new Date().toISOString(), score: 0 });
+    }
+    createSimLocation(0, 0);
+    collapseAllSimLocations();
+    assert.ok(quantumSimState.auditTrail.length <= 200);
+  });
+
+  test('prunedCount equals total active branches minus one', () => {
+    createSimLocation(0, 0, 'A');
+    createSimLocation(10, 10, 'B');
+    // Mark one branch pruned before calling collapse-all
+    const locs = Object.values(quantumSimState.locations);
+    locs[0].branches[0].status = 'pruned';
+    const totalActive = locs.reduce(function (sum, l) {
+      return sum + l.branches.filter(function (b) { return b.status === 'active'; }).length;
+    }, 0);
+    const result = collapseAllSimLocations();
+    assert.equal(result.prunedCount, totalActive - 1);
+  });
+});
+
 
 describe('quantumSimState integration', () => {
   beforeEach(clearSimState);

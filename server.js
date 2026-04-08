@@ -711,6 +711,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .sim-branch-info { font-size: .56rem; color: #4a6878; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sim-branch-score { font-size: .56rem; color: #2a8070; font-family: 'Cascadia Code', 'Fira Code', monospace; flex-shrink: 0; }
     .sim-collapsed-badge { display: inline-block; margin-top: 3px; font-size: .54rem; color: #f0b040; letter-spacing: .08em; text-transform: uppercase; padding: 1px 5px; border: 1px solid #4a3800; border-radius: 2px; background: #1a1000; }
+    .sim-global-winner-badge { color: #ffe080; border-color: #8a6000; background: #2a1800; box-shadow: 0 0 6px #f0b04040; }
     #sim-audit { flex-shrink: 0; border-top: 1px solid #0e1820; padding: 5px 10px; max-height: 90px; overflow-y: auto; }
     #sim-audit-title { font-size: .54rem; color: #1e3040; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
     .sim-audit-row { font-size: .54rem; color: #2a4a58; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -7367,20 +7368,22 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       var entities = [];
       var origin = Cesium.Cartesian3.fromDegrees(loc.lng, loc.lat, 0);
 
-      // Origin point (pulsing glow)
+      // Origin point (pulsing glow) — gold for global winner, teal otherwise
+      var isGlobalWinner = !!(loc.collapsed && loc.collapsed.type === 'global');
+      var originColor = isGlobalWinner ? '#f0b040' : '#3ec9b8';
       var originEnt = cesiumViewer.entities.add({
         position: origin,
         point: {
-          pixelSize: 10,
-          color: Cesium.Color.fromCssColorString('#3ec9b8').withAlpha(0.9),
-          outlineColor: Cesium.Color.fromCssColorString('#3ec9b8').withAlpha(0.3),
-          outlineWidth: 4,
+          pixelSize: isGlobalWinner ? 14 : 10,
+          color: Cesium.Color.fromCssColorString(originColor).withAlpha(0.9),
+          outlineColor: Cesium.Color.fromCssColorString(originColor).withAlpha(0.4),
+          outlineWidth: isGlobalWinner ? 6 : 4,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
         label: {
-          text: loc.label,
-          font: '10px monospace',
-          fillColor: Cesium.Color.fromCssColorString('#3ec9b8'),
+          text: isGlobalWinner ? '★ ' + loc.label : loc.label,
+          font: isGlobalWinner ? 'bold 11px monospace' : '10px monospace',
+          fillColor: Cesium.Color.fromCssColorString(originColor),
           outlineColor: Cesium.Color.BLACK,
           outlineWidth: 2,
           style: Cesium.LabelStyle.FILL_AND_OUTLINE,
@@ -7525,11 +7528,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         });
         card.appendChild(branchList);
 
-        // Collapsed badge
+        // Collapsed badge — distinguish global winner from per-location collapse
         if (loc.collapsed) {
           var badge = document.createElement('div');
-          badge.className = 'sim-collapsed-badge';
-          badge.textContent = '⊙ COLLAPSED · score ' + loc.collapsed.score.toFixed(3);
+          badge.className = ['sim-collapsed-badge', loc.collapsed.type === 'global' ? 'sim-global-winner-badge' : ''].filter(Boolean).join(' ');
+          badge.textContent = loc.collapsed.type === 'global'
+            ? '★ GLOBAL WINNER · score ' + loc.collapsed.score.toFixed(3)
+            : '⊙ COLLAPSED · score ' + loc.collapsed.score.toFixed(3);
           card.appendChild(badge);
         }
 
@@ -7579,14 +7584,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     });
 
     document.getElementById('sim-btn-collapse-all').addEventListener('click', function () {
-      var ids = simLocations.map(function (l) { return l.id; });
-      var chain = Promise.resolve();
-      ids.forEach(function (id) {
-        chain = chain.then(function () {
-          return fetch('/api/sim/collapse/' + encodeURIComponent(id), { method: 'POST' }).then(function (r) { return r.json(); });
-        });
-      });
-      chain.then(function () { fetchAndRefresh(); }).catch(function () {});
+      fetch('/api/sim/collapse-all', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function () { fetchAndRefresh(); })
+        .catch(function () {});
     });
 
     document.getElementById('sim-btn-clear-all').addEventListener('click', function () {
@@ -9382,6 +9383,79 @@ function collapseSimLocation(locationId) {
   return winner;
 }
 
+/**
+ * Global collapse across ALL sim locations.
+ * Gathers every active branch from every location, selects the single highest
+ * scoring one (utility × confidence), marks it 'collapsed', prunes every other
+ * active branch system-wide, writes a collapse_all audit entry, and returns
+ * { winner, winnerLocationId, prunedCount, locationCount }.
+ * Returns null when there are no locations or no active branches.
+ */
+function collapseAllSimLocations() {
+  const locs = Object.values(quantumSimState.locations);
+  if (!locs.length) return null;
+
+  // Collect all active branches with their parent location
+  const candidates = [];
+  for (const loc of locs) {
+    for (const branch of loc.branches) {
+      if (branch.status === 'active') {
+        candidates.push({ branch, loc, score: branch.utility * branch.confidence });
+      }
+    }
+  }
+  if (!candidates.length) return null;
+
+  // Pick the single global winner (highest score; branch.id breaks ties deterministically)
+  candidates.sort(function (a, b) {
+    const diff = b.score - a.score;
+    if (diff !== 0) return diff;
+    return a.branch.id < b.branch.id ? -1 : 1;
+  });
+  const { branch: winner, loc: winnerLoc, score: winnerScore } = candidates[0];
+
+  // Mark winner as collapsed
+  winner.status = 'collapsed';
+
+  // Prune every other active branch system-wide
+  let prunedCount = 0;
+  for (let i = 1; i < candidates.length; i++) {
+    candidates[i].branch.status = 'pruned';
+    prunedCount++;
+  }
+
+  // Record collapse on the winning location
+  const at = new Date().toISOString();
+  winnerLoc.collapsed = {
+    type: 'global',
+    winnerId: winner.id,
+    score: winnerScore,
+    at,
+    survivingAgents: winner.agents.map(function (a) {
+      return { role: a.role, skill: a.skill, confidence: a.confidence, trainingSteps: a.trainingSteps };
+    }),
+  };
+
+  // Write a collapse_all audit entry (cap at 200)
+  quantumSimState.auditTrail.push({
+    type: 'collapse_all',
+    locationId: winnerLoc.id,
+    label: winnerLoc.label,
+    winnerId: winner.id,
+    score: winnerScore,
+    generation: winner.generation,
+    branchCount: candidates.length,
+    prunedCount,
+    locationCount: locs.length,
+    at,
+  });
+  if (quantumSimState.auditTrail.length > 200) {
+    quantumSimState.auditTrail = quantumSimState.auditTrail.slice(-200);
+  }
+
+  return { winner, winnerLocationId: winnerLoc.id, prunedCount, locationCount: locs.length };
+}
+
 function simulationLoop() {
   worldview.tick++;
   for (const agent of Object.values(worldview.agents)) {
@@ -10281,6 +10355,25 @@ function router(req, res) {
     return;
   }
 
+  // POST /api/sim/collapse-all  → global collapse: single best branch wins system-wide
+  if (req.method === 'POST' && url === '/api/sim/collapse-all') {
+    const result = collapseAllSimLocations();
+    if (!result) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'no locations or no active branches' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      winner: result.winner,
+      winnerLocationId: result.winnerLocationId,
+      prunedCount: result.prunedCount,
+      locationCount: result.locationCount,
+      ts: Date.now(),
+    }));
+    return;
+  }
+
   // POST /api/sim/collapse/:locationId  → collapse to best branch
   if (req.method === 'POST' && url.startsWith('/api/sim/collapse/')) {
     const locationId = decodeURIComponent(url.slice('/api/sim/collapse/'.length));
@@ -10431,5 +10524,6 @@ module.exports = {
   evolveSimBranches,
   pruneSimBranches,
   collapseSimLocation,
+  collapseAllSimLocations,
   entangleSimBranches,
 };
