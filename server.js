@@ -9846,7 +9846,7 @@ function runContinuousCollapseTick() {
         leaderScore:    top.score,
         challengerId:   second.branch.id,
         challengerScore: second.score,
-        gap:            parseFloat((top.score - second.score).toFixed(4)),
+        gap:            top.score - second.score,
         at:             now,
       });
     }

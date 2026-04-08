@@ -2,8 +2,9 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 
-const { router, worldview } = require('../server');
+const { router, worldview, quantumSimState, stopContinuousCollapse } = require('../server');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,26 @@ function callRouter(method, url) {
   const res = makeMockRes();
   router(makeReq(method, url), res);
   return res;
+}
+
+/**
+ * callRouterWithBody – helper for POST routes that read req body via events.
+ * Returns a Promise that resolves to the mock response.
+ */
+function callRouterWithBody(method, url, bodyObj) {
+  return new Promise(function (resolve) {
+    const res = makeMockRes();
+    const req = new EventEmitter();
+    req.method = method;
+    req.url = url;
+    // Override res.end to resolve once the handler calls it
+    const origEnd = res.end.bind(res);
+    res.end = function (body) { origEnd(body); resolve(res); };
+    router(req, res);
+    const chunk = JSON.stringify(bodyObj || {});
+    req.emit('data', chunk);
+    req.emit('end');
+  });
 }
 
 function jsonBody(res) {
@@ -283,5 +304,112 @@ describe('GET /api/ground-vehicles', () => {
     const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
     const after = Date.now();
     assert.ok(body.ts >= before && body.ts <= after, 'ts must be between before and after');
+  });
+});
+
+// ─── GET /api/sim/continuous-collapse ─────────────────────────────────────────
+
+describe('GET /api/sim/continuous-collapse', () => {
+  test('returns 200', () => {
+    assert.equal(callRouter('GET', '/api/sim/continuous-collapse').statusCode, 200);
+  });
+
+  test('body has running and intervalMs', () => {
+    const body = jsonBody(callRouter('GET', '/api/sim/continuous-collapse'));
+    assert.equal(typeof body.running, 'boolean');
+    assert.ok(typeof body.intervalMs === 'number' && body.intervalMs > 0);
+  });
+
+  test('body includes hysteresis and winner-lock thresholds', () => {
+    const body = jsonBody(callRouter('GET', '/api/sim/continuous-collapse'));
+    assert.ok('hysteresisThreshold' in body);
+    assert.ok('winnerLockThreshold' in body);
+    assert.ok('winnerLockMargin' in body);
+    assert.ok('nearWinnerPressureThreshold' in body);
+  });
+
+  test('body has ts', () => {
+    const body = jsonBody(callRouter('GET', '/api/sim/continuous-collapse'));
+    assert.ok(typeof body.ts === 'number');
+  });
+});
+
+// ─── POST /api/sim/continuous-collapse ────────────────────────────────────────
+
+describe('POST /api/sim/continuous-collapse', () => {
+  // Always stop after each test to avoid leaking timers
+  test('start action sets running=true', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'start', intervalMs: 60000 });
+    stopContinuousCollapse();
+    assert.equal(res.statusCode, 200);
+    const body = jsonBody(res);
+    assert.equal(body.running, true);
+  });
+
+  test('stop action sets running=false', async () => {
+    // First start it
+    await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'start', intervalMs: 60000 });
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'stop' });
+    assert.equal(res.statusCode, 200);
+    const body = jsonBody(res);
+    assert.equal(body.running, false);
+  });
+
+  test('default action toggles: start when stopped', async () => {
+    // Ensure stopped first
+    stopContinuousCollapse();
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { intervalMs: 60000 });
+    stopContinuousCollapse();
+    assert.equal(res.statusCode, 200);
+    const body = jsonBody(res);
+    assert.equal(body.running, true);
+  });
+
+  test('accepts and applies custom intervalMs', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'start', intervalMs: 9876 });
+    stopContinuousCollapse();
+    const body = jsonBody(res);
+    assert.equal(body.intervalMs, 9876);
+    // Reset to default
+    quantumSimState.continuousCollapse.intervalMs = 3000;
+  });
+
+  test('accepts hysteresisThreshold override', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'stop', hysteresisThreshold: 0.10 });
+    const body = jsonBody(res);
+    assert.equal(body.hysteresisThreshold, 0.10);
+    // Reset
+    quantumSimState.continuousCollapse.hysteresisThreshold = 0.05;
+  });
+
+  test('invalid JSON returns 400', async () => {
+    // Manually send non-JSON body
+    const res = await new Promise(function (resolve) {
+      const { EventEmitter: EE } = require('node:events');
+      const mockRes = {
+        statusCode: null, headers: {}, body: '',
+        writeHead(code) { this.statusCode = code; },
+        setHeader() {},
+        end(b) { this.body = b || ''; resolve(mockRes); },
+      };
+      const req = new EE();
+      req.method = 'POST';
+      req.url = '/api/sim/continuous-collapse';
+      router(req, mockRes);
+      req.emit('data', '{not valid json');
+      req.emit('end');
+    });
+    assert.equal(res.statusCode, 400);
+  });
+
+  test('unknown action returns 400', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'restart' });
+    assert.equal(res.statusCode, 400);
+  });
+
+  test('body has ts', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'stop' });
+    const body = jsonBody(res);
+    assert.ok(typeof body.ts === 'number');
   });
 });
