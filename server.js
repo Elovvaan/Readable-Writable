@@ -218,6 +218,22 @@ const WINNER_LOCK_MARGIN    = 0.12;
 // near-winner-pressure event is broadcast to the globe and SIM panel.
 const NEAR_WINNER_PRESSURE_THRESHOLD = 0.08;
 
+// ─── Strategy Presets ─────────────────────────────────────────────────────────
+// Each preset defines a mission priority profile that drives the strategicWeight
+// term in the final adjusted score formula:
+//   adjustedScore = (utility × confidence × interferenceWeight) - cost + strategicWeight
+//
+// strategicWeight is a deterministic, pure function of the branch's own attributes;
+// it adds a small bias (≤ 0.30) toward branches that best serve the active mission.
+const STRATEGY_PRESETS = {
+  balanced:            { label: 'Balanced',            description: 'Equal weight on all factors (default)' },
+  safety:              { label: 'Safety First',        description: 'Reward high-confidence branches' },
+  speed:               { label: 'Speed',               description: 'Reward high-utility branches' },
+  coverage:            { label: 'Coverage',            description: 'Reward broad layer awareness across agents' },
+  resource_efficiency: { label: 'Resource Efficiency', description: 'Penalise costly branches' },
+  response_urgency:    { label: 'Response Urgency',    description: 'Strong boost for highest-utility branches' },
+};
+
 const quantumSimState = {
   locations: {},   // locationId → { id, lat, lng, label, createdAt, branches: [], collapsed: null, continuousState: {} }
   auditTrail: [],  // collapsed events (last 200)
@@ -229,6 +245,7 @@ const quantumSimState = {
     winnerLockMargin:    WINNER_LOCK_MARGIN,
     nearWinnerPressureThreshold: NEAR_WINNER_PRESSURE_THRESHOLD,
   },
+  activeStrategy: 'balanced',  // key into STRATEGY_PRESETS; drives strategicWeight in scoring
 };
 
 // Internal timer handle — not exported (not serialisable).
@@ -754,6 +771,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     #sim-audit { flex-shrink: 0; border-top: 1px solid #0e1820; padding: 5px 10px; max-height: 90px; overflow-y: auto; }
     #sim-audit-title { font-size: .54rem; color: #1e3040; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
     .sim-audit-row { font-size: .54rem; color: #2a4a58; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Strategy preset row */
+    #sim-strategy-row { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid #0e1820; flex-shrink: 0; }
+    #sim-strategy-lbl { font-size: .54rem; color: #2a4050; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+    #sim-strategy-select { flex: 1; background: #080c14; border: 1px solid #1a2d3a; color: #5a8898; border-radius: 2px;
+      font-size: .54rem; padding: 3px 4px; font-family: 'Cascadia Code', 'Fira Code', monospace; cursor: pointer;
+      transition: border-color 140ms, color 140ms; }
+    #sim-strategy-select:hover, #sim-strategy-select:focus { border-color: #2a5060; color: #3ec9b8; outline: none; }
     /* Continuous-collapse live status bar */
     #sim-live-status { font-size: .54rem; color: #1e3040; padding: 3px 10px; min-height: 16px; }
     #sim-live-status.running { color: #3ec9b8; }
@@ -1523,6 +1547,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       <button class="sim-ctrl-btn" id="sim-btn-collapse-all" type="button" title="Collapse all locations to their best branch">⊙ Collapse</button>
       <button class="sim-ctrl-btn" id="sim-btn-auto-collapse" type="button" title="Toggle continuous re-scoring loop (hysteresis + winner-lock)">⟳ Auto</button>
       <button class="sim-ctrl-btn" id="sim-btn-clear-all" type="button" title="Remove all simulation locations">⊘ Clear</button>
+    </div>
+    <div id="sim-strategy-row">
+      <span id="sim-strategy-lbl">Strategy</span>
+      <select id="sim-strategy-select" title="Mission priority profile — drives strategicWeight in adjustedScore = (u×c×iw) - cost + strategicWeight">
+        <option value="balanced">Balanced</option>
+        <option value="safety">Safety First</option>
+        <option value="speed">Speed</option>
+        <option value="coverage">Coverage</option>
+        <option value="resource_efficiency">Resource Efficiency</option>
+        <option value="response_urgency">Response Urgency</option>
+      </select>
     </div>
     <div id="sim-live-status"></div>
     <div id="sim-locations-list"></div>
@@ -7320,6 +7355,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       simOpen = true;
       simPickMode = true;
       syncAutoState();
+      syncStrategySelect();
       refreshSimPanel();
     }
 
@@ -7608,9 +7644,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           var score = document.createElement('div');
           score.className = 'sim-branch-score';
           var iw = typeof branch.interferenceWeight === 'number' ? branch.interferenceWeight : 1.0;
-          var adjScore = branch.confidence * branch.utility * iw;
+          var cost = typeof branch.cost === 'number' ? branch.cost : 0;
+          var baseScore = branch.confidence * branch.utility * iw;
+          var adjScore = baseScore - cost;
+          var stratSel = document.getElementById('sim-strategy-select');
+          var stratKey = stratSel ? stratSel.value : 'balanced';
           score.textContent = adjScore.toFixed(3);
-          score.title = 'u×c×iw = ' + branch.utility.toFixed(2) + '×' + branch.confidence.toFixed(2) + '×' + iw.toFixed(2);
+          score.title = '(u×c×iw)-cost = (' + branch.utility.toFixed(2) + '×' + branch.confidence.toFixed(2) + '×' + iw.toFixed(2) + ')-' + cost.toFixed(2) + ' [strategy: ' + stratKey + ']';
           row.appendChild(score);
           if (branch.status === 'active') {
             var iwBadge = document.createElement('div');
@@ -7653,7 +7693,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           row.className = 'sim-audit-row';
           var t = new Date(entry.at);
           var hm = t.toTimeString().slice(0, 5);
-          row.textContent = hm + ' · ' + entry.label + ' → ' + entry.score.toFixed(3);
+          var stratTag = entry.strategy && entry.strategy !== 'balanced' ? ' [' + entry.strategy + ']' : '';
+          row.textContent = hm + ' · ' + entry.label + ' → ' + entry.score.toFixed(3) + stratTag;
+          row.title = 'strategy: ' + (entry.strategy || 'balanced') + ' · score: ' + entry.score.toFixed(4);
           auditRows.appendChild(row);
         });
       }
@@ -7801,6 +7843,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         updateAutoBtn();
         if (simAutoRunning) setSimLiveStatus('⟳ Continuous collapse active — scoring every ' + data.intervalMs + ' ms', true);
       }).catch(function () {});
+    }
+
+    // Sync strategy selector value from server
+    function syncStrategySelect() {
+      fetch('/api/sim/strategy').then(function (r) { return r.json(); }).then(function (data) {
+        var sel = document.getElementById('sim-strategy-select');
+        if (sel && data.activeStrategy) sel.value = data.activeStrategy;
+      }).catch(function () {});
+    }
+
+    // Push selected strategy to server
+    function setStrategy(key) {
+      fetch('/api/sim/strategy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strategy: key }),
+      }).catch(function () {});
+    }
+
+    // Wire strategy selector change → server update
+    var strategySelect = document.getElementById('sim-strategy-select');
+    if (strategySelect) {
+      strategySelect.addEventListener('change', function () {
+        setStrategy(this.value);
+      });
     }
 
     // Periodic refresh when drawer is open
@@ -9548,6 +9615,56 @@ function entangleSimBranches(branchId1, branchId2) {
 }
 
 /**
+ * Compute the strategicWeight term for a branch under the given strategy profile.
+ *
+ * The full adjusted-score formula is:
+ *   adjustedScore = (utility × confidence × interferenceWeight) - cost + strategicWeight
+ *
+ * strategicWeight is a deterministic, pure function of the branch's own attributes.
+ * It is bounded to [0, 0.30] so it can influence close races without overwhelming
+ * the base signal.  The 'balanced' (default) strategy returns 0, which preserves
+ * the prior behaviour exactly.
+ *
+ * @param {object} branch      - A sim branch object (must have utility, confidence,
+ *                               cost, and agents array).
+ * @param {string} strategyKey - Key into STRATEGY_PRESETS; unknown keys fall through
+ *                               to 'balanced' (i.e. return 0).
+ * @returns {number} strategicWeight in [0, 0.30].
+ */
+function computeStrategicWeight(branch, strategyKey) {
+  switch (strategyKey) {
+    case 'safety':
+      // Reward high-confidence branches — reduce risk of wrong outcome.
+      return 0.25 * branch.confidence;
+
+    case 'speed':
+      // Reward high-utility branches — fast, high-value results.
+      return 0.20 * branch.utility;
+
+    case 'coverage': {
+      // Reward broad agent layer awareness across the team.
+      const totalLayers = EARTH_SPACE_LAYERS.length;
+      const avgCoverage = branch.agents.reduce(function (s, a) {
+        return s + a.layers.length / totalLayers;
+      }, 0) / branch.agents.length;
+      return 0.25 * avgCoverage;
+    }
+
+    case 'resource_efficiency':
+      // Reward low-cost branches — (1 − cost) bonus so cheapest branches rise.
+      return 0.30 * (1 - branch.cost);
+
+    case 'response_urgency':
+      // Strong utility boost — prioritise highest-value branches for urgent missions.
+      return 0.30 * branch.utility;
+
+    case 'balanced':
+    default:
+      return 0;
+  }
+}
+
+/**
  * Apply quantum interference across ALL active branches in all sim locations.
  *
  * For every pair of active branches, the absolute difference in utility is used
@@ -9607,10 +9724,12 @@ function applyInterference() {
 
 /**
  * Collapse all active branches for a location.
- * Calls applyInterference() first, then selects the winner by
- * max(utility × confidence × interferenceWeight), marks losers pruned,
- * stamps the winner as 'collapsed', and writes an audit trail entry.
- * Returns the winning branch, or null if no active branches exist.
+ * Calls applyInterference() first, then selects the winner by the full
+ * adjusted score formula:
+ *   adjustedScore = (utility × confidence × interferenceWeight) - cost + strategicWeight
+ * where strategicWeight is driven by quantumSimState.activeStrategy.
+ * Marks losers pruned, stamps the winner as 'collapsed', and writes an audit
+ * trail entry.  Returns the winning branch, or null if no active branches exist.
  */
 function collapseSimLocation(locationId) {
   const loc = quantumSimState.locations[locationId];
@@ -9621,9 +9740,13 @@ function collapseSimLocation(locationId) {
   // Apply interference weights before ranking so the adjusted score drives selection
   applyInterference();
 
-  // Rank by utility × confidence × interferenceWeight (adjusted score)
+  const strategy = quantumSimState.activeStrategy || 'balanced';
+
+  // Rank by full adjusted score: (u × c × iw) - cost + strategicWeight
   active.sort(function (a, b) {
-    return (b.utility * b.confidence * b.interferenceWeight) - (a.utility * a.confidence * a.interferenceWeight);
+    const scoreA = (a.utility * a.confidence * a.interferenceWeight) - a.cost + computeStrategicWeight(a, strategy);
+    const scoreB = (b.utility * b.confidence * b.interferenceWeight) - b.cost + computeStrategicWeight(b, strategy);
+    return scoreB - scoreA;
   });
   const winner = active[0];
   winner.status = 'collapsed';
@@ -9631,11 +9754,12 @@ function collapseSimLocation(locationId) {
   // Mark all other active branches as pruned
   active.slice(1).forEach(function (b) { b.status = 'pruned'; });
 
-  // Record collapse in location (score = adjusted)
-  const score = winner.utility * winner.confidence * winner.interferenceWeight;
+  // Record collapse in location (score = full adjusted score of winner)
+  const score = (winner.utility * winner.confidence * winner.interferenceWeight) - winner.cost + computeStrategicWeight(winner, strategy);
   loc.collapsed = {
     winnerId: winner.id,
     score,
+    strategy,
     at: new Date().toISOString(),
     survivingAgents: winner.agents.map(function (a) { return { role: a.role, skill: a.skill, confidence: a.confidence, trainingSteps: a.trainingSteps }; }),
   };
@@ -9646,6 +9770,7 @@ function collapseSimLocation(locationId) {
     label: loc.label,
     winnerId: winner.id,
     score: loc.collapsed.score,
+    strategy,
     generation: winner.generation,
     branchCount: loc.branches.length,
     at: loc.collapsed.at,
@@ -9661,6 +9786,7 @@ function collapseSimLocation(locationId) {
     label: loc.label,
     winnerId: winner.id,
     score: loc.collapsed.score,
+    strategy,
     at: loc.collapsed.at,
   });
 
@@ -9683,7 +9809,9 @@ function collapseAllSimLocations() {
   // Apply interference weights before scoring so selection uses adjusted scores
   applyInterference();
 
-  // Collect all active branches with their parent location and adjusted score
+  const strategy = quantumSimState.activeStrategy || 'balanced';
+
+  // Collect all active branches with their parent location and full adjusted score
   const candidates = [];
   for (const loc of locs) {
     for (const branch of loc.branches) {
@@ -9691,7 +9819,7 @@ function collapseAllSimLocations() {
         candidates.push({
           branch,
           loc,
-          score: branch.utility * branch.confidence * branch.interferenceWeight,
+          score: (branch.utility * branch.confidence * branch.interferenceWeight) - branch.cost + computeStrategicWeight(branch, strategy),
         });
       }
     }
@@ -9722,6 +9850,7 @@ function collapseAllSimLocations() {
     type: 'global',
     winnerId: winner.id,
     score: winnerScore,
+    strategy,
     at,
     survivingAgents: winner.agents.map(function (a) {
       return { role: a.role, skill: a.skill, confidence: a.confidence, trainingSteps: a.trainingSteps };
@@ -9735,6 +9864,7 @@ function collapseAllSimLocations() {
     label: winnerLoc.label,
     winnerId: winner.id,
     score: winnerScore,
+    strategy,
     generation: winner.generation,
     branchCount: candidates.length,
     prunedCount,
@@ -9752,6 +9882,7 @@ function collapseAllSimLocations() {
     label: winnerLoc.label,
     winnerId: winner.id,
     score: winnerScore,
+    strategy,
     prunedCount,
     locationCount: locs.length,
     at,
@@ -9767,7 +9898,9 @@ function collapseAllSimLocations() {
  *
  * For every sim location that still has active branches:
  *  1. Apply interference weights (same as manual collapse).
- *  2. Score every active branch: utility × confidence × interferenceWeight.
+ *  2. Score every active branch using the full adjusted-score formula:
+ *       (utility × confidence × interferenceWeight) - cost + strategicWeight
+ *     where strategicWeight is driven by quantumSimState.activeStrategy.
  *  3. Identify the current leader (highest score).
  *  4. Apply hysteresis guard: the challenger must exceed the sitting leader by
  *     at least `hysteresisThreshold` (and `winnerLockMargin` more if the leader
@@ -9780,8 +9913,9 @@ function collapseAllSimLocations() {
  * Call startContinuousCollapse() to run this on a repeating timer.
  */
 function runContinuousCollapseTick() {
-  const cfg = quantumSimState.continuousCollapse;
-  const now  = new Date().toISOString();
+  const cfg      = quantumSimState.continuousCollapse;
+  const strategy = quantumSimState.activeStrategy || 'balanced';
+  const now      = new Date().toISOString();
 
   // Run interference once across all active branches before scoring
   applyInterference();
@@ -9790,9 +9924,12 @@ function runContinuousCollapseTick() {
     const active = loc.branches.filter(function (b) { return b.status === 'active'; });
     if (!active.length) continue;
 
-    // Score and sort descending
+    // Score using full adjusted formula and sort descending
     const scored = active.map(function (b) {
-      return { branch: b, score: b.utility * b.confidence * b.interferenceWeight };
+      return {
+        branch: b,
+        score: (b.utility * b.confidence * b.interferenceWeight) - b.cost + computeStrategicWeight(b, strategy),
+      };
     }).sort(function (a, b) { return b.score - a.score; });
 
     const top    = scored[0];
@@ -9833,6 +9970,7 @@ function runContinuousCollapseTick() {
         score:        top.score,
         prevWinnerId: prevId,
         locked:       cs.locked,
+        strategy,
         at:           now,
       });
     }
@@ -9847,6 +9985,7 @@ function runContinuousCollapseTick() {
         challengerId:   second.branch.id,
         challengerScore: second.score,
         gap:            top.score - second.score,
+        strategy,
         at:             now,
       });
     }
@@ -10840,6 +10979,43 @@ function router(req, res) {
     return;
   }
 
+  // GET /api/sim/strategy  → current active strategy profile + all available presets
+  if (req.method === 'GET' && url === '/api/sim/strategy') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      activeStrategy: quantumSimState.activeStrategy,
+      presets: Object.entries(STRATEGY_PRESETS).map(function ([key, p]) {
+        return { key, label: p.label, description: p.description };
+      }),
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // POST /api/sim/strategy  → { strategy: '<key>' }  set the active strategy
+  if (req.method === 'POST' && url === '/api/sim/strategy') {
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      let parsed;
+      try { parsed = JSON.parse(body); } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const key = parsed.strategy;
+      if (!key || !Object.prototype.hasOwnProperty.call(STRATEGY_PRESETS, key)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unknown strategy; valid keys: ' + Object.keys(STRATEGY_PRESETS).join(', ') }));
+        return;
+      }
+      quantumSimState.activeStrategy = key;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ activeStrategy: key, ts: Date.now() }));
+    });
+    return;
+  }
+
   // GET /api/sim/continuous-collapse  → current engine config + running status
   if (req.method === 'GET' && url === '/api/sim/continuous-collapse') {
     const cfg = quantumSimState.continuousCollapse;
@@ -11022,6 +11198,7 @@ module.exports = {
   WINNER_LOCK_THRESHOLD,
   WINNER_LOCK_MARGIN,
   NEAR_WINNER_PRESSURE_THRESHOLD,
+  STRATEGY_PRESETS,
   createSimLocation,
   evolveSimBranches,
   pruneSimBranches,
@@ -11029,6 +11206,7 @@ module.exports = {
   collapseAllSimLocations,
   entangleSimBranches,
   applyInterference,
+  computeStrategicWeight,
   runContinuousCollapseTick,
   startContinuousCollapse,
   stopContinuousCollapse,

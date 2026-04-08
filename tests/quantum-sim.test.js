@@ -15,6 +15,7 @@ const {
   WINNER_LOCK_THRESHOLD,
   WINNER_LOCK_MARGIN,
   NEAR_WINNER_PRESSURE_THRESHOLD,
+  STRATEGY_PRESETS,
   createSimLocation,
   evolveSimBranches,
   pruneSimBranches,
@@ -22,6 +23,7 @@ const {
   collapseAllSimLocations,
   entangleSimBranches,
   applyInterference,
+  computeStrategicWeight,
   runContinuousCollapseTick,
   startContinuousCollapse,
   stopContinuousCollapse,
@@ -40,6 +42,8 @@ function clearSimState() {
   cfg.winnerLockThreshold        = WINNER_LOCK_THRESHOLD;
   cfg.winnerLockMargin           = WINNER_LOCK_MARGIN;
   cfg.nearWinnerPressureThreshold = NEAR_WINNER_PRESSURE_THRESHOLD;
+  // Reset active strategy to default
+  quantumSimState.activeStrategy = 'balanced';
   stopContinuousCollapse();
 }
 
@@ -678,16 +682,19 @@ describe('applyInterference', () => {
 
   test('collapse uses adjusted score (u×c×iw) so reinforced branch can win', () => {
     const loc = createSimLocation(0, 0);
-    // Branch 0: utility=0.95, confidence=0.5 → raw=0.475
-    // Branches 1-4: utility=0.01, confidence=1.0 → raw=0.01
+    // Branch 0: utility=0.95, confidence=0.5, cost=0
+    // Branches 1-4: utility=0.01, confidence=1.0, cost=0
     // |0.95-0.01|=0.94 > CONFLICT_THRESHOLD → branch 0 conflicts with branches 1-4 → damped
     // |0.01-0.01|=0 < ALIGN_THRESHOLD → branches 1-4 are aligned with each other → reinforced
-    // net for branch 0: -3(capped) → weight=0.7, adjusted=0.95*0.5*0.7=0.3325
-    // net for branches 1-4: 3(reinforced)-1(conflict with b0) = 2 → weight=1.2, adjusted=0.01*1.0*1.2=0.012
-    // branch 0 still wins (0.3325 > 0.012), confirming adjusted score is used
+    // net for branch 0: -3(capped) → iw=0.7
+    //   adjustedScore = 0.95*0.5*0.7 - 0 + 0 = 0.3325
+    // net for branches 1-4: 3(reinforced)-1(conflict with b0) = 2 → iw=1.2
+    //   adjustedScore = 0.01*1.0*1.2 - 0 + 0 = 0.012
+    // branch 0 still wins (0.3325 > 0.012), confirming full adjusted score formula is used
     loc.branches[0].utility = 0.95;
     loc.branches[0].confidence = 0.5;
-    loc.branches.slice(1).forEach(function (b) { b.utility = 0.01; b.confidence = 1.0; });
+    loc.branches[0].cost = 0;
+    loc.branches.slice(1).forEach(function (b) { b.utility = 0.01; b.confidence = 1.0; b.cost = 0; });
     const winner = collapseSimLocation(loc.id);
     assert.ok(winner, 'should produce a winner');
     assert.equal(winner.id, loc.branches[0].id, 'branch 0 should win despite interference damping');
@@ -805,7 +812,8 @@ describe('runContinuousCollapseTick', () => {
   test('does not change leader when challenger is within hysteresis margin', () => {
     const loc = createSimLocation(0, 0, 'hysteresis-test');
     // Force a clear leader: branch 0 score=0.9, branch 1 score=0.89 (delta=0.01 < threshold)
-    loc.branches.forEach(function (b) { b.status = 'active'; b.interferenceWeight = 1.0; });
+    // Set cost=0 to isolate scoring to utility×confidence×interferenceWeight
+    loc.branches.forEach(function (b) { b.status = 'active'; b.interferenceWeight = 1.0; b.cost = 0; });
     loc.branches[0].utility = 0.9; loc.branches[0].confidence = 1.0;
     loc.branches[1].utility = 0.89; loc.branches[1].confidence = 1.0;
     loc.branches.slice(2).forEach(function (b) { b.utility = 0.1; b.confidence = 0.1; });
@@ -822,7 +830,8 @@ describe('runContinuousCollapseTick', () => {
 
   test('changes leader when challenger exceeds hysteresis margin', () => {
     const loc = createSimLocation(0, 0, 'leader-change-test');
-    loc.branches.forEach(function (b) { b.status = 'active'; b.interferenceWeight = 1.0; });
+    // Set cost=0 to isolate scoring to utility×confidence×interferenceWeight
+    loc.branches.forEach(function (b) { b.status = 'active'; b.interferenceWeight = 1.0; b.cost = 0; });
     loc.branches[0].utility = 0.5; loc.branches[0].confidence = 1.0;
     loc.branches.slice(1).forEach(function (b) { b.utility = 0.1; b.confidence = 0.1; });
     runContinuousCollapseTick();
@@ -837,7 +846,8 @@ describe('runContinuousCollapseTick', () => {
   test('locks winner when score reaches WINNER_LOCK_THRESHOLD', () => {
     const loc = createSimLocation(0, 0, 'lock-test');
     // Only branch 0 is active so interferenceWeight stays at 1.0 (no pairwise comparison)
-    loc.branches.forEach(function (b) { b.status = 'pruned'; b.interferenceWeight = 1.0; });
+    // Set cost=0 so score = utility×confidence×1.0 = utility, reaching WINNER_LOCK_THRESHOLD
+    loc.branches.forEach(function (b) { b.status = 'pruned'; b.interferenceWeight = 1.0; b.cost = 0; });
     loc.branches[0].status = 'active';
     loc.branches[0].utility = WINNER_LOCK_THRESHOLD + 0.05; loc.branches[0].confidence = 1.0;
     runContinuousCollapseTick();
@@ -848,7 +858,8 @@ describe('runContinuousCollapseTick', () => {
     const cfg = quantumSimState.continuousCollapse;
     const loc = createSimLocation(0, 0, 'lock-margin-test');
     // Only two active branches; isolate interference effects by pruning the rest
-    loc.branches.forEach(function (b) { b.status = 'pruned'; b.interferenceWeight = 1.0; });
+    // Set cost=0 to isolate scoring to utility×confidence×interferenceWeight
+    loc.branches.forEach(function (b) { b.status = 'pruned'; b.interferenceWeight = 1.0; b.cost = 0; });
     loc.branches[0].status = 'active'; loc.branches[0].interferenceWeight = 1.0;
     loc.branches[1].status = 'active'; loc.branches[1].interferenceWeight = 1.0;
     // Seat branch 0 as a locked leader (score = WINNER_LOCK_THRESHOLD + 0.05)
@@ -928,5 +939,201 @@ describe('startContinuousCollapse and stopContinuousCollapse', () => {
     startContinuousCollapse(9999);
     assert.equal(quantumSimState.continuousCollapse.intervalMs, 9999);
     stopContinuousCollapse();
+  });
+});
+
+// ─── STRATEGY_PRESETS ─────────────────────────────────────────────────────────
+
+describe('STRATEGY_PRESETS', () => {
+  test('STRATEGY_PRESETS is an object with the required keys', () => {
+    const required = ['balanced', 'safety', 'speed', 'coverage', 'resource_efficiency', 'response_urgency'];
+    for (const key of required) {
+      assert.ok(Object.prototype.hasOwnProperty.call(STRATEGY_PRESETS, key), 'missing preset: ' + key);
+    }
+  });
+
+  test('each preset has a label and description string', () => {
+    for (const [key, preset] of Object.entries(STRATEGY_PRESETS)) {
+      assert.ok(typeof preset.label === 'string' && preset.label.length > 0,
+        'preset ' + key + ' missing label');
+      assert.ok(typeof preset.description === 'string' && preset.description.length > 0,
+        'preset ' + key + ' missing description');
+    }
+  });
+
+  test('quantumSimState.activeStrategy defaults to balanced', () => {
+    assert.equal(quantumSimState.activeStrategy, 'balanced');
+  });
+});
+
+// ─── computeStrategicWeight ───────────────────────────────────────────────────
+
+describe('computeStrategicWeight', () => {
+  // Minimal branch fixture for testing
+  function makeBranch(utility, confidence, cost, layersPerAgent) {
+    return {
+      utility,
+      confidence,
+      cost,
+      agents: BRANCH_AGENT_ROLES.map(function (role) {
+        return {
+          role,
+          layers: EARTH_SPACE_LAYERS.slice(0, layersPerAgent !== undefined ? layersPerAgent : 4),
+        };
+      }),
+    };
+  }
+
+  test('balanced strategy always returns 0', () => {
+    const b = makeBranch(0.9, 0.8, 0.3, 4);
+    assert.equal(computeStrategicWeight(b, 'balanced'), 0);
+    assert.equal(computeStrategicWeight(b, undefined), 0);
+    assert.equal(computeStrategicWeight(b, 'unknown-key'), 0);
+  });
+
+  test('safety strategy returns 0.25 × confidence', () => {
+    const b = makeBranch(0.5, 0.8, 0.2, 4);
+    assert.equal(computeStrategicWeight(b, 'safety'), 0.25 * 0.8);
+  });
+
+  test('speed strategy returns 0.20 × utility', () => {
+    const b = makeBranch(0.7, 0.6, 0.3, 4);
+    assert.equal(computeStrategicWeight(b, 'speed'), 0.20 * 0.7);
+  });
+
+  test('resource_efficiency strategy returns 0.30 × (1 - cost)', () => {
+    const b = makeBranch(0.5, 0.6, 0.4, 4);
+    assert.equal(computeStrategicWeight(b, 'resource_efficiency'), 0.30 * (1 - 0.4));
+  });
+
+  test('response_urgency strategy returns 0.30 × utility', () => {
+    const b = makeBranch(0.8, 0.7, 0.2, 4);
+    assert.equal(computeStrategicWeight(b, 'response_urgency'), 0.30 * 0.8);
+  });
+
+  test('coverage strategy returns 0.25 × average layer coverage fraction', () => {
+    const totalLayers = EARTH_SPACE_LAYERS.length;  // 8
+    const layersPerAgent = 4;
+    const expectedCoverage = layersPerAgent / totalLayers; // 0.5
+    const b = makeBranch(0.5, 0.5, 0.5, layersPerAgent);
+    const sw = computeStrategicWeight(b, 'coverage');
+    assert.ok(Math.abs(sw - 0.25 * expectedCoverage) < 1e-10,
+      'coverage strategicWeight should be 0.25 × avgCoverage');
+  });
+
+  test('all strategy returns a non-negative number ≤ 0.30', () => {
+    const b = makeBranch(0.9, 0.9, 0.1, 6);
+    for (const key of Object.keys(STRATEGY_PRESETS)) {
+      const sw = computeStrategicWeight(b, key);
+      assert.ok(sw >= 0, key + ' should return >= 0');
+      assert.ok(sw <= 0.30, key + ' should return <= 0.30');
+    }
+  });
+
+  test('computeStrategicWeight is deterministic — same input same output', () => {
+    const b = makeBranch(0.6, 0.7, 0.3, 5);
+    for (const key of Object.keys(STRATEGY_PRESETS)) {
+      assert.equal(computeStrategicWeight(b, key), computeStrategicWeight(b, key),
+        key + ' should be deterministic');
+    }
+  });
+});
+
+// ─── Strategy-aware collapse ──────────────────────────────────────────────────
+
+describe('strategy-aware collapse', () => {
+  beforeEach(clearSimState);
+
+  test('quantumSimState.activeStrategy is respected by collapseSimLocation', () => {
+    quantumSimState.activeStrategy = 'resource_efficiency';
+    const loc = createSimLocation(0, 0);
+    // Set all branches with cost=0 except b0 which has high cost
+    // b0: high utility but high cost
+    // b1: moderate utility but zero cost → resource_efficiency should reward b1
+    loc.branches.forEach(function (b) { b.interferenceWeight = 1.0; b.cost = 0; b.confidence = 1.0; });
+    loc.branches[0].utility = 0.9; loc.branches[0].cost = 0.95; // score = 0.9 - 0.95 + 0.30*(1-0.95) = -0.035
+    loc.branches[1].utility = 0.5; loc.branches[1].cost = 0.0;  // score = 0.5 - 0 + 0.30*(1-0) = 0.80
+    loc.branches.slice(2).forEach(function (b) { b.utility = 0.1; b.cost = 0.5; });
+    const winner = collapseSimLocation(loc.id);
+    assert.ok(winner, 'should produce a winner');
+    assert.equal(winner.id, loc.branches[1].id, 'resource_efficiency should prefer low-cost branch');
+  });
+
+  test('strategy is recorded in audit trail entry', () => {
+    quantumSimState.activeStrategy = 'safety';
+    const loc = createSimLocation(0, 0);
+    collapseSimLocation(loc.id);
+    const entry = quantumSimState.auditTrail[quantumSimState.auditTrail.length - 1];
+    assert.equal(entry.strategy, 'safety', 'audit trail must record active strategy');
+  });
+
+  test('global collapse strategy is recorded in audit trail entry', () => {
+    quantumSimState.activeStrategy = 'speed';
+    createSimLocation(0, 0);
+    collapseAllSimLocations();
+    const entry = quantumSimState.auditTrail[quantumSimState.auditTrail.length - 1];
+    assert.equal(entry.strategy, 'speed', 'collapse_all audit entry must record active strategy');
+  });
+
+  test('balanced strategy preserves prior winner selection when cost=0', () => {
+    quantumSimState.activeStrategy = 'balanced';
+    const loc = createSimLocation(0, 0);
+    // With balanced (strategicWeight=0) and cost=0: score = u*c*iw
+    loc.branches.forEach(function (b) { b.interferenceWeight = 1.0; b.cost = 0; b.confidence = 1.0; });
+    loc.branches[0].utility = 0.95;
+    loc.branches.slice(1).forEach(function (b) { b.utility = 0.1; });
+    const winner = collapseSimLocation(loc.id);
+    assert.ok(winner);
+    assert.equal(winner.id, loc.branches[0].id, 'balanced strategy should pick highest u×c×iw branch');
+  });
+
+  test('changing strategy changes which branch wins collapse', () => {
+    const loc = createSimLocation(0, 0);
+    // b0: low utility, high confidence, low cost → best for safety/resource_efficiency
+    // b1: high utility, low confidence, high cost → best for speed/response_urgency
+    loc.branches.forEach(function (b) { b.interferenceWeight = 1.0; b.cost = 0.5; b.confidence = 0.5; b.utility = 0.5; });
+    loc.branches[0].utility = 0.1; loc.branches[0].confidence = 1.0; loc.branches[0].cost = 0.0;
+    loc.branches[1].utility = 0.9; loc.branches[1].confidence = 0.1; loc.branches[1].cost = 0.9;
+    loc.branches.slice(2).forEach(function (b) { b.utility = 0.01; b.confidence = 0.01; b.cost = 0.5; });
+
+    // safety: prefers high confidence → should prefer b0
+    quantumSimState.activeStrategy = 'safety';
+    const winner1 = collapseSimLocation(loc.id);
+    assert.equal(winner1.id, loc.branches[0].id, 'safety strategy should prefer high-confidence branch');
+  });
+
+  test('collapseSimLocation score includes strategicWeight in returned score', () => {
+    quantumSimState.activeStrategy = 'speed';
+    const loc = createSimLocation(0, 0);
+    loc.branches.forEach(function (b) {
+      b.interferenceWeight = 1.0; b.cost = 0; b.confidence = 1.0; b.utility = 0.5;
+      b.agents.forEach(function (a) { a.layers = []; });
+    });
+    applyInterference();
+    const winner = collapseSimLocation(loc.id);
+    const expectedScore = (winner.utility * winner.confidence * winner.interferenceWeight)
+      - winner.cost
+      + 0.20 * winner.utility;
+    assert.ok(Math.abs(loc.collapsed.score - expectedScore) < 1e-10,
+      'collapsed score should match full adjusted formula including strategicWeight');
+  });
+
+  test('runContinuousCollapseTick respects active strategy for scoring', () => {
+    const loc = createSimLocation(0, 0, 'strategy-tick');
+    // b0: high confidence, low utility → wins under safety
+    // b1: high utility, low confidence → wins under speed/response_urgency
+    loc.branches.forEach(function (b) { b.interferenceWeight = 1.0; b.cost = 0; b.confidence = 0.5; b.utility = 0.3; });
+    loc.branches[0].utility = 0.1; loc.branches[0].confidence = 1.0;
+    loc.branches[1].utility = 0.9; loc.branches[1].confidence = 0.1;
+    loc.branches.slice(2).forEach(function (b) { b.utility = 0.01; b.confidence = 0.01; });
+
+    quantumSimState.activeStrategy = 'response_urgency';
+    runContinuousCollapseTick();
+    // Under response_urgency (0.30 × utility), b1 should lead
+    // score(b1): 0.9*0.1*iw - 0 + 0.30*0.9  ≈ 0.09*iw + 0.27
+    // score(b0): 0.1*1.0*iw - 0 + 0.30*0.1  ≈ 0.1*iw + 0.03
+    // With iw≈1.0: b1≈0.36, b0≈0.13 → b1 is leader
+    assert.equal(loc.continuousState.leaderId, loc.branches[1].id,
+      'response_urgency should seat high-utility branch as leader');
   });
 });
