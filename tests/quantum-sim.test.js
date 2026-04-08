@@ -24,6 +24,9 @@ const {
   entangleSimBranches,
   applyInterference,
   computeStrategicWeight,
+  computeSignalInfluence,
+  NULL_SIGNAL_INFLUENCE,
+  _branchAdjustedScore,
   runContinuousCollapseTick,
   startContinuousCollapse,
   stopContinuousCollapse,
@@ -860,9 +863,9 @@ describe('runContinuousCollapseTick', () => {
   test('locked leader requires extra margin to be displaced', () => {
     const cfg = quantumSimState.continuousCollapse;
     const loc = createSimLocation(0, 0, 'lock-margin-test');
-    // Only two active branches; isolate interference effects by pruning the rest
-    // Set cost=0 to isolate scoring to utility×confidence×interferenceWeight
-    loc.branches.forEach(function (b) { b.status = 'pruned'; b.interferenceWeight = 1.0; b.cost = 0; });
+    // Only two active branches; isolate interference and signal effects by pruning the rest
+    // Set cost=0 and clear sourceInfluence to isolate scoring to utility×confidence×interferenceWeight
+    loc.branches.forEach(function (b) { b.status = 'pruned'; b.interferenceWeight = 1.0; b.cost = 0; b.sourceInfluence = NULL_SIGNAL_INFLUENCE; });
     loc.branches[0].status = 'active'; loc.branches[0].interferenceWeight = 1.0;
     loc.branches[1].status = 'active'; loc.branches[1].interferenceWeight = 1.0;
     // Seat branch 0 as a locked leader (score = WINNER_LOCK_THRESHOLD + 0.05)
@@ -1111,6 +1114,8 @@ describe('strategy-aware collapse', () => {
     loc.branches.forEach(function (b) {
       b.interferenceWeight = 1.0; b.cost = 0; b.confidence = 1.0; b.utility = 0.5;
       b.agents.forEach(function (a) { a.layers = []; });
+      // Zero out signal influence so the score is solely (u×c×iw) - cost + strategicWeight
+      b.sourceInfluence = NULL_SIGNAL_INFLUENCE;
     });
     applyInterference();
     const winner = collapseSimLocation(loc.id);
@@ -1138,5 +1143,145 @@ describe('strategy-aware collapse', () => {
     // With iw≈1.0: b1≈0.36, b0≈0.13 → b1 is leader
     assert.equal(loc.continuousState.leaderId, loc.branches[1].id,
       'response_urgency should seat high-utility branch as leader');
+  });
+});
+
+// ─── Signal Model ─────────────────────────────────────────────────────────────
+
+describe('computeSignalInfluence', () => {
+  test('returns an object with all required fields', () => {
+    const si = computeSignalInfluence();
+    assert.ok(si, 'should return a non-null object');
+    assert.ok(typeof si.utilityDelta          === 'number', 'utilityDelta must be a number');
+    assert.ok(typeof si.confidenceDelta       === 'number', 'confidenceDelta must be a number');
+    assert.ok(typeof si.costDelta             === 'number', 'costDelta must be a number');
+    assert.ok(typeof si.interferenceRelevance === 'number', 'interferenceRelevance must be a number');
+    assert.ok(typeof si.strategicWeightDelta  === 'number', 'strategicWeightDelta must be a number');
+    assert.ok(Array.isArray(si.sources),                   'sources must be an array');
+    assert.ok(typeof si.computedAt            === 'string', 'computedAt must be a string');
+  });
+
+  test('interferenceRelevance is clamped to [0, 1]', () => {
+    const si = computeSignalInfluence();
+    assert.ok(si.interferenceRelevance >= 0 && si.interferenceRelevance <= 1,
+      'interferenceRelevance must be in [0, 1]');
+  });
+
+  test('sources array entries have type and contribution fields', () => {
+    const si = computeSignalInfluence();
+    for (const src of si.sources) {
+      assert.ok(typeof src.type === 'string', 'source.type must be a string');
+      assert.ok(typeof src.contribution === 'object', 'source.contribution must be an object');
+    }
+  });
+
+  test('NULL_SIGNAL_INFLUENCE is a frozen zero-delta object', () => {
+    assert.equal(NULL_SIGNAL_INFLUENCE.utilityDelta,          0);
+    assert.equal(NULL_SIGNAL_INFLUENCE.confidenceDelta,       0);
+    assert.equal(NULL_SIGNAL_INFLUENCE.costDelta,             0);
+    assert.equal(NULL_SIGNAL_INFLUENCE.interferenceRelevance, 0);
+    assert.equal(NULL_SIGNAL_INFLUENCE.strategicWeightDelta,  0);
+    assert.ok(Array.isArray(NULL_SIGNAL_INFLUENCE.sources) && NULL_SIGNAL_INFLUENCE.sources.length === 0);
+    assert.ok(Object.isFrozen(NULL_SIGNAL_INFLUENCE), 'NULL_SIGNAL_INFLUENCE must be frozen');
+  });
+});
+
+// ─── _branchAdjustedScore ────────────────────────────────────────────────────
+
+describe('_branchAdjustedScore', () => {
+  beforeEach(clearSimState);
+
+  test('with NULL_SIGNAL_INFLUENCE matches legacy formula', () => {
+    const loc = createSimLocation(0, 0);
+    const branch = loc.branches[0];
+    branch.interferenceWeight = 1.0;
+    branch.cost       = 0.2;
+    branch.utility    = 0.7;
+    branch.confidence = 0.8;
+    branch.sourceInfluence = NULL_SIGNAL_INFLUENCE;
+    const expected = (0.7 * 0.8 * 1.0) - 0.2 + computeStrategicWeight(branch, 'balanced');
+    const actual   = _branchAdjustedScore(branch, 'balanced');
+    assert.ok(Math.abs(actual - expected) < 1e-10, 'score must match (u×c×iw)-cost+sw when signals are zeroed');
+  });
+
+  test('utilityDelta increases effective utility in score', () => {
+    const loc = createSimLocation(0, 0);
+    const branch = loc.branches[0];
+    branch.interferenceWeight = 1.0;
+    branch.cost       = 0;
+    branch.utility    = 0.5;
+    branch.confidence = 1.0;
+    branch.sourceInfluence = NULL_SIGNAL_INFLUENCE;
+    const baseScore = _branchAdjustedScore(branch, 'balanced');
+
+    branch.sourceInfluence = Object.freeze({ ...NULL_SIGNAL_INFLUENCE, utilityDelta: 0.1, sources: [] });
+    const boostedScore = _branchAdjustedScore(branch, 'balanced');
+    assert.ok(boostedScore > baseScore, 'positive utilityDelta should raise the score');
+  });
+
+  test('costDelta increases effective cost reducing score', () => {
+    const loc = createSimLocation(0, 0);
+    const branch = loc.branches[0];
+    branch.interferenceWeight = 1.0;
+    branch.cost       = 0;
+    branch.utility    = 0.5;
+    branch.confidence = 1.0;
+    branch.sourceInfluence = NULL_SIGNAL_INFLUENCE;
+    const baseScore = _branchAdjustedScore(branch, 'balanced');
+
+    branch.sourceInfluence = Object.freeze({ ...NULL_SIGNAL_INFLUENCE, costDelta: 0.1, sources: [] });
+    const penalisedScore = _branchAdjustedScore(branch, 'balanced');
+    assert.ok(penalisedScore < baseScore, 'positive costDelta should lower the score');
+  });
+
+  test('strategicWeightDelta adds to strategicWeight', () => {
+    const loc = createSimLocation(0, 0);
+    const branch = loc.branches[0];
+    branch.interferenceWeight = 1.0;
+    branch.cost       = 0;
+    branch.utility    = 0.5;
+    branch.confidence = 1.0;
+    branch.sourceInfluence = NULL_SIGNAL_INFLUENCE;
+    const base = _branchAdjustedScore(branch, 'balanced');
+
+    branch.sourceInfluence = Object.freeze({ ...NULL_SIGNAL_INFLUENCE, strategicWeightDelta: 0.05, sources: [] });
+    const boosted = _branchAdjustedScore(branch, 'balanced');
+    assert.ok(Math.abs((boosted - base) - 0.05) < 1e-10, 'strategicWeightDelta=0.05 should raise score by 0.05');
+  });
+
+  test('branches created by createSimLocation have sourceInfluence set', () => {
+    const loc = createSimLocation(10, 20, 'signal-test');
+    for (const b of loc.branches) {
+      assert.ok(b.sourceInfluence !== null, 'branch should have sourceInfluence after createSimLocation');
+      assert.ok(typeof b.sourceInfluence.utilityDelta === 'number', 'sourceInfluence.utilityDelta must be numeric');
+    }
+  });
+
+  test('evolveSimBranches refreshes sourceInfluence on active branches', () => {
+    const loc = createSimLocation(0, 0);
+    loc.branches.forEach(function (b) { b.sourceInfluence = null; });
+    evolveSimBranches(loc.id);
+    const active = loc.branches.filter(function (b) { return b.status === 'active'; });
+    for (const b of active) {
+      assert.ok(b.sourceInfluence !== null, 'evolve should refresh sourceInfluence on active branches');
+      assert.ok(typeof b.sourceInfluence.computedAt === 'string', 'refreshed sourceInfluence must have computedAt');
+    }
+  });
+
+  test('collapseSimLocation records sourceInfluence summary in audit trail', () => {
+    const loc = createSimLocation(0, 0);
+    collapseSimLocation(loc.id);
+    const entry = quantumSimState.auditTrail[quantumSimState.auditTrail.length - 1];
+    assert.ok('sourceInfluenceSources' in entry, 'audit trail entry must have sourceInfluenceSources');
+    assert.ok(Array.isArray(entry.sourceInfluenceSources), 'sourceInfluenceSources must be an array');
+  });
+
+  test('collapseAllSimLocations records sourceInfluence summary in audit trail', () => {
+    createSimLocation(0, 0);
+    createSimLocation(10, 10);
+    collapseAllSimLocations();
+    const entry = quantumSimState.auditTrail[quantumSimState.auditTrail.length - 1];
+    assert.ok('sourceInfluenceSources' in entry, 'collapse_all audit entry must have sourceInfluenceSources');
+    assert.ok(Array.isArray(entry.sourceInfluenceSources), 'sourceInfluenceSources must be an array');
   });
 });
