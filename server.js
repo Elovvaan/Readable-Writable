@@ -3851,7 +3851,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       if (!cesiumLiveDataSource) return;
       activeLiveIds.add(entity.id);
       const isSelected = selectedAgentId === entity.id;
-      const posAlt  = Number.isFinite(altitude) ? altitude : 0;
+      const posAlt = Number.isFinite(altitude) ? altitude : 0;
       const posCart = Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, posAlt);
       const nowJd   = Cesium.JulianDate.now();
       const effectivePixelSize = isSelected ? (pixelSize + 5) : pixelSize;
@@ -3877,10 +3877,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       // First encounter — create a new entity with SampledPositionProperty
       try {
         const sampledPos = new Cesium.SampledPositionProperty();
-        sampledPos.setInterpolationOptions({
-          interpolationAlgorithm: Cesium.LinearApproximation,
-          interpolationDegree: 1,
-        });
         sampledPos.addSample(nowJd, posCart);
         const ent = cesiumLiveDataSource.entities.add({
           id: 'live-' + entity.id,
@@ -3958,7 +3954,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
             wExisting.sampledPos.addSample(Cesium.JulianDate.now(), wPosCart);
           } else {
             const wSampledPos = new Cesium.SampledPositionProperty();
-            wSampledPos.setInterpolationOptions({ interpolationAlgorithm: Cesium.LinearApproximation, interpolationDegree: 1 });
             wSampledPos.addSample(Cesium.JulianDate.now(), wPosCart);
             const wEnt = cesiumLiveDataSource.entities.add({
               id: 'live-' + w.id,
