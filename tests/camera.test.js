@@ -655,6 +655,27 @@ describe('globe viewport centering invariants', function () {
     );
     assert.ok(src.includes('pointer-events: none'), 'canvas overlay must not capture pointer events');
   });
+
+  // ── 3D building / city view after Google tiles load ──────────────────────────
+  test('globe.show is set to false after Google 3D tiles load to prevent z-fighting', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    const body  = src.slice(fnIdx, fnIdx + 10000);
+    // The 3D tiles path must hide the globe surface so photorealistic buildings render cleanly.
+    const tilesLoadedIdx = body.indexOf('[RW Cesium] Google Photorealistic 3D Tiles loaded');
+    assert.ok(tilesLoadedIdx !== -1, 'tiles loaded log must exist');
+    const afterLoaded = body.slice(tilesLoadedIdx, tilesLoadedIdx + 400);
+    assert.ok(afterLoaded.includes('globe.show = false'), 'globe must be hidden after 3D tiles load to avoid z-fighting');
+  });
+
+  test('initCesium flies to a 3D city scene after Google tiles load (not flat nadir)', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    const body  = src.slice(fnIdx, fnIdx + 10000);
+    const tilesLoadedIdx = body.indexOf('[RW Cesium] Google Photorealistic 3D Tiles loaded');
+    const afterLoaded = body.slice(tilesLoadedIdx, tilesLoadedIdx + 500);
+    // Must use flyTo (not setView) and a pitch != -90 so buildings are visible
+    assert.ok(afterLoaded.includes('camera.flyTo'), 'initCesium must flyTo city after 3D tiles load for 3D building visibility');
+    assert.ok(!afterLoaded.includes('toRadians(-90)'), 'post-tiles camera must NOT use -90 pitch (flat nadir view)');
+  });
 });
 
 // ── Cesium street-level navigation (replacing Google Street View) ─────────────
@@ -1710,5 +1731,75 @@ describe('globe boundary navigation', function () {
     const body = src.slice(fnIdx, fnIdx + 8000);
     assert.ok(body.includes('setTimeout') && body.includes('initGlobeBoundaries()'),
       'initGlobeBoundaries must be wrapped in setTimeout to defer past the initial render cycle');
+  });
+});
+
+// ── Live entity continuous animation (SampledPositionProperty) ───────────────
+describe('live entity continuous animation', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  test('cesiumLiveDataSource variable is declared for persistent live-entity layer', function () {
+    assert.ok(src.includes('cesiumLiveDataSource'), 'cesiumLiveDataSource must be declared');
+    assert.ok(src.includes("new Cesium.CustomDataSource('live-entities')"),
+      'cesiumLiveDataSource must be a CustomDataSource named live-entities');
+  });
+
+  test('cesiumLiveEntityMap is declared to track persistent entity refs', function () {
+    assert.ok(src.includes('cesiumLiveEntityMap'), 'cesiumLiveEntityMap must be declared');
+    assert.ok(src.includes('cesiumLiveEntityMap = {}'), 'cesiumLiveEntityMap must be initialized as empty object');
+  });
+
+  test('SampledPositionProperty is used for live entity animation', function () {
+    assert.ok(src.includes('SampledPositionProperty'),
+      'SampledPositionProperty must be used for smooth live-entity animation between server snapshots');
+  });
+
+  test('upsertLiveEntityPoint is defined for persistent entity upsert', function () {
+    assert.ok(src.includes('function upsertLiveEntityPoint'),
+      'upsertLiveEntityPoint must be defined (replaces one-shot addLiveEntityPoint)');
+  });
+
+  test('live entity animation uses addSample for position interpolation', function () {
+    const fnIdx = src.indexOf('function upsertLiveEntityPoint');
+    assert.ok(fnIdx !== -1, 'upsertLiveEntityPoint must be defined');
+    const body = src.slice(fnIdx, fnIdx + 1200);
+    assert.ok(body.includes('addSample'), 'must call sampledPos.addSample() to drive Cesium interpolation');
+    assert.ok(body.includes('JulianDate.now'), 'must use JulianDate.now() for the sample timestamp');
+  });
+
+  test('cesiumLiveDataSource is initialized inside initCesium', function () {
+    const fnIdx = src.indexOf('async function initCesium');
+    const body  = src.slice(fnIdx, fnIdx + 10000);
+    assert.ok(body.includes('cesiumLiveDataSource = new Cesium.CustomDataSource'),
+      'cesiumLiveDataSource must be initialized inside initCesium after viewer creation');
+    assert.ok(body.includes('dataSources.add(cesiumLiveDataSource)'),
+      'cesiumLiveDataSource must be added to viewer.dataSources');
+  });
+
+  test('vehicles are rendered at ground altitude (0 m) not clipped underground', function () {
+    const fnIdx = src.indexOf('function upsertLiveEntityPoint');
+    assert.ok(fnIdx !== -1);
+    // Check that vehicles are called with altitude 0 (ground)
+    const vehicleCall = src.indexOf('upsertLiveEntityPoint(v, TYPE_STYLE.vehicle.fill,');
+    assert.ok(vehicleCall !== -1, 'vehicle upsert call must exist');
+    const callSnippet = src.slice(vehicleCall, vehicleCall + 60);
+    assert.ok(callSnippet.includes(', 0)'), 'vehicles must use altitude 0 (ground level)');
+  });
+
+  test('aircraft are rendered at their server-reported altitude', function () {
+    const aircraftCall = src.indexOf('upsertLiveEntityPoint(ac, TYPE_STYLE.aircraft.fill,');
+    assert.ok(aircraftCall !== -1, 'aircraft upsert call must exist');
+    const callSnippet = src.slice(aircraftCall, aircraftCall + 80);
+    assert.ok(callSnippet.includes('ac.altitude'), 'aircraft must use ac.altitude from snapshot data');
+  });
+
+  test('pruneStaleLiveEntities removes entities no longer in snapshot', function () {
+    assert.ok(src.includes('function pruneStaleLiveEntities'),
+      'pruneStaleLiveEntities must be defined to clean up obsolete entities');
+    const fnIdx = src.indexOf('function pruneStaleLiveEntities');
+    const body  = src.slice(fnIdx, fnIdx + 400);
+    assert.ok(body.includes('cesiumLiveEntityMap'), 'pruning must iterate cesiumLiveEntityMap');
+    assert.ok(body.includes('activeLiveIds'), 'pruning must check activeLiveIds set');
   });
 });
