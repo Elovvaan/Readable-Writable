@@ -350,7 +350,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .rtab-content { display: flex; flex-direction: column; flex: 1; overflow-y: auto; min-height: 0; }
     .rtab-content.hidden { display: none; }
     /* ── Layer feed drawer ───────────────────────────────────────────────── */
-    #drawer-layer-feed { width: 300px; right: 0; }
+    #drawer-layer-feed { width: 300px; right: 0; z-index: 18; }
     #drawer-layer-feed.stacked { right: 280px; }
     .lf-pulse { font-size: .7rem; color: #2a3840; margin-right: 4px; transition: color 400ms; }
     .lf-pulse.live { color: #3ec9b8; animation: lf-blink 1.4s ease-in-out infinite; }
@@ -2041,7 +2041,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     vessels:      'Maritime Vessels',
     sensors:      'Sensor Nodes',
     weatherCells: 'Weather Cells',
-    trafficSim:   'Traffic Layer',
+    trafficSim:   'Traffic Simulation',
   };
 
   function openLayerFeed(layerKey) {
@@ -11461,8 +11461,8 @@ function router(req, res) {
         layer,
         count:    trafficState.segments.length,
         events:   [],
-        entities: trafficState.segments.slice(0, 20).map(function (s) {
-          return { id: s.id || s.roadName || ('seg-' + Math.random().toString(36).slice(2)), status: s.congestion || 'active' };
+        entities: trafficState.segments.slice(0, 20).map(function (s, i) {
+          return { id: s.id || s.roadName || ('seg-' + i), status: s.congestion || 'active' };
         }),
         regions: [],
         ts: Date.now(),
