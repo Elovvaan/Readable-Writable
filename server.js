@@ -1615,6 +1615,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let cesiumViewer = null;
   let cesiumGoogleTileset = null;
   const cesiumEntityRefs = { agents: {}, regions: {}, trails: {} };
+  // Persistent live-entity layer: kept in a separate DataSource so it survives
+  // the per-tick cesiumViewer.entities.removeAll() that clears agent/region/traffic.
+  // SampledPositionProperty lets Cesium interpolate positions at 60fps between
+  // 800ms server snapshots, giving smooth continuous agent motion.
+  let cesiumLiveDataSource = null;  // Cesium.CustomDataSource — initialized in initCesium
+  const cesiumLiveEntityMap = {};   // entityId -> { entity: CesiumEntity, sampledPos: SampledPositionProperty }
   let cesiumSelectionHandler = null;
   let cesiumSafetyViewApplied = false;
   let streetViewPanorama = null;
@@ -2306,7 +2312,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   async function initCesium() {
     if (!USE_CESIUM || typeof Cesium === 'undefined') return;
     if (BOOTSTRAP.cesiumAccessToken) Cesium.Ion.defaultAccessToken = BOOTSTRAP.cesiumAccessToken;
-    // Build terrain provider: use Cesium World Terrain when Ion token available for realistic elevation
+    // Build terrain provider with Cesium World Terrain when Ion token is available.
     let terrainProvider;
     if (BOOTSTRAP.cesiumAccessToken) {
       try {
@@ -2322,8 +2328,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       shouldAnimate: true,
       terrainProvider: terrainProvider || new Cesium.EllipsoidTerrainProvider(),
     });
-    // Immediately anchor the camera to a valid global view so the Earth fills the viewport
-    // before any async tile loading; this prevents the camera from starting off-screen.
+    // Anchor camera before async tiles arrive to keep Earth in view.
     cesiumViewer.trackedEntity = undefined;
     cesiumViewer.camera.setView({
       destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
@@ -2340,6 +2345,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.scene.sun.show = true;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
+    // Separate DataSource keeps live entities alive across removeAll() calls.
+    cesiumLiveDataSource = new Cesium.CustomDataSource('live-entities');
+    cesiumViewer.dataSources.add(cesiumLiveDataSource);
     // Camera controls: full orbit, tilt, zoom, and first-person look for street-level navigation
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
@@ -2378,9 +2386,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastCesiumRenderCounts.tilesLoaded = true;
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
-        cesiumViewer.camera.setView({
-          destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+        // Tiles supply own terrain geometry — hide globe surface to avoid z-fighting.
+        cesiumViewer.scene.globe.show = false;
+        // Fly to NYC with tilt so 3D buildings are immediately visible.
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-73.9857, 40.7484, 1200),
+          orientation: { heading: Cesium.Math.toRadians(15), pitch: Cesium.Math.toRadians(-30), roll: 0 },
+          duration: 3.0,
         });
       } else {
         console.warn('[RW Cesium] No Google Maps API key — using built-in Natural Earth imagery');
@@ -2423,8 +2435,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         console.warn('[RW Cesium] OSM Buildings unavailable', osmErr);
       }
     }
-    // Auto-tilt: when user finishes zooming below STREET_LEVEL_AUTO_TILT_ALT and camera
-    // is pointing near-nadir, smoothly pitch forward for a human-perspective ground view
+    // Auto-tilt: on zoom below STREET_LEVEL_AUTO_TILT_ALT, pitch forward for ground view
     cesiumViewer.camera.moveEnd.addEventListener(function () {
       if (cesiumCameraMoveInternal || cesiumStreetLevelMode) return;
       const alt = cesiumViewer.camera.positionCartographic.height;
@@ -3821,22 +3832,66 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
 
     // ── Live Entity Layers: vehicles, aircraft, vessels, sensors, weather cells ─
+    // Live entities live in cesiumLiveDataSource (a CustomDataSource that is NOT
+    // cleared by cesiumViewer.entities.removeAll() above).  Each entity holds a
+    // SampledPositionProperty so Cesium interpolates at 60 fps between the 800 ms
+    // server snapshot updates — giving smooth, continuous on-screen motion.
     const liveEntities = (state && state.liveEntities) || { vehicles: [], aircraft: [], vessels: [], sensors: [], weather: [] };
 
-    // Helper to add a live entity point to Cesium
-    function addLiveEntityPoint(entity, color, pixelSize, altitude) {
+    // Track which live entity IDs are active this tick so stale ones can be removed.
+    const activeLiveIds = new Set();
+
+    /**
+     * Upsert a live-entity marker into cesiumLiveDataSource.
+     * First call creates an entity with SampledPositionProperty; subsequent calls
+     * add a new position sample so Cesium can interpolate movement smoothly.
+     */
+    function upsertLiveEntityPoint(entity, color, pixelSize, altitude) {
       if (!entity || !Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) return;
+      if (!cesiumLiveDataSource) return;
+      activeLiveIds.add(entity.id);
       const isSelected = selectedAgentId === entity.id;
+      const posAlt  = Number.isFinite(altitude) ? altitude : 0;
+      const posCart = Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, posAlt);
+      const nowJd   = Cesium.JulianDate.now();
+      const effectivePixelSize = isSelected ? (pixelSize + 5) : pixelSize;
+      const pointColor = Cesium.Color.fromCssColorString(isSelected ? '#ffffff' : color);
+      const outlineColor = Cesium.Color.fromCssColorString(color);
+      const existing = cesiumLiveEntityMap[entity.id];
+      if (existing) {
+        // Add new position sample — Cesium linearly interpolates from the previous
+        // sample to this one, giving sub-second smooth motion at render frame rate.
+        existing.sampledPos.addSample(nowJd, posCart);
+        // Update appearance for selection state changes
+        try {
+          existing.entity.point.pixelSize = effectivePixelSize;
+          existing.entity.point.color = pointColor;
+          existing.entity.point.outlineColor = outlineColor;
+          existing.entity.point.outlineWidth = isSelected ? 3 : 1;
+          if (entity.label && existing.entity.label) {
+            existing.entity.label.show = true;
+          }
+        } catch (_) { /* ignore property mutation errors */ }
+        return;
+      }
+      // First encounter — create a new entity with SampledPositionProperty
       try {
-        cesiumViewer.entities.add({
+        const sampledPos = new Cesium.SampledPositionProperty();
+        sampledPos.setInterpolationOptions({
+          interpolationAlgorithm: Cesium.LinearApproximation,
+          interpolationDegree: 1,
+        });
+        sampledPos.addSample(nowJd, posCart);
+        const ent = cesiumLiveDataSource.entities.add({
           id: 'live-' + entity.id,
           rwMeta: { kind: 'agent', id: entity.id },
-          position: Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, altitude || 0),
+          position: sampledPos,
           point: {
-            pixelSize: isSelected ? (pixelSize + 5) : pixelSize,
-            color: Cesium.Color.fromCssColorString(isSelected ? '#ffffff' : color),
-            outlineColor: Cesium.Color.fromCssColorString(color),
+            pixelSize: effectivePixelSize,
+            color: pointColor,
+            outlineColor: outlineColor,
             outlineWidth: isSelected ? 3 : 1,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
           label: entity.label ? {
             text: entity.label,
@@ -3847,61 +3902,86 @@ const FRONTEND_HTML = `<!DOCTYPE html>
             style: Cesium.LabelStyle.FILL_AND_OUTLINE,
             verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
             pixelOffset: new Cesium.Cartesian2(0, -12),
-            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 4000000),
+            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 2000000),
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
           } : undefined,
         });
+        cesiumLiveEntityMap[entity.id] = { entity: ent, sampledPos };
         entitiesVisible++;
       } catch (_) { /* ignore single entity errors */ }
     }
 
+    // Remove stale live-entity entries for IDs no longer visible (layer off or entity gone)
+    function pruneStaleLiveEntities() {
+      if (!cesiumLiveDataSource) return;
+      for (const id of Object.keys(cesiumLiveEntityMap)) {
+        if (!activeLiveIds.has(id)) {
+          try { cesiumLiveDataSource.entities.removeById('live-' + id); } catch (_) { /* ignore */ }
+          delete cesiumLiveEntityMap[id];
+        }
+      }
+    }
+
     if (layerState.vehicles && visibleEntityTypes.vehicle) {
       for (const v of liveEntities.vehicles) {
-        addLiveEntityPoint(v, TYPE_STYLE.vehicle.fill, 9, 5);
+        upsertLiveEntityPoint(v, TYPE_STYLE.vehicle.fill, 12, 0);
       }
       vehiclesDrawn = liveEntities.vehicles.length;
     }
     if (layerState.aircraft !== false && visibleEntityTypes.aircraft !== false) {
       for (const ac of (liveEntities.aircraft || [])) {
-        addLiveEntityPoint(ac, TYPE_STYLE.aircraft.fill, 8, ac.altitude || 10000);
+        upsertLiveEntityPoint(ac, TYPE_STYLE.aircraft.fill, 12, ac.altitude || 10000);
       }
       aircraftLiveDrawn = (liveEntities.aircraft || []).length;
     }
     if (layerState.vessels && visibleEntityTypes.vessel) {
       for (const v of liveEntities.vessels) {
-        addLiveEntityPoint(v, TYPE_STYLE.vessel.fill, 10, 0);
+        upsertLiveEntityPoint(v, TYPE_STYLE.vessel.fill, 11, 0);
       }
       vesselsDrawn = liveEntities.vessels.length;
     }
     if (layerState.sensors && visibleEntityTypes.sensor) {
       for (const s of liveEntities.sensors) {
-        addLiveEntityPoint(s, TYPE_STYLE.sensor.fill, 7, s.altitude || 10);
+        upsertLiveEntityPoint(s, TYPE_STYLE.sensor.fill, 8, s.altitude || 10);
       }
     }
     if (layerState.weatherCells && visibleEntityTypes.weather) {
       for (const w of liveEntities.weather) {
         if (!Number.isFinite(w.lat) || !Number.isFinite(w.lng)) continue;
+        activeLiveIds.add(w.id);
+        const wExisting = cesiumLiveEntityMap['wc-' + w.id];
         try {
           const wColor = w.subtype === 'storm' ? '#aaddff' : (w.subtype === 'fog' ? '#ccddee' : '#88ccff');
           const wRadius = (w.radiusKm || 50) * 1000;
-          cesiumViewer.entities.add({
-            id: 'live-' + w.id,
-            rwMeta: { kind: 'agent', id: w.id },
-            position: Cesium.Cartesian3.fromDegrees(w.lng, w.lat, 5000),
-            ellipse: {
-              semiMajorAxis: wRadius,
-              semiMinorAxis: wRadius,
-              material: Cesium.Color.fromCssColorString(wColor).withAlpha((w.intensity || 0.5) * 0.22),
-              outline: true,
-              outlineColor: Cesium.Color.fromCssColorString(wColor).withAlpha(0.55),
-              outlineWidth: 1.5,
-              height: 5000,
-            },
-          });
+          const wPosCart = Cesium.Cartesian3.fromDegrees(w.lng, w.lat, 5000);
+          if (wExisting) {
+            wExisting.sampledPos.addSample(Cesium.JulianDate.now(), wPosCart);
+          } else {
+            const wSampledPos = new Cesium.SampledPositionProperty();
+            wSampledPos.setInterpolationOptions({ interpolationAlgorithm: Cesium.LinearApproximation, interpolationDegree: 1 });
+            wSampledPos.addSample(Cesium.JulianDate.now(), wPosCart);
+            const wEnt = cesiumLiveDataSource.entities.add({
+              id: 'live-' + w.id,
+              rwMeta: { kind: 'agent', id: w.id },
+              position: wSampledPos,
+              ellipse: {
+                semiMajorAxis: wRadius,
+                semiMinorAxis: wRadius,
+                material: Cesium.Color.fromCssColorString(wColor).withAlpha((w.intensity || 0.5) * 0.22),
+                outline: true,
+                outlineColor: Cesium.Color.fromCssColorString(wColor).withAlpha(0.55),
+                outlineWidth: 1.5,
+                height: 5000,
+              },
+            });
+            cesiumLiveEntityMap['wc-' + w.id] = { entity: wEnt, sampledPos: wSampledPos };
+          }
           entitiesVisible++;
         } catch (_) { /* ignore */ }
       }
     }
+
+    pruneStaleLiveEntities();
 
     // ── Traffic Layer: segments (color-coded polylines), incidents, zone alerts ─
     if (layerState.trafficSim) {
