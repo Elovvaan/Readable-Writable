@@ -349,6 +349,29 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .dtab.active { color: #3ec9b8; border-bottom-color: #3ec9b8; background: #09090d; }
     .rtab-content { display: flex; flex-direction: column; flex: 1; overflow-y: auto; min-height: 0; }
     .rtab-content.hidden { display: none; }
+    /* ── Layer feed drawer ───────────────────────────────────────────────── */
+    #drawer-layer-feed { width: 300px; right: 0; z-index: 18; }
+    #drawer-layer-feed.stacked { right: 280px; }
+    .lf-pulse { font-size: .7rem; color: #2a3840; margin-right: 4px; transition: color 400ms; }
+    .lf-pulse.live { color: #3ec9b8; animation: lf-blink 1.4s ease-in-out infinite; }
+    @keyframes lf-blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .lf-summary { padding: 8px 12px 6px; border-bottom: 1px solid #111820; }
+    .lf-count-row { display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }
+    .lf-count-label { font-size: .58rem; letter-spacing: .1em; text-transform: uppercase; color: #2a3840; }
+    .lf-count-val { font-size: .78rem; font-weight: 700; color: #3ec9b8; font-family: 'Cascadia Code','Fira Code',monospace; }
+    .lf-section-title { font-size: .55rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #2a3840; padding: 6px 12px 3px; border-top: 1px solid #111820; margin-top: 4px; }
+    .lf-events { padding: 0 8px 4px; display: flex; flex-direction: column; gap: 2px; }
+    .lf-event-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 4px; border-radius: 3px; background: #0b0d12; border-left: 2px solid #1a2430; }
+    .lf-event-ts { font-size: .52rem; color: #2a3840; white-space: nowrap; margin-top: 1px; min-width: 38px; font-family: monospace; }
+    .lf-event-msg { font-size: .6rem; color: #607a8c; line-height: 1.3; word-break: break-word; }
+    .lf-entities { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+    .lf-entity-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 3px; background: #0b0d12; }
+    .lf-entity-id { font-size: .58rem; color: #5a8098; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: monospace; }
+    .lf-entity-status { font-size: .52rem; font-weight: 700; letter-spacing: .06em; padding: 1px 5px; border-radius: 2px; text-transform: uppercase; }
+    .lf-entity-status.active { color: #3ec9b8; background: #0d2020; }
+    .lf-entity-status.offline { color: #607a8c; background: #0b0e12; }
+    .lf-entity-status.alert { color: #c8884a; background: #1a1208; }
+    .lf-empty { font-size: .62rem; color: #2a3840; font-style: italic; padding: 8px 12px; }
     /* ── Style drawer controls ───────────────────────────────────────────── */
     #style-drawer-body { padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
     .style-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .68rem; color: #607a8c; }
@@ -1041,6 +1064,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         <button class="sl-tac-btn" data-tac="panoptic">PANOPTIC</button>
         <button class="sl-tac-btn" data-tac="cleanui">CLEAN UI</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Layer Feed drawer (right panel, opens when a layer is selected) -->
+  <div id="drawer-layer-feed" class="drawer drawer-right" role="region" aria-label="Layer Feed" style="width:300px;">
+    <div class="drawer-header">
+      <span class="lf-pulse" id="lf-pulse-indicator">●</span>
+      <span class="drawer-title" id="lf-title">Layer Feed</span>
+      <button class="drawer-close" id="lf-close-btn" type="button" aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body" id="lf-body">
+      <div id="lf-summary" class="lf-summary">
+        <div class="lf-count-row">
+          <span class="lf-count-label">Active</span>
+          <span class="lf-count-val" id="lf-count">—</span>
+        </div>
+        <div class="lf-count-row">
+          <span class="lf-count-label">Region</span>
+          <span class="lf-count-val" id="lf-region">—</span>
+        </div>
+      </div>
+      <div class="lf-section-title">Latest Events</div>
+      <div id="lf-events" class="lf-events"></div>
+      <div class="lf-section-title">Tracked Objects</div>
+      <div id="lf-entities" class="lf-entities"></div>
     </div>
   </div>
 
@@ -1920,6 +1968,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let eventSearchQuery = '';
   let activeEventFilter = 'all';
   let styleMode = 'crt';
+  let activeLayerFeed = null;   // key of the layer whose feed panel is currently open
   const STYLE_PRESETS = {
     tactical:     { bloom: 20, sharpen: 30, noise: 18, vignette: 50, pixelation: 14, glow: 18 },
     surveillance: { bloom: 14, sharpen: 52, noise: 12, vignette: 60, pixelation: 20, glow: 10 },
@@ -1983,7 +2032,149 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!on) setLayerStatus(key, 'paused');
   }
 
-  // ── Panel / drawer state ──────────────────────────────────────────────────
+  // ── Layer Feed Panel ──────────────────────────────────────────────────────
+  const LAYER_FEED_LABELS = {
+    liveFlights:  'Live Flights',
+    satellites:   'Satellites',
+    vehicles:     'Ground Vehicles',
+    aircraft:     'Aircraft',
+    vessels:      'Maritime Vessels',
+    sensors:      'Sensor Nodes',
+    weatherCells: 'Weather Cells',
+    trafficSim:   'Traffic Simulation',
+  };
+
+  function openLayerFeed(layerKey) {
+    const drawerEl = document.getElementById('drawer-layer-feed');
+    if (!drawerEl) return;
+    if (activeLayerFeed === layerKey && drawerEl.classList.contains('open')) {
+      closeLayerFeed();
+      return;
+    }
+    activeLayerFeed = layerKey;
+    // Optionally stack to the left of the right drawer when that is also open
+    const rightDrawer = document.getElementById('drawer-right');
+    drawerEl.classList.toggle('stacked', !!(rightDrawer && rightDrawer.classList.contains('open')));
+    drawerEl.classList.add('open');
+    const titleEl = document.getElementById('lf-title');
+    if (titleEl) titleEl.textContent = (LAYER_FEED_LABELS[layerKey] || layerKey) + ' Feed';
+    renderLayerFeedPanel(layerKey, state);
+  }
+
+  function closeLayerFeed() {
+    const drawerEl = document.getElementById('drawer-layer-feed');
+    if (drawerEl) { drawerEl.classList.remove('open'); drawerEl.classList.remove('stacked'); }
+    activeLayerFeed = null;
+    const pulseEl = document.getElementById('lf-pulse-indicator');
+    if (pulseEl) pulseEl.classList.remove('live');
+  }
+
+  /**
+   * Render the layer feed panel for the given layerKey using the current snapshot state.
+   * Shows active count, latest events from entityEventHistory, tracked objects, regional summary.
+   */
+  function renderLayerFeedPanel(layerKey, snapState) {
+    if (!layerKey) return;
+    const liveEntities = (snapState && snapState.liveEntities) || {};
+    const traffic = (snapState && snapState.traffic) || {};
+    const agents = (snapState && snapState.agents) || {};
+
+    // ── Resolve entity list for this layer ─────────────────────────────────
+    let entities = [];
+    if (layerKey === 'vehicles')     entities = liveEntities.vehicles || [];
+    else if (layerKey === 'aircraft') entities = liveEntities.aircraft || [];
+    else if (layerKey === 'vessels')  entities = liveEntities.vessels  || [];
+    else if (layerKey === 'sensors')  entities = liveEntities.sensors  || [];
+    else if (layerKey === 'weatherCells') entities = liveEntities.weather || [];
+    else if (layerKey === 'liveFlights')  entities = Object.values(agents).filter(function (a) { return a && String(a.type).toLowerCase() === 'flight'; });
+    else if (layerKey === 'satellites')   entities = Object.values(agents).filter(function (a) { return a && String(a.type).toLowerCase() === 'satellite'; });
+    else if (layerKey === 'trafficSim')   entities = traffic.segments || [];
+
+    // ── Active count ────────────────────────────────────────────────────────
+    const countEl = document.getElementById('lf-count');
+    if (countEl) countEl.textContent = entities.length;
+
+    // ── Regional summary ────────────────────────────────────────────────────
+    const regionEl = document.getElementById('lf-region');
+    if (regionEl) {
+      const regions = snapState && snapState.regions ? Object.values(snapState.regions) : [];
+      regionEl.textContent = regions.length ? regions.length + ' zone' + (regions.length !== 1 ? 's' : '') + ' active' : '—';
+    }
+
+    // ── Pulse indicator ─────────────────────────────────────────────────────
+    const pulseEl = document.getElementById('lf-pulse-indicator');
+    if (pulseEl) pulseEl.classList.toggle('live', entities.length > 0);
+
+    // ── Latest events ───────────────────────────────────────────────────────
+    const eventsEl = document.getElementById('lf-events');
+    if (eventsEl) {
+      // Gather events from all entity IDs for this layer
+      const allEvents = [];
+      for (const e of entities) {
+        if (!e || !e.id) continue;
+        const hist = (typeof layerFeedEventCache !== 'undefined' && layerFeedEventCache[e.id]) || [];
+        for (const ev of hist) allEvents.push({ entityId: e.id, ts: ev.ts, kind: ev.kind, msg: ev.msg });
+      }
+      // Sort newest first, take top 8
+      allEvents.sort(function (a, b) { return (b.ts > a.ts ? 1 : b.ts < a.ts ? -1 : 0); });
+      const top = allEvents.slice(0, 8);
+      if (top.length === 0) {
+        eventsEl.innerHTML = '<div class="lf-empty">No recent events.</div>';
+      } else {
+        eventsEl.innerHTML = top.map(function (ev) {
+          const tsStr = ev.ts ? String(ev.ts).slice(11, 19) : '—';
+          return '<div class="lf-event-row">'
+            + '<span class="lf-event-ts">' + tsStr + '</span>'
+            + '<span class="lf-event-msg">' + (ev.entityId ? '[' + String(ev.entityId).slice(0, 12) + '] ' : '') + (ev.msg || ev.kind || '') + '</span>'
+            + '</div>';
+        }).join('');
+      }
+    }
+
+    // ── Tracked objects ─────────────────────────────────────────────────────
+    const entitiesEl = document.getElementById('lf-entities');
+    if (entitiesEl) {
+      if (layerKey === 'trafficSim') {
+        // Traffic segments: show count summary
+        const segs = traffic.segments || [];
+        const incidents = traffic.incidents || [];
+        entitiesEl.innerHTML = segs.length === 0
+          ? '<div class="lf-empty">No traffic data.</div>'
+          : '<div class="lf-entity-row"><span class="lf-entity-id">' + segs.length + ' segments</span>'
+            + '<span class="lf-entity-status active">LIVE</span></div>'
+            + (incidents.length ? '<div class="lf-entity-row"><span class="lf-entity-id">' + incidents.length + ' incidents</span>'
+              + '<span class="lf-entity-status alert">ALERT</span></div>' : '');
+      } else if (entities.length === 0) {
+        entitiesEl.innerHTML = '<div class="lf-empty">No tracked objects.</div>';
+      } else {
+        entitiesEl.innerHTML = entities.slice(0, 20).map(function (e) {
+          if (!e) return '';
+          const eid  = String(e.id || '').slice(0, 18);
+          const stat = String(e.status || e.state || 'active').toLowerCase();
+          const cls  = (stat === 'active' || stat === 'moving' || stat === 'airborne' || stat === 'online') ? 'active'
+                     : (stat === 'alert' || stat === 'warning') ? 'alert' : 'offline';
+          return '<div class="lf-entity-row">'
+            + '<span class="lf-entity-id">' + eid + '</span>'
+            + '<span class="lf-entity-status ' + cls + '">' + stat.toUpperCase() + '</span>'
+            + '</div>';
+        }).join('');
+        if (entities.length > 20) {
+          entitiesEl.innerHTML += '<div class="lf-empty">+' + (entities.length - 20) + ' more…</div>';
+        }
+      }
+    }
+  }
+
+  /** Called from applySnapshot — refreshes feed panel if one is open. */
+  function updateLayerFeedPanel() {
+    if (!activeLayerFeed) return;
+    renderLayerFeedPanel(activeLayerFeed, state);
+  }
+
+  // Cache for entity event history received from server (keyed by entity id)
+  let layerFeedEventCache = {};
+
+
   let activePanelId = null;
   let activeRightTab = 'target';
 
@@ -6072,6 +6263,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       updateLayerStatusBadges();
       updateStats();
       draw();
+      if (layerState[layerKey]) {
+        openLayerFeed(layerKey);
+      } else if (activeLayerFeed === layerKey) {
+        closeLayerFeed();
+      }
     });
   }
   makeLayerToggle(toggleLayerVehiclesEl, 'vehicles');
@@ -6213,6 +6409,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     refreshEventVisibilityStyling();
     updateStats();
     draw();
+    if (layerState.liveFlights) openLayerFeed('liveFlights');
+    else if (activeLayerFeed === 'liveFlights') closeLayerFeed();
   });
   toggleLayerSatellitesEl.addEventListener('click', function () {
     setLayerOn('satellites', !layerState.satellites);
@@ -6220,6 +6418,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     refreshEventVisibilityStyling();
     updateStats();
     draw();
+    if (layerState.satellites) openLayerFeed('satellites');
+    else if (activeLayerFeed === 'satellites') closeLayerFeed();
   });
   toggleLayerRegionsEl.addEventListener('change', function () {
     layerState.regions = !!toggleLayerRegionsEl.checked;
@@ -6276,7 +6476,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
   });
   document.querySelectorAll('.drawer-close').forEach(function (btn) {
-    btn.addEventListener('click', closePanel);
+    if (btn.id === 'lf-close-btn') {
+      btn.addEventListener('click', closeLayerFeed);
+    } else {
+      btn.addEventListener('click', closePanel);
+    }
   });
   document.querySelectorAll('.dtab').forEach(function (btn) {
     btn.addEventListener('click', function () {
@@ -6404,6 +6608,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     renderSelectedPanel();
     updateLayerStatusBadges();
+    updateLayerFeedPanel();
     draw();
   }
 
@@ -11236,6 +11441,64 @@ function router(req, res) {
     const history = entityEventHistory[entityId] || [];
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ entityId, history, count: history.length, ts: Date.now() }));
+    return;
+  }
+
+  // ── GET /api/layer-feed/:layer  → live intelligence feed for a data layer
+  if (req.method === 'GET' && url.startsWith('/api/layer-feed/')) {
+    const layer = decodeURIComponent(url.slice('/api/layer-feed/'.length));
+    // Resolve entities for the layer
+    let entities = [];
+    if      (layer === 'vehicles')     entities = Object.values(liveEntityState.vehicles);
+    else if (layer === 'aircraft')     entities = Object.values(liveEntityState.aircraft);
+    else if (layer === 'vessels')      entities = Object.values(liveEntityState.vessels);
+    else if (layer === 'sensors')      entities = Object.values(liveEntityState.sensors);
+    else if (layer === 'weatherCells') entities = Object.values(liveEntityState.weather);
+    else if (layer === 'trafficSim') {
+      // Traffic feed: segments summary
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        layer,
+        count:    trafficState.segments.length,
+        events:   [],
+        entities: trafficState.segments.slice(0, 20).map(function (s, i) {
+          return { id: s.id || s.roadName || ('seg-' + i), status: s.congestion || 'active' };
+        }),
+        regions: [],
+        ts: Date.now(),
+      }));
+      return;
+    }
+    // Build events from entityEventHistory for each entity in the layer
+    const events = [];
+    for (const e of entities) {
+      if (!e || !e.id) continue;
+      const hist = entityEventHistory[e.id] || [];
+      for (const ev of hist) events.push({ entityId: e.id, ts: ev.ts, kind: ev.kind, msg: ev.msg });
+    }
+    events.sort(function (a, b) { return (b.ts > a.ts ? 1 : b.ts < a.ts ? -1 : 0); });
+    // Per-entity status list
+    const entityList = entities.map(function (e) {
+      if (!e) return null;
+      return {
+        id:     e.id,
+        type:   e.type,
+        status: e.state || 'active',
+        lat:    e.lat,
+        lng:    e.lng,
+      };
+    }).filter(Boolean);
+    // Regional activity: deduplicate regions touched by entity positions
+    const regionSummary = [];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      layer,
+      count:    entities.length,
+      events:   events.slice(0, 20),
+      entities: entityList,
+      regions:  regionSummary,
+      ts: Date.now(),
+    }));
     return;
   }
 

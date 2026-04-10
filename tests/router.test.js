@@ -413,3 +413,95 @@ describe('POST /api/sim/continuous-collapse', () => {
     assert.ok(typeof body.ts === 'number');
   });
 });
+
+// ─── GET /api/layer-feed/:layer ───────────────────────────────────────────────
+
+describe('GET /api/layer-feed/:layer', () => {
+  const { refreshLiveEntityLayers } = require('../server');
+  refreshLiveEntityLayers();
+
+  test('returns 200 for vehicles layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/vehicles').statusCode, 200);
+  });
+
+  test('Content-Type is application/json for vehicles', () => {
+    const res = callRouter('GET', '/api/layer-feed/vehicles');
+    assert.ok(res.headers['Content-Type'].includes('application/json'));
+  });
+
+  test('body has layer, count, events, entities, ts fields for vehicles', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok('layer'    in body, 'must have layer');
+    assert.ok('count'    in body, 'must have count');
+    assert.ok('events'   in body, 'must have events');
+    assert.ok('entities' in body, 'must have entities');
+    assert.ok('ts'       in body, 'must have ts');
+  });
+
+  test('layer field matches requested layer key', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.equal(body.layer, 'vehicles');
+  });
+
+  test('count is a non-negative integer for vehicles', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok(Number.isInteger(body.count) && body.count >= 0, 'count must be non-negative integer');
+  });
+
+  test('count >= 10 for vehicles after refresh', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok(body.count >= 10, 'expected >= 10 vehicles, got ' + body.count);
+  });
+
+  test('events is an array', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok(Array.isArray(body.events), 'events must be an array');
+  });
+
+  test('entities is an array', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok(Array.isArray(body.entities), 'entities must be an array');
+  });
+
+  test('entities have id and status fields', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    for (const e of body.entities) {
+      assert.ok('id'     in e, 'entity must have id');
+      assert.ok('status' in e, 'entity must have status');
+    }
+  });
+
+  test('returns 200 for aircraft layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/aircraft').statusCode, 200);
+  });
+
+  test('returns 200 for vessels layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/vessels').statusCode, 200);
+  });
+
+  test('returns 200 for sensors layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/sensors').statusCode, 200);
+  });
+
+  test('returns 200 for weatherCells layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/weatherCells').statusCode, 200);
+  });
+
+  test('returns 200 for trafficSim layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/trafficSim').statusCode, 200);
+  });
+
+  test('trafficSim feed has count and entities', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/trafficSim'));
+    assert.ok('count' in body, 'must have count');
+    assert.ok('entities' in body, 'must have entities');
+    assert.equal(body.layer, 'trafficSim');
+  });
+
+  test('ts is a recent timestamp', () => {
+    const before = Date.now();
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    const after = Date.now();
+    assert.ok(body.ts >= before && body.ts <= after, 'ts must be between before and after');
+  });
+});

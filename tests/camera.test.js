@@ -1803,3 +1803,127 @@ describe('live entity continuous animation', function () {
     assert.ok(body.includes('activeLiveIds'), 'pruning must check activeLiveIds set');
   });
 });
+
+// ── Layer Feed Panel ──────────────────────────────────────────────────────────
+describe('layer feed panel', function () {
+  const fs  = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, '..', 'server.js'), 'utf8');
+
+  test('drawer-layer-feed panel exists in HTML', function () {
+    assert.ok(src.includes('id="drawer-layer-feed"'), 'drawer-layer-feed must exist in HTML');
+  });
+
+  test('drawer-layer-feed has lf-title, lf-count, lf-events, lf-entities elements', function () {
+    const drawerIdx = src.indexOf('id="drawer-layer-feed"');
+    assert.ok(drawerIdx !== -1, 'drawer-layer-feed must exist');
+    const block = src.slice(drawerIdx, drawerIdx + 1200);
+    assert.ok(block.includes('id="lf-title"'),    'lf-title must be present in layer feed panel');
+    assert.ok(block.includes('id="lf-count"'),    'lf-count must be present in layer feed panel');
+    assert.ok(block.includes('id="lf-events"'),   'lf-events must be present in layer feed panel');
+    assert.ok(block.includes('id="lf-entities"'), 'lf-entities must be present in layer feed panel');
+  });
+
+  test('openLayerFeed function is defined', function () {
+    assert.ok(src.includes('function openLayerFeed'), 'openLayerFeed must be defined');
+  });
+
+  test('openLayerFeed sets activeLayerFeed and opens drawer', function () {
+    const fnIdx = src.indexOf('function openLayerFeed');
+    assert.ok(fnIdx !== -1, 'openLayerFeed must exist');
+    const body = src.slice(fnIdx, fnIdx + 600);
+    assert.ok(body.includes('activeLayerFeed'), 'openLayerFeed must set activeLayerFeed');
+    assert.ok(body.includes('drawer-layer-feed'), 'openLayerFeed must reference drawer-layer-feed');
+  });
+
+  test('closeLayerFeed function is defined', function () {
+    assert.ok(src.includes('function closeLayerFeed'), 'closeLayerFeed must be defined');
+  });
+
+  test('closeLayerFeed nulls out activeLayerFeed', function () {
+    const fnIdx = src.indexOf('function closeLayerFeed');
+    assert.ok(fnIdx !== -1, 'closeLayerFeed must exist');
+    const body = src.slice(fnIdx, fnIdx + 300);
+    assert.ok(body.includes('activeLayerFeed'), 'closeLayerFeed must reset activeLayerFeed');
+  });
+
+  test('renderLayerFeedPanel function is defined', function () {
+    assert.ok(src.includes('function renderLayerFeedPanel'), 'renderLayerFeedPanel must be defined');
+  });
+
+  test('renderLayerFeedPanel populates lf-count element', function () {
+    const fnIdx = src.indexOf('function renderLayerFeedPanel');
+    assert.ok(fnIdx !== -1, 'renderLayerFeedPanel must exist');
+    const body = src.slice(fnIdx, fnIdx + 2000);
+    assert.ok(body.includes('lf-count'), 'renderLayerFeedPanel must update lf-count');
+  });
+
+  test('renderLayerFeedPanel populates lf-events element', function () {
+    const fnIdx = src.indexOf('function renderLayerFeedPanel');
+    const body = src.slice(fnIdx, fnIdx + 4000);
+    assert.ok(body.includes('lf-events'), 'renderLayerFeedPanel must update lf-events');
+  });
+
+  test('renderLayerFeedPanel populates lf-entities element', function () {
+    const fnIdx = src.indexOf('function renderLayerFeedPanel');
+    const body = src.slice(fnIdx, fnIdx + 4000);
+    assert.ok(body.includes('lf-entities'), 'renderLayerFeedPanel must update lf-entities');
+  });
+
+  test('updateLayerFeedPanel function is defined', function () {
+    assert.ok(src.includes('function updateLayerFeedPanel'), 'updateLayerFeedPanel must be defined');
+  });
+
+  test('updateLayerFeedPanel calls renderLayerFeedPanel', function () {
+    const fnIdx = src.indexOf('function updateLayerFeedPanel');
+    assert.ok(fnIdx !== -1, 'updateLayerFeedPanel must exist');
+    const body = src.slice(fnIdx, fnIdx + 200);
+    assert.ok(body.includes('renderLayerFeedPanel'), 'updateLayerFeedPanel must call renderLayerFeedPanel');
+  });
+
+  test('applySnapshot calls updateLayerFeedPanel', function () {
+    const fnIdx = src.indexOf('function applySnapshot');
+    assert.ok(fnIdx !== -1, 'applySnapshot must exist');
+    const body = src.slice(fnIdx, fnIdx + 3000);
+    assert.ok(body.includes('updateLayerFeedPanel'), 'applySnapshot must call updateLayerFeedPanel');
+  });
+
+  test('activeLayerFeed state variable is declared', function () {
+    assert.ok(src.includes('activeLayerFeed'), 'activeLayerFeed state variable must be declared');
+  });
+
+  test('LAYER_FEED_LABELS maps all live entity layer keys', function () {
+    const labelsIdx = src.indexOf('LAYER_FEED_LABELS');
+    assert.ok(labelsIdx !== -1, 'LAYER_FEED_LABELS must be defined');
+    const block = src.slice(labelsIdx, labelsIdx + 400);
+    for (const key of ['vehicles', 'aircraft', 'vessels', 'sensors', 'weatherCells', 'trafficSim']) {
+      assert.ok(block.includes(key), 'LAYER_FEED_LABELS must include: ' + key);
+    }
+  });
+
+  test('makeLayerToggle calls openLayerFeed when layer is turned on', function () {
+    const fnIdx = src.indexOf('function makeLayerToggle');
+    assert.ok(fnIdx !== -1, 'makeLayerToggle must exist');
+    const body = src.slice(fnIdx, fnIdx + 600);
+    assert.ok(body.includes('openLayerFeed'), 'makeLayerToggle must call openLayerFeed when layer is enabled');
+  });
+
+  test('makeLayerToggle calls closeLayerFeed when layer is turned off', function () {
+    const fnIdx = src.indexOf('function makeLayerToggle');
+    const body = src.slice(fnIdx, fnIdx + 600);
+    assert.ok(body.includes('closeLayerFeed'), 'makeLayerToggle must call closeLayerFeed when layer is disabled');
+  });
+
+  test('lf-pulse-indicator element exists for live activity indication', function () {
+    assert.ok(src.includes('id="lf-pulse-indicator"'), 'lf-pulse-indicator must exist');
+  });
+
+  test('lf-region element shows regional activity count', function () {
+    const fnIdx = src.indexOf('function renderLayerFeedPanel');
+    const body = src.slice(fnIdx, fnIdx + 2000);
+    assert.ok(body.includes('lf-region'), 'renderLayerFeedPanel must update lf-region with regional activity');
+  });
+
+  test('layer feed close button has id lf-close-btn', function () {
+    assert.ok(src.includes('id="lf-close-btn"'), 'lf-close-btn must exist in HTML');
+  });
+});
