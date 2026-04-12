@@ -140,7 +140,183 @@ const fileCredentials = {
   credentialType: '', // 'username_password' | 'client_credentials'
 };
 
-// ─── Frontend HTML (inline) ───────────────────────────────────────────────────
+// ─── EntityStream + FeedBroker ────────────────────────────────────────────────
+//
+// EntityStream is the single source of truth for ALL live entities.
+// Every feed source writes into it; snapshot() reads from it.
+// Priority determines which source wins when multiple sources emit the same ID
+// (e.g. an OpenSky live fetch and an OpenSky file entry for the same ICAO24).
+//
+// Source priority:
+//   opensky-live 100 > opensky-file 80 > sim-agents 70 > sim-aircraft 60
+//   sim-vehicles/vessels/weather/sensors 50 > traffic-incidents 30
+//
+const FEED_PRIORITY = {
+  'opensky-live':      100,
+  'opensky-file':       80,
+  'sim-agents':         70,
+  'sim-aircraft':       60,
+  'sim-vehicles':       50,
+  'sim-vessels':        50,
+  'sim-weather':        50,
+  'sim-sensors':        50,
+  'traffic-incidents':  30,
+};
+
+const entityStream = (function () {
+  const _map = new Map();      // id → { entity, priority, _ts }
+  const MAX_AGE_MS = 300000;   // 5 min — generous; feeds refresh at ≤20s
+
+  return {
+    put(entity, sourceId) {
+      if (!entity || !entity.id) return;
+      const priority = FEED_PRIORITY[sourceId] || 0;
+      const existing = _map.get(entity.id);
+      // Higher-priority source always owns the slot; equal priority = freshest wins
+      if (existing && existing.priority > priority) return;
+      _map.set(entity.id, { entity, priority, _ts: Date.now() });
+    },
+
+    get(id) {
+      const e = _map.get(id);
+      return e ? e.entity : undefined;
+    },
+
+    values() {
+      const out = [];
+      for (const { entity } of _map.values()) out.push(entity);
+      return out;
+    },
+
+    // Return a plain object { id → entity } for a single type
+    byType(type) {
+      const out = {};
+      for (const [id, { entity }] of _map) {
+        if (entity.type === type) out[id] = entity;
+      }
+      return out;
+    },
+
+    // Return a plain object { id → entity } for all types
+    asMap() {
+      const out = {};
+      for (const [id, { entity }] of _map) out[id] = entity;
+      return out;
+    },
+
+    // Remove entries not refreshed within MAX_AGE_MS (sensors excluded — they are static)
+    evict() {
+      const cutoff = Date.now() - MAX_AGE_MS;
+      for (const [id, entry] of _map) {
+        if (entry.entity.type !== 'sensor' && entry._ts < cutoff) _map.delete(id);
+      }
+    },
+
+    size() { return _map.size; },
+  };
+}());
+
+// FeedBroker: registry of named source adapters.
+// Each adapter exposes pull() → entity[].
+// flushAdapter(id) pushes its entities into EntityStream.
+const feedBroker = (function () {
+  const _adapters = new Map();
+
+  return {
+    register(id, adapter) {
+      _adapters.set(id, adapter);
+    },
+
+    flushAdapter(id) {
+      const adapter = _adapters.get(id);
+      if (!adapter) return 0;
+      let n = 0;
+      try {
+        for (const entity of adapter.pull()) {
+          entityStream.put(entity, id);
+          n++;
+        }
+      } catch (err) {
+        console.warn('[FeedBroker] adapter "' + id + '" error:', err.message);
+      }
+      return n;
+    },
+
+    flushAll() {
+      for (const id of _adapters.keys()) this.flushAdapter(id);
+    },
+
+    adapterIds() { return [..._adapters.keys()]; },
+  };
+}());
+
+// Called once at startup after all state objects are initialised.
+// Registers one adapter per entity source.
+function bootstrapFeedBroker() {
+  // Live OpenSky flights (highest priority for flight-* IDs)
+  feedBroker.register('opensky-live', {
+    pull() { return Object.values(openSkyLiveState.flights); },
+  });
+
+  // File-sourced OpenSky flights (fallback when live API is unavailable)
+  feedBroker.register('opensky-file', {
+    pull() { return Object.values(openSkyFileState.flights); },
+  });
+
+  // SIM agents and satellites (worldview.agents)
+  feedBroker.register('sim-agents', {
+    pull() { return Object.values(worldview.agents); },
+  });
+
+  // Simulated non-OpenSky aircraft (global corridor routes)
+  feedBroker.register('sim-aircraft', {
+    pull() { return Object.values(liveEntityState.aircraft); },
+  });
+
+  // Ground vehicles
+  feedBroker.register('sim-vehicles', {
+    pull() { return Object.values(liveEntityState.vehicles); },
+  });
+
+  // Maritime vessels
+  feedBroker.register('sim-vessels', {
+    pull() { return Object.values(liveEntityState.vessels); },
+  });
+
+  // Weather cells
+  feedBroker.register('sim-weather', {
+    pull() { return Object.values(liveEntityState.weather); },
+  });
+
+  // Sensor nodes (static — seeded once, never evicted)
+  feedBroker.register('sim-sensors', {
+    pull() { return Object.values(liveEntityState.sensors); },
+  });
+
+  // Traffic incidents as navigable point entities
+  feedBroker.register('traffic-incidents', {
+    pull() {
+      return trafficState.incidents.map(inc => ({
+        id: 'traffic-' + inc.id,
+        type: 'other',
+        subtype: inc.type || 'incident',
+        label: (inc.desc ? inc.desc.slice(0, 32) : inc.id),
+        lat: inc.lat,
+        lng: inc.lng,
+        altitude: 0,
+        source: inc.source || 'sim',
+        confidence: inc.confidence || 0.85,
+        ts: inc.ts || Date.now(),
+        active: true,
+        state: 'incident',
+      }));
+    },
+  });
+
+  console.log('[FeedBroker] registered adapters:', feedBroker.adapterIds().join(', '));
+}
+
+
 const FRONTEND_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6104,59 +6280,133 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     buildNodes();
 
     // ── Server-state sync ────────────────────────────────────────────────────
+    // Deterministic mock globe position for a node index (used when no live entity is bound)
+    function mockPosForIdx(idx) {
+      // Fibonacci lattice across globe surface — always visible, never overlapping
+      const phi = 2.3999632 /* 2π / PHI²  ≈ golden angle rad */;
+      const lat = Math.asin(2 * (idx + 0.5) / 60 - 1) * (180 / Math.PI);
+      const lng = ((idx * phi * 180 / Math.PI) % 360) - 180;
+      return { lat, lng };
+    }
+
     function syncFromServerState() {
       if (!state) return;
-      const workers    = Array.isArray(state.workers) ? state.workers : [];
-      const tasks      = Array.isArray(state.tasks)   ? state.tasks   : [];
-      const plannerSt  = state.planner || {};
+      const workers   = Array.isArray(state.workers) ? state.workers : [];
+      const tasks     = Array.isArray(state.tasks)   ? state.tasks   : [];
+      const plannerSt = state.planner || {};
+      const now       = Date.now();
 
-      // Map workers to ring nodes by role; maintain stable assignment by index
-      let workersByRole = {};
+      // All workers flat list for ring-4 binding (server roles ≠ overlay role labels)
+      const allWorkers = workers.slice();
+
+      // Workers by role for rings 2/3 (region_scout, flight_scout)
+      const workersByRole = {};
       for (const w of workers) {
         if (!workersByRole[w.role]) workersByRole[w.role] = [];
         workersByRole[w.role].push(w);
       }
 
-      // Track how many active tasks exist for high-load detection
-      const runningCount = tasks.filter(t => t.status === 'running').length;
-      const errorCount   = tasks.filter(t => t.status === 'failed' && (!t.completedAt || (Date.now() - new Date(t.completedAt).getTime()) < 8000)).length;
+      const runningCount  = tasks.filter(t => t.status === 'running').length;
+      const recentFailed  = new Set(
+        tasks
+          .filter(t => t.status === 'failed' && t.completedAt && (now - new Date(t.completedAt).getTime()) < 8000)
+          .map(t => t.assignedWorkerId)
+          .filter(Boolean)
+      );
+
+      // Live entities for ring-4 binding
+      const agentList = Object.values(state.agents || {});
+      const flights   = agentList.filter(a => a && a.type === 'flight');
+
+      // Snapshot previous states for observability diffs
+      const prevStates = {};
+      for (const n of orchNodes) prevStates[n.id] = n.state;
 
       let roleCounters = {};
+      let ring4Counter = 0;
+      let ring5Counter = 0;
+
       for (const node of orchNodes) {
+        // ── Core ──
         if (node.role === 'core') {
           node.state   = orchRunning ? (runningCount > 0 ? 'active' : 'idle') : 'idle';
           node.metrics = plannerSt.stats || null;
           continue;
         }
+
+        // ── Planner ──
         if (node.role === 'planner') {
-          node.state   = runningCount > 0 ? 'active' : 'idle';
-          node.taskId  = null;
+          node.state  = runningCount > 0 ? 'active' : 'idle';
+          node.taskId = null;
           continue;
         }
+
+        // ── Ring 5 (monitor): bind to recent tasks — shows task pipeline activity ──
+        if (node.ring === 5) {
+          const task = tasks[ring5Counter] || null;
+          ring5Counter++;
+          if (!task) { node.state = 'idle'; node.workerId = null; node.metrics = null; node.taskId = null; continue; }
+          node.taskId   = task.id;
+          node.workerId = task.assignedWorkerId || null;
+          const ageFail = task.status === 'failed' && task.completedAt && (now - new Date(task.completedAt).getTime()) < 8000;
+          node.state = task.status === 'running' ? 'active' : ageFail ? 'error' : 'idle';
+          continue;
+        }
+
+        // ── Ring 4 (workers): bind ALL server workers by index across 8 nodes ──
+        if (node.ring === 4) {
+          const worker = allWorkers[ring4Counter] || null;
+          ring4Counter++;
+          if (!worker) {
+            node.state = 'idle'; node.workerId = null; node.metrics = null;
+            // Still assign a deterministic mock globe point so links draw
+            node.entityId  = null;
+            node._mockPos  = mockPosForIdx(node.idx);
+            continue;
+          }
+          node.workerId = worker.id;
+          node.metrics  = worker.metrics;
+          node.taskId   = worker.currentTaskId;
+          node.state    = recentFailed.has(worker.id) ? 'error'
+            : worker.status === 'busy' ? ((worker.metrics && worker.metrics.completed > 5) ? 'high-load' : 'active')
+            : 'idle';
+
+          // Bind real flight/agent or fall back to mock position
+          const bound = flights[node.idx] || agentList[node.idx] || null;
+          if (bound) {
+            node.entityId = bound.id;
+            node._mockPos = null;
+          } else {
+            node.entityId = null;
+            node._mockPos = mockPosForIdx(node.idx);
+          }
+          continue;
+        }
+
+        // ── Rings 2/3: matched by declared role (region_scout, flight_scout) ──
         const rolePool = workersByRole[node.role] || [];
-        const roleIdx  = roleCounters[node.role] = (roleCounters[node.role] || 0);
+        const roleIdx  = (roleCounters[node.role] = (roleCounters[node.role] || 0));
         const worker   = rolePool[roleIdx] || null;
         roleCounters[node.role]++;
-
         if (!worker) { node.state = 'idle'; node.workerId = null; node.metrics = null; continue; }
         node.workerId = worker.id;
         node.metrics  = worker.metrics;
         node.taskId   = worker.currentTaskId;
-        const failed  = errorCount > 0 && worker.metrics && worker.metrics.failed > 0;
-        node.state    = failed ? 'error'
-          : worker.status === 'busy' ? (worker.metrics && worker.metrics.completed > 5 ? 'high-load' : 'active')
+        node.state    = recentFailed.has(worker.id) ? 'error'
+          : worker.status === 'busy' ? ((worker.metrics && worker.metrics.completed > 5) ? 'high-load' : 'active')
           : 'idle';
-
-        // Ring 4 (worker, 8 nodes): bind to a real globe entity
-        if (node.ring === 4) {
-          const agents = Object.values(state.agents || {});
-          const flights = agents.filter(a => a && a.type === 'flight');
-          const bound   = flights[node.idx] || agents[node.idx] || null;
-          node.entityId = bound ? bound.id : null;
-        }
       }
 
-      // Spawn pulses from active assignments
+      // ── Observability: log state transitions (one line each, not spammy) ──
+      for (const node of orchNodes) {
+        const prev = prevStates[node.id];
+        if (prev === node.state) continue;
+        if (node.state === 'active')    console.log('[orch] activated:', node.label, '(worker:', (node.workerId || node.taskId || '—') + ')');
+        else if (node.state === 'error') console.warn('[orch] error state:', node.label);
+        else if (node.state === 'idle' && prev === 'active') console.log('[orch] idle:', node.label);
+      }
+
+      // ── Spawn pulses from active / error nodes ──
       if (orchPulsesOn && orchRunning && orchPulses.length < MAX_PULSES) {
         for (const node of orchNodes) {
           if (node.state === 'active' && Math.random() < 0.25) {
@@ -6167,7 +6417,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         }
       }
 
-      // Update status pill
+      // ── Status pill ──
       if (orchPillEl) {
         const activeN = orchNodes.filter(n => n.state === 'active').length;
         const errN    = orchNodes.filter(n => n.state === 'error').length;
@@ -6216,35 +6466,66 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     // ── Inspector ────────────────────────────────────────────────────────────
     function openInspector(node) {
       orchSelId = node.id;
-      const stSt  = node.state || 'idle';
-      const m     = node.metrics || {};
+      const stSt   = node.state || 'idle';
+      const m      = node.metrics || {};
       const taskId = node.taskId ? node.taskId.slice(-8) : '—';
-      const entity = node.entityId ? (state.agents && state.agents[node.entityId]) : null;
+      const badge  = '<span class="oi-badge ' + stSt + '">' + stSt.toUpperCase() + '</span>';
 
-      const badge = '<span class="oi-badge ' + stSt + '">' + stSt.toUpperCase() + '</span>';
-      const metricsHtml = node.metrics ? '<div class="oi-metrics">'
+      // Look up bound entity; for ring-4 also check mock pos
+      const entity = node.entityId ? (state && state.agents && state.agents[node.entityId]) : null;
+      const hasMock = !entity && node._mockPos;
+
+      // ── ring 5: show task pipeline info ──
+      let taskInfoHtml = '';
+      if (node.ring === 5 && node.taskId) {
+        const taskObj = state && Array.isArray(state.tasks)
+          ? state.tasks.find(t => t.id === node.taskId) : null;
+        if (taskObj) {
+          taskInfoHtml = '<div class="oi-section"><div class="oi-section-title">Task</div>'
+            + '<div class="oi-field"><span class="oi-field-label">Type</span><span class="oi-field-value">' + (taskObj.type || '—') + '</span></div>'
+            + '<div class="oi-field"><span class="oi-field-label">Region</span><span class="oi-field-value">' + (taskObj.regionId || '—') + '</span></div>'
+            + '<div class="oi-field"><span class="oi-field-label">Status</span><span class="oi-field-value">' + (taskObj.status || '—') + '</span></div>'
+            + '<div class="oi-field"><span class="oi-field-label">Priority</span><span class="oi-field-value">' + (taskObj.priority != null ? taskObj.priority : '—') + '</span></div>'
+            + '</div>';
+        }
+      }
+
+      // ── worker metrics (rings 2-4) ──
+      const metricsHtml = node.metrics && node.ring < 5 ? '<div class="oi-metrics">'
         + '<div class="oi-metric"><div class="oi-metric-val">' + (m.completed || 0) + '</div><div class="oi-metric-key">Completed</div></div>'
         + '<div class="oi-metric"><div class="oi-metric-val">' + (m.failed || 0) + '</div><div class="oi-metric-key">Failed</div></div>'
         + '<div class="oi-metric"><div class="oi-metric-val">' + (m.avgScore ? m.avgScore.toFixed(2) : '—') + '</div><div class="oi-metric-key">Avg Score</div></div>'
-        + '<div class="oi-metric"><div class="oi-metric-val">' + (m.avgLatencyMs ? Math.round(m.avgLatencyMs) + 'ms' : '—') + '</div><div class="oi-metric-key">Avg Latency</div></div>'
-        + '</div>' : '';
-      const entityHtml = entity ? '<div class="oi-section"><div class="oi-section-title">Bound Entity</div>'
-        + '<div class="oi-field"><span class="oi-field-label">ID</span><span class="oi-field-value">' + (entity.id || '—') + '</span></div>'
-        + '<div class="oi-field"><span class="oi-field-label">Type</span><span class="oi-field-value">' + (entity.type || '—') + '</span></div>'
-        + '<div class="oi-field"><span class="oi-field-label">Position</span><span class="oi-field-value">' + (entity.lat != null ? entity.lat.toFixed(2) + ', ' + entity.lng.toFixed(2) : '—') + '</span></div>'
+        + '<div class="oi-metric"><div class="oi-metric-val">' + (m.avgLatencyMs ? Math.round(m.avgLatencyMs) + 'ms' : '—') + '</div><div class="oi-metric-key">Latency</div></div>'
         + '</div>' : '';
 
-      orchBodyEl.innerHTML = '<div class="oi-field"><span class="oi-field-label">Node</span><span class="oi-field-value">' + node.label + '</span></div>'
+      // ── bound entity section (real or mock) ──
+      const entityHtml = entity
+        ? '<div class="oi-section"><div class="oi-section-title">Bound Entity</div>'
+          + '<div class="oi-field"><span class="oi-field-label">ID</span><span class="oi-field-value">' + entity.id + '</span></div>'
+          + '<div class="oi-field"><span class="oi-field-label">Type</span><span class="oi-field-value">' + (entity.type || '—') + '</span></div>'
+          + '<div class="oi-field"><span class="oi-field-label">Source</span><span class="oi-field-value">' + (entity.source || '—') + '</span></div>'
+          + '<div class="oi-field"><span class="oi-field-label">Pos</span><span class="oi-field-value">' + entity.lat.toFixed(2) + ', ' + entity.lng.toFixed(2) + '</span></div>'
+          + (Number.isFinite(entity.altitude) ? '<div class="oi-field"><span class="oi-field-label">Alt</span><span class="oi-field-value">' + Math.round(entity.altitude) + 'm</span></div>' : '')
+          + '</div>'
+        : hasMock
+          ? '<div class="oi-section"><div class="oi-section-title">Mock Position</div>'
+            + '<div class="oi-field"><span class="oi-field-label">Pos</span><span class="oi-field-value">' + node._mockPos.lat.toFixed(2) + ', ' + node._mockPos.lng.toFixed(2) + '</span></div>'
+            + '<div class="oi-field" style="opacity:.5;font-size:.6rem">No live entity — deterministic placeholder</div>'
+            + '</div>'
+          : '';
+
+      orchBodyEl.innerHTML =
+          '<div class="oi-field"><span class="oi-field-label">Node</span><span class="oi-field-value">' + node.label + '</span></div>'
         + '<div class="oi-field" style="margin-top:4px">' + badge + '</div>'
         + '<div class="oi-field"><span class="oi-field-label">Role</span><span class="oi-field-value">' + node.role + '</span></div>'
         + '<div class="oi-field"><span class="oi-field-label">Ring</span><span class="oi-field-value">' + node.ring + '</span></div>'
-        + '<div class="oi-field"><span class="oi-field-label">Worker ID</span><span class="oi-field-value">' + (node.workerId ? node.workerId.slice(-12) : '—') + '</span></div>'
-        + '<div class="oi-field"><span class="oi-field-label">Active Task</span><span class="oi-field-value">' + taskId + '</span></div>'
-        + (metricsHtml ? '<div class="oi-section"><div class="oi-section-title">Metrics</div>' + metricsHtml + '</div>' : '')
+        + (node.workerId ? '<div class="oi-field"><span class="oi-field-label">Worker</span><span class="oi-field-value">' + node.workerId.slice(-12) + '</span></div>' : '')
+        + (node.taskId   ? '<div class="oi-field"><span class="oi-field-label">Task</span><span class="oi-field-value">…' + taskId + '</span></div>' : '')
+        + (metricsHtml   ? '<div class="oi-section"><div class="oi-section-title">Metrics</div>' + metricsHtml + '</div>' : '')
+        + taskInfoHtml
         + entityHtml;
 
       orchInspEl.classList.add('open');
-      // Shift left if right drawer is open
       const drawerRight = document.getElementById('drawer-right');
       orchInspEl.classList.toggle('shift-left', drawerRight && drawerRight.classList.contains('open'));
     }
@@ -6333,35 +6614,48 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       orchCtx.restore();
 
       // ── Draw globe-entity links for ring-4 workers ──
+      // Supports real entity bindings (node.entityId) and deterministic mock
+      // positions (node._mockPos) for workers without a live entity.
       if (orchLinksOn && typeof cesiumViewer !== 'undefined' && cesiumViewer) {
         const rect = globeShell.getBoundingClientRect();
         for (const node of orchNodes) {
-          if (node.ring !== 4 || !node.entityId) continue;
-          const entity = state && state.agents && state.agents[node.entityId];
-          if (!entity || !Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) continue;
+          if (node.ring !== 4) continue;
+          let lat = null, lng = null, alt = 10000, isMock = false;
+
+          if (node.entityId) {
+            const entity = state && state.agents && state.agents[node.entityId];
+            if (entity && Number.isFinite(entity.lat) && Number.isFinite(entity.lng)) {
+              lat = entity.lat; lng = entity.lng;
+              alt = Number.isFinite(entity.altitude) ? Math.max(500, entity.altitude) : 1000;
+            }
+          } else if (node._mockPos) {
+            lat = node._mockPos.lat; lng = node._mockPos.lng;
+            isMock = true;
+          }
+
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
           try {
-            const alt = Number.isFinite(entity.altitude) ? Math.max(500, entity.altitude) : 1000;
-            const cart3 = Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, alt);
+            const cart3 = Cesium.Cartesian3.fromDegrees(lng, lat, alt);
             const sp = Cesium.SceneTransforms.worldToWindowCoordinates(cesiumViewer.scene, cart3);
             if (!sp) continue;
-            // Cesium returns window-relative coords; subtract globeShell offset
             const sx = sp.x - rect.left;
             const sy = sp.y - rect.top;
             const ss = node.state;
             orchCtx.save();
-            orchCtx.globalAlpha = ss === 'idle' ? 0.18 : 0.55;
+            orchCtx.globalAlpha = isMock ? 0.12 : (ss === 'idle' ? 0.22 : 0.55);
             orchCtx.beginPath();
-            orchCtx.setLineDash([3, 7]);
+            orchCtx.setLineDash(isMock ? [2, 10] : [3, 7]);
             orchCtx.moveTo(node.cx, node.cy);
             orchCtx.lineTo(sx, sy);
-            orchCtx.strokeStyle = ss === 'error' ? '#e05050' : ss === 'active' ? '#3ec9b8' : '#2a5060';
+            orchCtx.strokeStyle = ss === 'error' ? '#e05050' : ss === 'active' ? '#3ec9b8' : (isMock ? '#1e3040' : '#2a5060');
             orchCtx.lineWidth   = ss === 'high-load' ? 2 : 1;
             orchCtx.stroke();
             orchCtx.setLineDash([]);
-            // Small dot at globe position
+            // Anchor dot at globe position
             orchCtx.beginPath();
-            orchCtx.arc(sx, sy, 3, 0, Math.PI * 2);
-            orchCtx.fillStyle = ss === 'error' ? '#e05050' : '#3ec9b8';
+            orchCtx.arc(sx, sy, isMock ? 2 : 3, 0, Math.PI * 2);
+            orchCtx.fillStyle = isMock ? '#1e3850' : (ss === 'error' ? '#e05050' : '#3ec9b8');
             orchCtx.fill();
             orchCtx.restore();
           } catch (_) { /* Cesium projection can fail during camera move */ }
@@ -6659,11 +6953,12 @@ function emit(kind, msg, patch, entityType) {
 }
 
 function snapshot() {
-  const mergedAgents = {
-    ...worldview.agents,
-    ...openSkyFileState.flights,   // file-sourced flights (live API wins on icao collision)
-    ...openSkyLiveState.flights,
-  };
+  // EntityStream is the canonical, priority-resolved view of all live entities.
+  // It is flushed by feedBroker.flushAll() on every sim tick and by each source
+  // adapter immediately after it updates its own state bucket.
+  const mergedAgents = entityStream.size() > 0
+    ? entityStream.asMap()
+    : { ...worldview.agents, ...openSkyFileState.flights, ...openSkyLiveState.flights }; // cold-start fallback
 
   // Annotate agents with current task status where a worker is assigned
   for (const worker of workerRuntime.values()) {
@@ -7433,6 +7728,7 @@ async function pollOpenSkyFlights() {
     }
 
     openSkyLiveState.flights = nextFlights;
+    feedBroker.flushAdapter('opensky-live');  // push fresh flights into EntityStream
     openSkyLiveState.lastPollAt = new Date().toISOString();
     openSkyLiveState.lastErrorAt = null;
     openSkyLiveState.lastErrorMessage = null;
@@ -7637,6 +7933,7 @@ function loadOpenSkyFile() {
   }
 
   openSkyFileState.flights = nextFlights;
+  feedBroker.flushAdapter('opensky-file');  // push into EntityStream
   openSkyFileState.lastLoadAt = new Date().toISOString();
   openSkyFileState.lastErrorAt = null;
 
@@ -7831,6 +8128,14 @@ function simulationLoop() {
   // Refresh live entity layers and traffic layer at their own cadence
   refreshLiveEntityLayers();
   refreshTrafficLayer();
+
+  // Flush all feed adapters into EntityStream so snapshot() has a unified view.
+  // This runs every 800ms — cheap because adapters just iterate in-memory maps.
+  feedBroker.flushAll();
+
+  // Periodically evict stale EntityStream entries (every ~40s at 800ms/tick)
+  if (worldview.tick % 50 === 0) entityStream.evict();
+
   recordTimelineSnapshot();
 
   // broadcast full snapshot every 5 ticks, delta otherwise
@@ -7921,12 +8226,23 @@ function findIdleWorker(role) {
   return null;
 }
 
-// Deterministic worker execution — uses current world state as context
+// Deterministic worker execution — reads from EntityStream (all live entities).
+// Falls back to legacy OpenSky buckets in test environments where the stream
+// is not yet seeded (entityStream.size() === 0).
 function runWorkerTask(worker, task) {
-  const allFlights = { ...openSkyFileState.flights, ...openSkyLiveState.flights };
+  const streamSize = entityStream.size();
+  const allFlights = streamSize > 0
+    ? { ...entityStream.byType('flight'), ...entityStream.byType('aircraft') }
+    : { ...openSkyFileState.flights, ...openSkyLiveState.flights };
   const region = worldview.regions[task.regionId] || null;
   const regionName = region ? region.name : (task.regionId || 'global');
-  const flightsInRegion = Object.values(allFlights).filter(f => f.region === task.regionId);
+  // Count any mobile entity in region, not just flights
+  const allEntitiesInRegion = streamSize > 0
+    ? entityStream.values().filter(e => e.region === task.regionId)
+    : Object.values(allFlights).filter(f => f.region === task.regionId);
+  const flightsInRegion = allEntitiesInRegion.filter(
+    e => e.type === 'flight' || e.type === 'aircraft'
+  );
   const anomalies = openSkyFileState.anomalies || [];
 
   let output = {};
@@ -8167,9 +8483,14 @@ function hasActiveVerifyForEntity(entityId) {
 }
 
 function createTasksFromWorldState() {
-  const allFlights = { ...openSkyFileState.flights, ...openSkyLiveState.flights };
+  // EntityStream gives a unified view of all flight/aircraft entities; fall back
+  // to legacy buckets when stream is empty (e.g. test environment at cold start).
+  const streamSize = entityStream.size();
+  const allFlights = streamSize > 0
+    ? { ...entityStream.byType('flight'), ...entityStream.byType('aircraft') }
+    : { ...openSkyFileState.flights, ...openSkyLiveState.flights };
 
-  // 1. verify_event when a flight is present in a region
+  // 1. verify_event when a flight/aircraft is present in a region
   for (const flight of Object.values(allFlights)) {
     if (flight.region && !hasActiveVerifyForEntity(flight.id)) {
       createTask('verify_event', flight.region, {
@@ -8646,6 +8967,10 @@ server.on('upgrade', (req, socket, head) => {
 initWorld();
 bootstrapWorkers();
 seedSensorNodes();
+bootstrapFeedBroker();
+// Pre-populate EntityStream so the first snapshot() has a full entity view
+// before any live poll completes.
+feedBroker.flushAll();
 
 if (require.main === module) {
   setInterval(simulationLoop, 800);
@@ -8718,4 +9043,9 @@ module.exports = {
   refreshTrafficLayer,
   recordTimelineSnapshot,
   seedSensorNodes,
+  // ── Feed broker / entity stream exports ────────────────────────────────────
+  entityStream,
+  feedBroker,
+  bootstrapFeedBroker,
+  FEED_PRIORITY,
 };
