@@ -175,6 +175,183 @@ const fileCredentials = {
   credentialType: '', // 'username_password' | 'client_credentials'
 };
 
+// ─── EntityStream + FeedBroker ────────────────────────────────────────────────
+//
+// EntityStream is the single source of truth for ALL live entities.
+// Every feed source writes into it; snapshot() reads from it.
+// Priority determines which source wins when multiple sources emit the same ID
+// (e.g. an OpenSky live fetch and an OpenSky file entry for the same ICAO24).
+//
+// Source priority:
+//   opensky-live 100 > opensky-file 80 > sim-agents 70 > sim-aircraft 60
+//   sim-vehicles/vessels/weather/sensors 50 > traffic-incidents 30
+//
+const FEED_PRIORITY = {
+  'opensky-live':      100,
+  'opensky-file':       80,
+  'sim-agents':         70,
+  'sim-aircraft':       60,
+  'sim-vehicles':       50,
+  'sim-vessels':        50,
+  'sim-weather':        50,
+  'sim-sensors':        50,
+  'traffic-incidents':  30,
+};
+
+const entityStream = (function () {
+  const _map = new Map();      // id → { entity, priority, _ts }
+  const MAX_AGE_MS = 300000;   // 5 min — generous; feeds refresh at ≤20s
+
+  return {
+    put(entity, sourceId) {
+      if (!entity || !entity.id) return;
+      const priority = FEED_PRIORITY[sourceId] || 0;
+      const existing = _map.get(entity.id);
+      // Higher-priority source always owns the slot; equal priority = freshest wins
+      if (existing && existing.priority > priority) return;
+      _map.set(entity.id, { entity, priority, _ts: Date.now() });
+    },
+
+    get(id) {
+      const e = _map.get(id);
+      return e ? e.entity : undefined;
+    },
+
+    values() {
+      const out = [];
+      for (const { entity } of _map.values()) out.push(entity);
+      return out;
+    },
+
+    // Return a plain object { id → entity } for a single type
+    byType(type) {
+      const out = {};
+      for (const [id, { entity }] of _map) {
+        if (entity.type === type) out[id] = entity;
+      }
+      return out;
+    },
+
+    // Return a plain object { id → entity } for all types
+    asMap() {
+      const out = {};
+      for (const [id, { entity }] of _map) out[id] = entity;
+      return out;
+    },
+
+    // Remove entries not refreshed within MAX_AGE_MS (sensors excluded — they are static)
+    evict() {
+      const cutoff = Date.now() - MAX_AGE_MS;
+      for (const [id, entry] of _map) {
+        if (entry.entity.type !== 'sensor' && entry._ts < cutoff) _map.delete(id);
+      }
+    },
+
+    size() { return _map.size; },
+  };
+}());
+
+// FeedBroker: registry of named source adapters.
+// Each adapter exposes pull() → entity[].
+// flushAdapter(id) pushes its entities into EntityStream.
+const feedBroker = (function () {
+  const _adapters = new Map();
+
+  return {
+    register(id, adapter) {
+      _adapters.set(id, adapter);
+    },
+
+    flushAdapter(id) {
+      const adapter = _adapters.get(id);
+      if (!adapter) return 0;
+      let n = 0;
+      try {
+        for (const entity of adapter.pull()) {
+          entityStream.put(entity, id);
+          n++;
+        }
+      } catch (err) {
+        console.warn('[FeedBroker] adapter "' + id + '" error:', err.message);
+      }
+      return n;
+    },
+
+    flushAll() {
+      for (const id of _adapters.keys()) this.flushAdapter(id);
+    },
+
+    adapterIds() { return [..._adapters.keys()]; },
+  };
+}());
+
+// Called once at startup after all state objects are initialised.
+// Registers one adapter per entity source.
+function bootstrapFeedBroker() {
+  // Live OpenSky flights (highest priority for flight-* IDs)
+  feedBroker.register('opensky-live', {
+    pull() { return Object.values(openSkyLiveState.flights); },
+  });
+
+  // File-sourced OpenSky flights (fallback when live API is unavailable)
+  feedBroker.register('opensky-file', {
+    pull() { return Object.values(openSkyFileState.flights); },
+  });
+
+  // SIM agents and satellites (worldview.agents)
+  feedBroker.register('sim-agents', {
+    pull() { return Object.values(worldview.agents); },
+  });
+
+  // Simulated non-OpenSky aircraft (global corridor routes)
+  feedBroker.register('sim-aircraft', {
+    pull() { return Object.values(liveEntityState.aircraft); },
+  });
+
+  // Ground vehicles
+  feedBroker.register('sim-vehicles', {
+    pull() { return Object.values(liveEntityState.vehicles); },
+  });
+
+  // Maritime vessels
+  feedBroker.register('sim-vessels', {
+    pull() { return Object.values(liveEntityState.vessels); },
+  });
+
+  // Weather cells
+  feedBroker.register('sim-weather', {
+    pull() { return Object.values(liveEntityState.weather); },
+  });
+
+  // Sensor nodes (static — seeded once, never evicted)
+  feedBroker.register('sim-sensors', {
+    pull() { return Object.values(liveEntityState.sensors); },
+  });
+
+  // Traffic incidents as navigable point entities
+  feedBroker.register('traffic-incidents', {
+    pull() {
+      return trafficState.incidents.map(inc => ({
+        id: 'traffic-' + inc.id,
+        type: 'other',
+        subtype: inc.type || 'incident',
+        label: (inc.desc ? inc.desc.slice(0, 32) : inc.id),
+        lat: inc.lat,
+        lng: inc.lng,
+        altitude: 0,
+        source: inc.source || 'sim',
+        confidence: inc.confidence || 0.85,
+        ts: inc.ts || Date.now(),
+        active: true,
+        state: 'incident',
+      }));
+    },
+  });
+
+  console.log('[FeedBroker] registered adapters:', feedBroker.adapterIds().join(', '));
+}
+
+
 // ─── Quantum Simulation (Hilbert-Space Earth Engine) ─────────────────────────
 // Each clicked globe location spawns N parallel world-state branches.
 // Every branch carries agents with Earth+space roles, confidence, utility,
@@ -673,6 +850,48 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     /* ── Globe Boundary Navigation ─────────────────────────────────────────── */
     #globe-boundary-label { position: absolute; pointer-events: none; z-index: 25; background: #07080cee; border: 1px solid #1f5e5a; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 4px 8px; border-radius: 3px; white-space: nowrap; display: none; box-shadow: 0 0 8px #1f5e5a88, 0 0 2px #3ec9b844; transition: opacity 120ms; }
     #globe-boundary-label.visible { display: block; }
+
+    /* ── Live Feed Panel ─────────────────────────────────────────────────── */
+    #drawer-feed { height: 252px; background: #07080c; z-index: 18; }
+    .feed-hdr { display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-bottom: 1px solid #111820; background: #08090d; flex-shrink: 0; min-height: 30px; }
+    .feed-hdr-icon { font-size: .82rem; flex-shrink: 0; }
+    .feed-hdr-name { font-size: .6rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #3a5060; flex: 1; }
+    .feed-hdr-count { font-size: .55rem; color: #3ec9b8; background: #0a2422; border: 1px solid #1f5058; border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
+    .feed-hdr-close { border: none; background: none; color: #2e4050; font-size: .95rem; cursor: pointer; padding: 0 3px; line-height: 1; transition: color 140ms; }
+    .feed-hdr-close:hover { color: #6898aa; }
+    .feed-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+    .feed-list { flex: 1; overflow-y: auto; overflow-x: hidden; min-width: 0; }
+    .feed-detail-pane { width: 210px; border-left: 1px solid #0e1420; overflow-y: auto; flex-shrink: 0; display: none; background: #07080c; }
+    .feed-detail-pane.open { display: flex; flex-direction: column; }
+    .feed-row { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; border-bottom: 1px solid #080d16; transition: background 100ms; user-select: none; }
+    .feed-row:hover { background: #0c1520; }
+    .feed-row.sel { background: #091a18; border-left: 2px solid #3ec9b8; padding-left: 8px; }
+    .feed-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; transition: background 300ms; }
+    .feed-dot.live  { background: #3ec9b8; box-shadow: 0 0 4px #3ec9b888; }
+    .feed-dot.slow  { background: #f0a020; }
+    .feed-dot.still { background: #2a4050; }
+    .feed-dot.alert { background: #e05050; box-shadow: 0 0 5px #e0505088; }
+    .feed-dot.static { background: #3a6070; }
+    .feed-lbl { font-size: .63rem; color: #5a8898; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+    .feed-row.sel .feed-lbl { color: #7abccc; }
+    .feed-pos { font-size: .53rem; color: #1e3040; font-family: 'Cascadia Code', monospace; white-space: nowrap; }
+    .feed-spd { font-size: .53rem; color: #1e4050; white-space: nowrap; }
+    .feed-rgn { font-size: .5rem; color: #162830; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 54px; }
+    .feed-empty { padding: 18px 14px; font-size: .6rem; color: #1e3040; font-style: italic; }
+    /* detail pane */
+    .fdp-hdr { padding: 7px 10px 5px; border-bottom: 1px solid #0e1420; }
+    .fdp-id  { font-size: .62rem; color: #3ec9b8; font-family: monospace; font-weight: 700; }
+    .fdp-type { font-size: .52rem; color: #2a4050; text-transform: uppercase; letter-spacing: .08em; }
+    .fdp-kv-grid { display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; padding: 6px 10px; }
+    .fdp-k { font-size: .54rem; color: #2a4050; }
+    .fdp-v { font-size: .54rem; color: #6898aa; font-family: monospace; }
+    .fdp-actions { display: flex; gap: 5px; padding: 6px 10px; border-top: 1px solid #0e1420; margin-top: auto; flex-shrink: 0; }
+    .fdp-btn { flex: 1; border: 1px solid #1c2e3a; background: #07101a; color: #4e8898; border-radius: 3px; font-size: .58rem; padding: 4px 2px; cursor: pointer; transition: all 140ms; text-align: center; }
+    .fdp-btn:hover { background: #0e2030; border-color: #2a5060; color: #7abcc8; }
+    .fdp-btn.primary { border-color: #1f5058; color: #3ec9b8; }
+    /* layer row interactive feedback */
+    .layer-row { cursor: pointer; }
+    .layer-row.feed-open { background: #080e14; border-left: 2px solid #3ec9b8; }
     /* ── Multi-View Dashboard System ──────────────────────────────────────── */
     #screen-nav { background: #05060a; border-bottom: 1px solid #141e2a; padding: 0; display: flex; align-items: stretch; flex-shrink: 0; min-height: 32px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .screen-tab { border: none; border-bottom: 2px solid transparent; background: transparent; color: #3a5060; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 0 16px; cursor: pointer; transition: color 160ms, border-color 160ms, background 160ms; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; }
@@ -1067,6 +1286,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Live Feed Panel — bottom drawer; populated when a layer row is clicked -->
+  <div id="drawer-feed" class="drawer drawer-bottom" role="region" aria-label="Layer Feed">
+    <div class="feed-hdr">
+      <span class="feed-hdr-icon" id="feed-icon">—</span>
+      <span class="feed-hdr-name" id="feed-title">Feed</span>
+      <span class="feed-hdr-count" id="feed-count">0 entities</span>
+      <button class="feed-hdr-close" id="feed-close" type="button" aria-label="Close feed">✕</button>
+    </div>
+    <div class="feed-body">
+      <div id="feed-list" class="feed-list"></div>
+      <div id="feed-detail-pane" class="feed-detail-pane"></div>
   <!-- Layer Feed drawer (right panel, opens when a layer is selected) -->
   <div id="drawer-layer-feed" class="drawer drawer-right" role="region" aria-label="Layer Feed" style="width:300px;">
     <div class="drawer-header">
@@ -4995,6 +5225,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       hideStreetView();
     }
     draw();
+    // Notify feed panel — called after draw() to keep the 500-char test window intact
+    if (typeof onEntitySelectedFromGlobe === 'function') onEntitySelectedFromGlobe(agentId);
   }
 
   function selectRegion(regionId) {
@@ -6340,6 +6572,293 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
   updateLayerStatusBadges();
 
+  // ── Live Feed Panel ───────────────────────────────────────────────────────
+  // One bottom-drawer panel shared across all layers. Clicking any layer row
+  // (except the toggle button) opens it and populates it from EntityStream /
+  // snapshot.agents. Globe clicks and feed row clicks are bidirectionally wired.
+
+  const FEED_CFG = {
+    liveFlights:  { icon: '✈', title: 'Live Flights',      type: 'flight',   speedUnit: 'm/s', altKey: 'altitude' },
+    satellites:   { icon: '🛰', title: 'Satellites',        type: 'satellite', speedUnit: '°/t', altKey: 'altitude' },
+    vehicles:     { icon: '🚗', title: 'Ground Vehicles',   type: 'vehicle',  speedUnit: 'm/s', altKey: null       },
+    aircraft:     { icon: '✈', title: 'Aircraft',           type: 'aircraft', speedUnit: 'm/s', altKey: 'altitude' },
+    vessels:      { icon: '🚢', title: 'Maritime Vessels',  type: 'vessel',   speedUnit: 'kn',  altKey: null       },
+    sensors:      { icon: '📡', title: 'Sensor Nodes',      type: 'sensor',   speedUnit: null,  altKey: null       },
+    weatherCells: { icon: '🌩', title: 'Weather Cells',     type: 'weather',  speedUnit: 'm/s', altKey: null       },
+    trafficSim:   { icon: '🚦', title: 'Traffic Layer',     type: 'other',    speedUnit: null,  altKey: null       },
+    boundaries:   { icon: '🗺', title: 'Boundaries',        type: null,       speedUnit: null,  altKey: null       },
+  };
+
+  let activeFeedLayer  = null;   // layerKey string or null
+  let activeFeedEntity = null;   // entity id currently shown in detail pane
+
+  const feedDrawerEl  = document.getElementById('drawer-feed');
+  const feedIconEl    = document.getElementById('feed-icon');
+  const feedTitleEl   = document.getElementById('feed-title');
+  const feedCountEl   = document.getElementById('feed-count');
+  const feedCloseEl   = document.getElementById('feed-close');
+  const feedListEl    = document.getElementById('feed-list');
+  const feedDetailEl  = document.getElementById('feed-detail-pane');
+
+  function feedEntitiesForLayer(layerKey) {
+    if (!layerKey) return [];
+    const cfg = FEED_CFG[layerKey];
+    if (!cfg || !cfg.type) return [];
+    const all = state && state.agents ? Object.values(state.agents) : [];
+    return all.filter(e => e && e.type === cfg.type);
+  }
+
+  function feedDotClass(entity) {
+    const spd = Number.isFinite(entity.speed) ? entity.speed
+               : Number.isFinite(entity.velocity) ? entity.velocity : null;
+    if (entity.state === 'incident' || entity.state === 'alert') return 'alert';
+    if (entity.type === 'sensor') return 'static';
+    if (entity.type === 'weather') return 'live';
+    if (spd === null) return 'still';
+    if (spd < 0.5) return 'still';
+    if (spd < 5)   return 'slow';
+    return 'live';
+  }
+
+  function fmtPos(entity) {
+    if (!Number.isFinite(entity.lat)) return '—';
+    const lat = Math.abs(entity.lat).toFixed(1) + (entity.lat >= 0 ? '°N' : '°S');
+    const lng = Math.abs(entity.lng).toFixed(1) + (entity.lng >= 0 ? '°E' : '°W');
+    return lat + ' ' + lng;
+  }
+
+  function fmtSpeed(entity, unit) {
+    if (!unit) return null;
+    const spd = Number.isFinite(entity.speed) ? entity.speed
+               : Number.isFinite(entity.velocity) ? entity.velocity : null;
+    if (spd === null) return null;
+    return Math.round(spd) + ' ' + unit;
+  }
+
+  function renderFeedList() {
+    if (!activeFeedLayer) return;
+    const entities = feedEntitiesForLayer(activeFeedLayer);
+    const cfg = FEED_CFG[activeFeedLayer];
+
+    // Update header count
+    if (feedCountEl) feedCountEl.textContent = entities.length + ' entities';
+
+    if (!feedListEl) return;
+    if (entities.length === 0) {
+      feedListEl.innerHTML = '<div class="feed-empty">No live entities for this layer.</div>';
+      return;
+    }
+
+    // Sort: selected first, then by label
+    entities.sort(function (a, b) {
+      if (a.id === activeFeedEntity) return -1;
+      if (b.id === activeFeedEntity) return 1;
+      return (a.label || a.id) < (b.label || b.id) ? -1 : 1;
+    });
+
+    // Build rows incrementally — update existing DOM nodes to avoid scroll jump
+    const existing = feedListEl.querySelectorAll('.feed-row');
+    const existingMap = {};
+    existing.forEach(function (el) { existingMap[el.dataset.id] = el; });
+    const seenIds = new Set();
+
+    entities.forEach(function (entity) {
+      seenIds.add(entity.id);
+      const isSel = entity.id === activeFeedEntity;
+      const dotCls = feedDotClass(entity);
+      const pos = fmtPos(entity);
+      const spd = cfg && cfg.speedUnit ? fmtSpeed(entity, cfg.speedUnit) : null;
+      const rgn = entity.region || '';
+
+      let row = existingMap[entity.id];
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'feed-row';
+        row.dataset.id = entity.id;
+        row.innerHTML =
+          '<span class="feed-dot"></span>'
+          + '<span class="feed-lbl"></span>'
+          + '<span class="feed-pos"></span>'
+          + '<span class="feed-spd"></span>'
+          + '<span class="feed-rgn"></span>';
+        row.addEventListener('click', function () { feedSelectEntity(entity.id); });
+        feedListEl.appendChild(row);
+      }
+      row.classList.toggle('sel', isSel);
+      row.querySelector('.feed-dot').className  = 'feed-dot ' + dotCls;
+      row.querySelector('.feed-lbl').textContent = entity.label || entity.id;
+      row.querySelector('.feed-pos').textContent = pos;
+      row.querySelector('.feed-spd').textContent = spd || '';
+      row.querySelector('.feed-rgn').textContent = rgn;
+    });
+
+    // Remove stale rows
+    existing.forEach(function (el) {
+      if (!seenIds.has(el.dataset.id)) el.remove();
+    });
+  }
+
+  function renderFeedDetail(entityId) {
+    if (!feedDetailEl) return;
+    if (!entityId) {
+      feedDetailEl.classList.remove('open');
+      feedDetailEl.innerHTML = '';
+      return;
+    }
+    const entity = state && state.agents && state.agents[entityId];
+    if (!entity) { feedDetailEl.classList.remove('open'); return; }
+
+    const cfg  = activeFeedLayer ? FEED_CFG[activeFeedLayer] : null;
+    const spd  = cfg && cfg.speedUnit ? fmtSpeed(entity, cfg.speedUnit) : null;
+    const alt  = cfg && cfg.altKey && Number.isFinite(entity[cfg.altKey])
+                 ? Math.round(entity[cfg.altKey]) + 'm' : null;
+    const conf = Number.isFinite(entity.confidence) ? (entity.confidence * 100).toFixed(0) + '%' : null;
+    const hdg  = Number.isFinite(entity.heading) ? Math.round(entity.heading) + '°' : null;
+    const src  = entity.source || null;
+    const sub  = entity.subtype || null;
+    const ts   = entity.ts || entity.lastUpdateMs;
+    const age  = ts ? Math.round((Date.now() - ts) / 1000) + 's ago' : null;
+
+    const kvRows = [
+      ['Pos',    fmtPos(entity)],
+      ['Speed',  spd],
+      ['Alt',    alt],
+      ['Hdg',    hdg],
+      ['Source', src],
+      ['Region', entity.region || '—'],
+      ['Type',   sub || entity.type],
+      ['Conf',   conf],
+      ['Updated', age],
+    ].filter(function (r) { return r[1] != null; });
+
+    feedDetailEl.innerHTML =
+      '<div class="fdp-hdr">'
+      + '<div class="fdp-id">' + (entity.label || entity.id) + '</div>'
+      + '<div class="fdp-type">' + (entity.type || '') + (sub ? ' · ' + sub : '') + '</div>'
+      + '</div>'
+      + '<div class="fdp-kv-grid">'
+      + kvRows.map(function (r) {
+          return '<span class="fdp-k">' + r[0] + '</span><span class="fdp-v">' + r[1] + '</span>';
+        }).join('')
+      + '</div>'
+      + '<div class="fdp-actions">'
+      + '<button class="fdp-btn primary" data-action="jump">Jump</button>'
+      + '<button class="fdp-btn" data-action="track">Track</button>'
+      + '<button class="fdp-btn" data-action="inspect">Inspect</button>'
+      + '</div>';
+
+    feedDetailEl.querySelectorAll('[data-action]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const action = btn.dataset.action;
+        if (action === 'jump') {
+          jumpCameraToEntity(entity);
+        } else if (action === 'track') {
+          selectAgent(entity.id);
+          if (typeof followTargetToggleEl !== 'undefined' && followTargetToggleEl) {
+            followTargetToggleEl.checked = true;
+            followTargetToggleEl.dispatchEvent(new Event('change'));
+          }
+        } else if (action === 'inspect') {
+          selectAgent(entity.id);
+          openPanel('target');
+        }
+      });
+    });
+
+    feedDetailEl.classList.add('open');
+  }
+
+  function jumpCameraToEntity(entity) {
+    if (!Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) return;
+    if (typeof cesiumViewer !== 'undefined' && cesiumViewer) {
+      const alt = Number.isFinite(entity.altitude) ? Math.max(5000, entity.altitude * 3) : 800000;
+      cesiumViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, alt),
+        duration: 1.4,
+      });
+    }
+  }
+
+  function feedSelectEntity(entityId) {
+    activeFeedEntity = entityId === activeFeedEntity ? null : entityId;
+    renderFeedList();
+    renderFeedDetail(activeFeedEntity);
+    if (activeFeedEntity) {
+      const entity = state && state.agents && state.agents[activeFeedEntity];
+      if (entity) {
+        selectAgent(activeFeedEntity);
+        jumpCameraToEntity(entity);
+      }
+    }
+  }
+
+  function openFeedPanel(layerKey) {
+    const cfg = FEED_CFG[layerKey];
+    if (!cfg) return;
+    // Clear previous selection highlight
+    document.querySelectorAll('.layer-row.feed-open').forEach(function (r) {
+      r.classList.remove('feed-open');
+    });
+    activeFeedLayer  = layerKey;
+    activeFeedEntity = null;
+    if (feedIconEl)  feedIconEl.textContent  = cfg.icon;
+    if (feedTitleEl) feedTitleEl.textContent = cfg.title;
+    renderFeedList();
+    if (feedDetailEl) { feedDetailEl.classList.remove('open'); feedDetailEl.innerHTML = ''; }
+    if (feedDrawerEl) feedDrawerEl.classList.add('open');
+    // Highlight active row
+    const row = document.querySelector('.layer-row[data-layer="' + layerKey + '"]');
+    if (row) row.classList.add('feed-open');
+  }
+
+  function closeFeedPanel() {
+    if (feedDrawerEl) feedDrawerEl.classList.remove('open');
+    document.querySelectorAll('.layer-row.feed-open').forEach(function (r) {
+      r.classList.remove('feed-open');
+    });
+    activeFeedLayer  = null;
+    activeFeedEntity = null;
+  }
+
+  if (feedCloseEl) feedCloseEl.addEventListener('click', closeFeedPanel);
+
+  // Wire layer-row clicks → open feed (clicks on the toggle button are absorbed
+  // by the toggle button itself so they never bubble to the row handler).
+  document.querySelectorAll('.layer-row[data-layer]').forEach(function (row) {
+    row.addEventListener('click', function (e) {
+      if (e.target.classList.contains('layer-toggle')) return; // toggle btn handled separately
+      const key = row.dataset.layer;
+      if (!FEED_CFG[key]) return; // no feed config for this layer
+      if (activeFeedLayer === key) {
+        closeFeedPanel();
+      } else {
+        openFeedPanel(key);
+      }
+    });
+  });
+
+  // After every snapshot update, refresh the feed panel if open
+  function refreshFeedPanel() {
+    if (!activeFeedLayer || !feedDrawerEl || !feedDrawerEl.classList.contains('open')) return;
+    renderFeedList();
+    if (activeFeedEntity) renderFeedDetail(activeFeedEntity);
+  }
+
+  // Globe click → highlight entity in open feed panel
+  function onEntitySelectedFromGlobe(entityId) {
+    if (!activeFeedLayer || !feedDrawerEl || !feedDrawerEl.classList.contains('open')) return;
+    const entity = state && state.agents && state.agents[entityId];
+    if (!entity) return;
+    const cfg = FEED_CFG[activeFeedLayer];
+    if (!cfg || entity.type !== cfg.type) return; // entity not in this feed's layer
+    activeFeedEntity = entityId;
+    renderFeedList();
+    renderFeedDetail(entityId);
+    // Scroll the matching row into view
+    const row = feedListEl && feedListEl.querySelector('.feed-row[data-id="' + entityId + '"]');
+    if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
   followTargetToggleEl.addEventListener('change', function () {
     const shouldFollow = !!followTargetToggleEl.checked;
     if (!shouldFollow) {
@@ -6608,6 +7127,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     renderSelectedPanel();
     updateLayerStatusBadges();
+    if (typeof refreshFeedPanel === 'function') refreshFeedPanel();
     updateLayerFeedPanel();
     draw();
   }
@@ -6860,59 +7380,133 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     buildNodes();
 
     // ── Server-state sync ────────────────────────────────────────────────────
+    // Deterministic mock globe position for a node index (used when no live entity is bound)
+    function mockPosForIdx(idx) {
+      // Fibonacci lattice across globe surface — always visible, never overlapping
+      const phi = 2.3999632 /* 2π / PHI²  ≈ golden angle rad */;
+      const lat = Math.asin(2 * (idx + 0.5) / 60 - 1) * (180 / Math.PI);
+      const lng = ((idx * phi * 180 / Math.PI) % 360) - 180;
+      return { lat, lng };
+    }
+
     function syncFromServerState() {
       if (!state) return;
-      const workers    = Array.isArray(state.workers) ? state.workers : [];
-      const tasks      = Array.isArray(state.tasks)   ? state.tasks   : [];
-      const plannerSt  = state.planner || {};
+      const workers   = Array.isArray(state.workers) ? state.workers : [];
+      const tasks     = Array.isArray(state.tasks)   ? state.tasks   : [];
+      const plannerSt = state.planner || {};
+      const now       = Date.now();
 
-      // Map workers to ring nodes by role; maintain stable assignment by index
-      let workersByRole = {};
+      // All workers flat list for ring-4 binding (server roles ≠ overlay role labels)
+      const allWorkers = workers.slice();
+
+      // Workers by role for rings 2/3 (region_scout, flight_scout)
+      const workersByRole = {};
       for (const w of workers) {
         if (!workersByRole[w.role]) workersByRole[w.role] = [];
         workersByRole[w.role].push(w);
       }
 
-      // Track how many active tasks exist for high-load detection
-      const runningCount = tasks.filter(t => t.status === 'running').length;
-      const errorCount   = tasks.filter(t => t.status === 'failed' && (!t.completedAt || (Date.now() - new Date(t.completedAt).getTime()) < 8000)).length;
+      const runningCount  = tasks.filter(t => t.status === 'running').length;
+      const recentFailed  = new Set(
+        tasks
+          .filter(t => t.status === 'failed' && t.completedAt && (now - new Date(t.completedAt).getTime()) < 8000)
+          .map(t => t.assignedWorkerId)
+          .filter(Boolean)
+      );
+
+      // Live entities for ring-4 binding
+      const agentList = Object.values(state.agents || {});
+      const flights   = agentList.filter(a => a && a.type === 'flight');
+
+      // Snapshot previous states for observability diffs
+      const prevStates = {};
+      for (const n of orchNodes) prevStates[n.id] = n.state;
 
       let roleCounters = {};
+      let ring4Counter = 0;
+      let ring5Counter = 0;
+
       for (const node of orchNodes) {
+        // ── Core ──
         if (node.role === 'core') {
           node.state   = orchRunning ? (runningCount > 0 ? 'active' : 'idle') : 'idle';
           node.metrics = plannerSt.stats || null;
           continue;
         }
+
+        // ── Planner ──
         if (node.role === 'planner') {
-          node.state   = runningCount > 0 ? 'active' : 'idle';
-          node.taskId  = null;
+          node.state  = runningCount > 0 ? 'active' : 'idle';
+          node.taskId = null;
           continue;
         }
+
+        // ── Ring 5 (monitor): bind to recent tasks — shows task pipeline activity ──
+        if (node.ring === 5) {
+          const task = tasks[ring5Counter] || null;
+          ring5Counter++;
+          if (!task) { node.state = 'idle'; node.workerId = null; node.metrics = null; node.taskId = null; continue; }
+          node.taskId   = task.id;
+          node.workerId = task.assignedWorkerId || null;
+          const ageFail = task.status === 'failed' && task.completedAt && (now - new Date(task.completedAt).getTime()) < 8000;
+          node.state = task.status === 'running' ? 'active' : ageFail ? 'error' : 'idle';
+          continue;
+        }
+
+        // ── Ring 4 (workers): bind ALL server workers by index across 8 nodes ──
+        if (node.ring === 4) {
+          const worker = allWorkers[ring4Counter] || null;
+          ring4Counter++;
+          if (!worker) {
+            node.state = 'idle'; node.workerId = null; node.metrics = null;
+            // Still assign a deterministic mock globe point so links draw
+            node.entityId  = null;
+            node._mockPos  = mockPosForIdx(node.idx);
+            continue;
+          }
+          node.workerId = worker.id;
+          node.metrics  = worker.metrics;
+          node.taskId   = worker.currentTaskId;
+          node.state    = recentFailed.has(worker.id) ? 'error'
+            : worker.status === 'busy' ? ((worker.metrics && worker.metrics.completed > 5) ? 'high-load' : 'active')
+            : 'idle';
+
+          // Bind real flight/agent or fall back to mock position
+          const bound = flights[node.idx] || agentList[node.idx] || null;
+          if (bound) {
+            node.entityId = bound.id;
+            node._mockPos = null;
+          } else {
+            node.entityId = null;
+            node._mockPos = mockPosForIdx(node.idx);
+          }
+          continue;
+        }
+
+        // ── Rings 2/3: matched by declared role (region_scout, flight_scout) ──
         const rolePool = workersByRole[node.role] || [];
-        const roleIdx  = roleCounters[node.role] = (roleCounters[node.role] || 0);
+        const roleIdx  = (roleCounters[node.role] = (roleCounters[node.role] || 0));
         const worker   = rolePool[roleIdx] || null;
         roleCounters[node.role]++;
-
         if (!worker) { node.state = 'idle'; node.workerId = null; node.metrics = null; continue; }
         node.workerId = worker.id;
         node.metrics  = worker.metrics;
         node.taskId   = worker.currentTaskId;
-        const failed  = errorCount > 0 && worker.metrics && worker.metrics.failed > 0;
-        node.state    = failed ? 'error'
-          : worker.status === 'busy' ? (worker.metrics && worker.metrics.completed > 5 ? 'high-load' : 'active')
+        node.state    = recentFailed.has(worker.id) ? 'error'
+          : worker.status === 'busy' ? ((worker.metrics && worker.metrics.completed > 5) ? 'high-load' : 'active')
           : 'idle';
-
-        // Ring 4 (worker, 8 nodes): bind to a real globe entity
-        if (node.ring === 4) {
-          const agents = Object.values(state.agents || {});
-          const flights = agents.filter(a => a && a.type === 'flight');
-          const bound   = flights[node.idx] || agents[node.idx] || null;
-          node.entityId = bound ? bound.id : null;
-        }
       }
 
-      // Spawn pulses from active assignments
+      // ── Observability: log state transitions (one line each, not spammy) ──
+      for (const node of orchNodes) {
+        const prev = prevStates[node.id];
+        if (prev === node.state) continue;
+        if (node.state === 'active')    console.log('[orch] activated:', node.label, '(worker:', (node.workerId || node.taskId || '—') + ')');
+        else if (node.state === 'error') console.warn('[orch] error state:', node.label);
+        else if (node.state === 'idle' && prev === 'active') console.log('[orch] idle:', node.label);
+      }
+
+      // ── Spawn pulses from active / error nodes ──
       if (orchPulsesOn && orchRunning && orchPulses.length < MAX_PULSES) {
         for (const node of orchNodes) {
           if (node.state === 'active' && Math.random() < 0.25) {
@@ -6923,7 +7517,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         }
       }
 
-      // Update status pill
+      // ── Status pill ──
       if (orchPillEl) {
         const activeN = orchNodes.filter(n => n.state === 'active').length;
         const errN    = orchNodes.filter(n => n.state === 'error').length;
@@ -6972,33 +7566,66 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     // ── Inspector ────────────────────────────────────────────────────────────
     function openInspector(node) {
       orchSelId = node.id;
-      const stSt  = node.state || 'idle';
-      const m     = node.metrics || {};
+      const stSt   = node.state || 'idle';
+      const m      = node.metrics || {};
       const taskId = node.taskId ? node.taskId.slice(-8) : '—';
-      const entity = node.entityId ? (state.agents && state.agents[node.entityId]) : null;
+      const badge  = '<span class="oi-badge ' + stSt + '">' + stSt.toUpperCase() + '</span>';
 
-      const badge = '<span class="oi-badge ' + stSt + '">' + stSt.toUpperCase() + '</span>';
-      const metricsHtml = node.metrics ? '<div class="oi-metrics">'
+      // Look up bound entity; for ring-4 also check mock pos
+      const entity = node.entityId ? (state && state.agents && state.agents[node.entityId]) : null;
+      const hasMock = !entity && node._mockPos;
+
+      // ── ring 5: show task pipeline info ──
+      let taskInfoHtml = '';
+      if (node.ring === 5 && node.taskId) {
+        const taskObj = state && Array.isArray(state.tasks)
+          ? state.tasks.find(t => t.id === node.taskId) : null;
+        if (taskObj) {
+          taskInfoHtml = '<div class="oi-section"><div class="oi-section-title">Task</div>'
+            + '<div class="oi-field"><span class="oi-field-label">Type</span><span class="oi-field-value">' + (taskObj.type || '—') + '</span></div>'
+            + '<div class="oi-field"><span class="oi-field-label">Region</span><span class="oi-field-value">' + (taskObj.regionId || '—') + '</span></div>'
+            + '<div class="oi-field"><span class="oi-field-label">Status</span><span class="oi-field-value">' + (taskObj.status || '—') + '</span></div>'
+            + '<div class="oi-field"><span class="oi-field-label">Priority</span><span class="oi-field-value">' + (taskObj.priority != null ? taskObj.priority : '—') + '</span></div>'
+            + '</div>';
+        }
+      }
+
+      // ── worker metrics (rings 2-4) ──
+      const metricsHtml = node.metrics && node.ring < 5 ? '<div class="oi-metrics">'
         + '<div class="oi-metric"><div class="oi-metric-val">' + (m.completed || 0) + '</div><div class="oi-metric-key">Completed</div></div>'
         + '<div class="oi-metric"><div class="oi-metric-val">' + (m.failed || 0) + '</div><div class="oi-metric-key">Failed</div></div>'
         + '<div class="oi-metric"><div class="oi-metric-val">' + (m.avgScore ? m.avgScore.toFixed(2) : '—') + '</div><div class="oi-metric-key">Avg Score</div></div>'
-        + '<div class="oi-metric"><div class="oi-metric-val">' + (m.avgLatencyMs ? Math.round(m.avgLatencyMs) + 'ms' : '—') + '</div><div class="oi-metric-key">Avg Latency</div></div>'
-        + '</div>' : '';
-      const entityHtml = entity ? '<div class="oi-section"><div class="oi-section-title">Bound Entity</div>'
-        + '<div class="oi-field"><span class="oi-field-label">ID</span><span class="oi-field-value">' + (entity.id || '—') + '</span></div>'
-        + '<div class="oi-field"><span class="oi-field-label">Type</span><span class="oi-field-value">' + (entity.type || '—') + '</span></div>'
-        + '<div class="oi-field"><span class="oi-field-label">Position</span><span class="oi-field-value">' + (entity.lat != null ? entity.lat.toFixed(2) + ', ' + entity.lng.toFixed(2) : '—') + '</span></div>'
+        + '<div class="oi-metric"><div class="oi-metric-val">' + (m.avgLatencyMs ? Math.round(m.avgLatencyMs) + 'ms' : '—') + '</div><div class="oi-metric-key">Latency</div></div>'
         + '</div>' : '';
 
-      orchBodyEl.innerHTML = '<div class="oi-field"><span class="oi-field-label">Node</span><span class="oi-field-value">' + node.label + '</span></div>'
+      // ── bound entity section (real or mock) ──
+      const entityHtml = entity
+        ? '<div class="oi-section"><div class="oi-section-title">Bound Entity</div>'
+          + '<div class="oi-field"><span class="oi-field-label">ID</span><span class="oi-field-value">' + entity.id + '</span></div>'
+          + '<div class="oi-field"><span class="oi-field-label">Type</span><span class="oi-field-value">' + (entity.type || '—') + '</span></div>'
+          + '<div class="oi-field"><span class="oi-field-label">Source</span><span class="oi-field-value">' + (entity.source || '—') + '</span></div>'
+          + '<div class="oi-field"><span class="oi-field-label">Pos</span><span class="oi-field-value">' + entity.lat.toFixed(2) + ', ' + entity.lng.toFixed(2) + '</span></div>'
+          + (Number.isFinite(entity.altitude) ? '<div class="oi-field"><span class="oi-field-label">Alt</span><span class="oi-field-value">' + Math.round(entity.altitude) + 'm</span></div>' : '')
+          + '</div>'
+        : hasMock
+          ? '<div class="oi-section"><div class="oi-section-title">Mock Position</div>'
+            + '<div class="oi-field"><span class="oi-field-label">Pos</span><span class="oi-field-value">' + node._mockPos.lat.toFixed(2) + ', ' + node._mockPos.lng.toFixed(2) + '</span></div>'
+            + '<div class="oi-field" style="opacity:.5;font-size:.6rem">No live entity — deterministic placeholder</div>'
+            + '</div>'
+          : '';
+
+      orchBodyEl.innerHTML =
+          '<div class="oi-field"><span class="oi-field-label">Node</span><span class="oi-field-value">' + node.label + '</span></div>'
         + '<div class="oi-field" style="margin-top:4px">' + badge + '</div>'
         + '<div class="oi-field"><span class="oi-field-label">Role</span><span class="oi-field-value">' + node.role + '</span></div>'
         + '<div class="oi-field"><span class="oi-field-label">Ring</span><span class="oi-field-value">' + node.ring + '</span></div>'
-        + '<div class="oi-field"><span class="oi-field-label">Worker ID</span><span class="oi-field-value">' + (node.workerId ? node.workerId.slice(-12) : '—') + '</span></div>'
-        + '<div class="oi-field"><span class="oi-field-label">Active Task</span><span class="oi-field-value">' + taskId + '</span></div>'
-        + (metricsHtml ? '<div class="oi-section"><div class="oi-section-title">Metrics</div>' + metricsHtml + '</div>' : '')
+        + (node.workerId ? '<div class="oi-field"><span class="oi-field-label">Worker</span><span class="oi-field-value">' + node.workerId.slice(-12) + '</span></div>' : '')
+        + (node.taskId   ? '<div class="oi-field"><span class="oi-field-label">Task</span><span class="oi-field-value">…' + taskId + '</span></div>' : '')
+        + (metricsHtml   ? '<div class="oi-section"><div class="oi-section-title">Metrics</div>' + metricsHtml + '</div>' : '')
+        + taskInfoHtml
         + entityHtml;
 
+      orchInspEl.classList.add('open');
       orchInspEl.classList.remove('closed');
       orchInspEl.setAttribute('aria-hidden', 'false');
       // Shift left if right drawer is open
@@ -7093,35 +7720,48 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       orchCtx.restore();
 
       // ── Draw globe-entity links for ring-4 workers ──
+      // Supports real entity bindings (node.entityId) and deterministic mock
+      // positions (node._mockPos) for workers without a live entity.
       if (orchLinksOn && typeof cesiumViewer !== 'undefined' && cesiumViewer) {
         const rect = globeShell.getBoundingClientRect();
         for (const node of orchNodes) {
-          if (node.ring !== 4 || !node.entityId) continue;
-          const entity = state && state.agents && state.agents[node.entityId];
-          if (!entity || !Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) continue;
+          if (node.ring !== 4) continue;
+          let lat = null, lng = null, alt = 10000, isMock = false;
+
+          if (node.entityId) {
+            const entity = state && state.agents && state.agents[node.entityId];
+            if (entity && Number.isFinite(entity.lat) && Number.isFinite(entity.lng)) {
+              lat = entity.lat; lng = entity.lng;
+              alt = Number.isFinite(entity.altitude) ? Math.max(500, entity.altitude) : 1000;
+            }
+          } else if (node._mockPos) {
+            lat = node._mockPos.lat; lng = node._mockPos.lng;
+            isMock = true;
+          }
+
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
           try {
-            const alt = Number.isFinite(entity.altitude) ? Math.max(500, entity.altitude) : 1000;
-            const cart3 = Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, alt);
+            const cart3 = Cesium.Cartesian3.fromDegrees(lng, lat, alt);
             const sp = Cesium.SceneTransforms.worldToWindowCoordinates(cesiumViewer.scene, cart3);
             if (!sp) continue;
-            // Cesium returns window-relative coords; subtract globeShell offset
             const sx = sp.x - rect.left;
             const sy = sp.y - rect.top;
             const ss = node.state;
             orchCtx.save();
-            orchCtx.globalAlpha = ss === 'idle' ? 0.18 : 0.55;
+            orchCtx.globalAlpha = isMock ? 0.12 : (ss === 'idle' ? 0.22 : 0.55);
             orchCtx.beginPath();
-            orchCtx.setLineDash([3, 7]);
+            orchCtx.setLineDash(isMock ? [2, 10] : [3, 7]);
             orchCtx.moveTo(node.cx, node.cy);
             orchCtx.lineTo(sx, sy);
-            orchCtx.strokeStyle = ss === 'error' ? '#e05050' : ss === 'active' ? '#3ec9b8' : '#2a5060';
+            orchCtx.strokeStyle = ss === 'error' ? '#e05050' : ss === 'active' ? '#3ec9b8' : (isMock ? '#1e3040' : '#2a5060');
             orchCtx.lineWidth   = ss === 'high-load' ? 2 : 1;
             orchCtx.stroke();
             orchCtx.setLineDash([]);
-            // Small dot at globe position
+            // Anchor dot at globe position
             orchCtx.beginPath();
-            orchCtx.arc(sx, sy, 3, 0, Math.PI * 2);
-            orchCtx.fillStyle = ss === 'error' ? '#e05050' : '#3ec9b8';
+            orchCtx.arc(sx, sy, isMock ? 2 : 3, 0, Math.PI * 2);
+            orchCtx.fillStyle = isMock ? '#1e3850' : (ss === 'error' ? '#e05050' : '#3ec9b8');
             orchCtx.fill();
             orchCtx.restore();
           } catch (_) { /* Cesium projection can fail during camera move */ }
@@ -7298,6 +7938,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           renderSelectedPanel();
           updateStats();
           updateLayerStatusBadges();
+          if (typeof refreshFeedPanel === 'function') refreshFeedPanel();
           updateDashboardPanels();
           draw();
         }
@@ -7443,6 +8084,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       tray.classList.add('has-items');
     }
 
+function snapshot() {
+  // EntityStream is the canonical, priority-resolved view of all live entities.
+  // It is flushed by feedBroker.flushAll() on every sim tick and by each source
+  // adapter immediately after it updates its own state bucket.
+  const mergedAgents = entityStream.size() > 0
+    ? entityStream.asMap()
+    : { ...worldview.agents, ...openSkyFileState.flights, ...openSkyLiveState.flights }; // cold-start fallback
     // If minimizing the active screen in single-screen mode, switch to next available
     if (!dashboardState.gridMode && dashboardState.activeScreen === name) {
       var next = null;
@@ -9370,6 +10018,7 @@ async function pollOpenSkyFlights() {
     }
 
     openSkyLiveState.flights = nextFlights;
+    feedBroker.flushAdapter('opensky-live');  // push fresh flights into EntityStream
     openSkyLiveState.lastPollAt = new Date().toISOString();
     openSkyLiveState.lastErrorAt = null;
     openSkyLiveState.lastErrorMessage = null;
@@ -9627,6 +10276,7 @@ function loadOpenSkyFile() {
   }
 
   openSkyFileState.flights = nextFlights;
+  feedBroker.flushAdapter('opensky-file');  // push into EntityStream
   openSkyFileState.lastLoadAt = new Date().toISOString();
   openSkyFileState.lastErrorAt = null;
 
@@ -10625,6 +11275,14 @@ function simulationLoop() {
   // Refresh live entity layers and traffic layer at their own cadence
   refreshLiveEntityLayers();
   refreshTrafficLayer();
+
+  // Flush all feed adapters into EntityStream so snapshot() has a unified view.
+  // This runs every 800ms — cheap because adapters just iterate in-memory maps.
+  feedBroker.flushAll();
+
+  // Periodically evict stale EntityStream entries (every ~40s at 800ms/tick)
+  if (worldview.tick % 50 === 0) entityStream.evict();
+
   recordTimelineSnapshot();
 
   // broadcast full snapshot every 5 ticks, delta otherwise
@@ -10715,12 +11373,23 @@ function findIdleWorker(role) {
   return null;
 }
 
-// Deterministic worker execution — uses current world state as context
+// Deterministic worker execution — reads from EntityStream (all live entities).
+// Falls back to legacy OpenSky buckets in test environments where the stream
+// is not yet seeded (entityStream.size() === 0).
 function runWorkerTask(worker, task) {
-  const allFlights = { ...openSkyFileState.flights, ...openSkyLiveState.flights };
+  const streamSize = entityStream.size();
+  const allFlights = streamSize > 0
+    ? { ...entityStream.byType('flight'), ...entityStream.byType('aircraft') }
+    : { ...openSkyFileState.flights, ...openSkyLiveState.flights };
   const region = worldview.regions[task.regionId] || null;
   const regionName = region ? region.name : (task.regionId || 'global');
-  const flightsInRegion = Object.values(allFlights).filter(f => f.region === task.regionId);
+  // Count any mobile entity in region, not just flights
+  const allEntitiesInRegion = streamSize > 0
+    ? entityStream.values().filter(e => e.region === task.regionId)
+    : Object.values(allFlights).filter(f => f.region === task.regionId);
+  const flightsInRegion = allEntitiesInRegion.filter(
+    e => e.type === 'flight' || e.type === 'aircraft'
+  );
   const anomalies = openSkyFileState.anomalies || [];
 
   let output = {};
@@ -10961,9 +11630,14 @@ function hasActiveVerifyForEntity(entityId) {
 }
 
 function createTasksFromWorldState() {
-  const allFlights = { ...openSkyFileState.flights, ...openSkyLiveState.flights };
+  // EntityStream gives a unified view of all flight/aircraft entities; fall back
+  // to legacy buckets when stream is empty (e.g. test environment at cold start).
+  const streamSize = entityStream.size();
+  const allFlights = streamSize > 0
+    ? { ...entityStream.byType('flight'), ...entityStream.byType('aircraft') }
+    : { ...openSkyFileState.flights, ...openSkyLiveState.flights };
 
-  // 1. verify_event when a flight is present in a region
+  // 1. verify_event when a flight/aircraft is present in a region
   for (const flight of Object.values(allFlights)) {
     if (flight.region && !hasActiveVerifyForEntity(flight.id)) {
       createTask('verify_event', flight.region, {
@@ -11761,6 +12435,10 @@ server.on('upgrade', (req, socket, head) => {
 initWorld();
 bootstrapWorkers();
 seedSensorNodes();
+bootstrapFeedBroker();
+// Pre-populate EntityStream so the first snapshot() has a full entity view
+// before any live poll completes.
+feedBroker.flushAll();
 
 if (require.main === module) {
   setInterval(simulationLoop, 800);
@@ -11843,6 +12521,11 @@ module.exports = {
   refreshTrafficLayer,
   recordTimelineSnapshot,
   seedSensorNodes,
+  // ── Feed broker / entity stream exports ────────────────────────────────────
+  entityStream,
+  feedBroker,
+  bootstrapFeedBroker,
+  FEED_PRIORITY,
   LIVE_ENTITY_UPDATE_MS,
   // ── Quantum Simulation Engine exports ──────────────────────────────────────
   quantumSimState,
