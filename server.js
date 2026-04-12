@@ -2731,6 +2731,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   }
 
   async function initCesium() {
+    console.log('[RW] initCesium start');
     if (!USE_CESIUM || typeof Cesium === 'undefined') return;
     if (BOOTSTRAP.cesiumAccessToken) Cesium.Ion.defaultAccessToken = BOOTSTRAP.cesiumAccessToken;
     // Build terrain provider with Cesium World Terrain when Ion token is available.
@@ -2881,6 +2882,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     setTimeout(function () { initGlobeBoundaries(); }, 0);
     registerTerrainClamp();
     cesiumViewer.resize();
+    console.log('[RW] initCesium complete — calling draw()');
     draw();
   }
 
@@ -7127,8 +7129,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     renderSelectedPanel();
     updateLayerStatusBadges();
-    if (typeof refreshFeedPanel === 'function') refreshFeedPanel();
-    updateLayerFeedPanel();
+    try {
+      if (typeof refreshFeedPanel === 'function') refreshFeedPanel();
+      updateLayerFeedPanel();
+    } catch (feedErr) {
+      console.warn('[RW] feed panel update error (non-fatal):', feedErr && feedErr.message ? feedErr.message : feedErr);
+    }
     draw();
   }
 
@@ -7888,9 +7894,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   // ── WebSocket ──
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(proto + '://' + location.host + '/ws');
+    const wsUrl = proto + '://' + location.host + '/ws';
+    console.log('[RW] WebSocket connecting to', wsUrl);
+    ws = new WebSocket(wsUrl);
 
     ws.onopen = function () {
+      console.log('[RW] WebSocket connected');
       statusEl.textContent = 'connected';
       statusEl.className = '';
       wsRetryDelay = 1000;
@@ -7903,6 +7912,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'snapshot') {
+        console.log('[RW] snapshot received tick=' + (msg.data && msg.data.tick));
         mergeApiFlightsIntoSnapshot(msg.data);
         if (paused) {
           pendingSnapshot = msg.data;
@@ -7938,7 +7948,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           renderSelectedPanel();
           updateStats();
           updateLayerStatusBadges();
-          if (typeof refreshFeedPanel === 'function') refreshFeedPanel();
+          try {
+            if (typeof refreshFeedPanel === 'function') refreshFeedPanel();
+          } catch (feedErr) {
+            console.warn('[RW] refreshFeedPanel error (non-fatal):', feedErr && feedErr.message ? feedErr.message : feedErr);
+          }
           updateDashboardPanels();
           draw();
         }
@@ -7975,6 +7989,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     };
 
     ws.onclose = function () {
+      console.warn('[RW] WebSocket disconnected — retrying in ' + (wsRetryDelay/1000) + 's');
       statusEl.textContent = 'disconnected';
       statusEl.className = 'disconnected';
       eventLog.push({ kind: 'system', msg: 'WebSocket disconnected — retrying in ' + (wsRetryDelay/1000) + 's', _tick: state.tick });
@@ -7982,9 +7997,46 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       pushEvent({ kind: 'system', msg: 'WebSocket disconnected — retrying in ' + (wsRetryDelay/1000) + 's', _tick: state.tick });
       setTimeout(connect, wsRetryDelay);
       wsRetryDelay = Math.min(wsRetryDelay * 2, 16000);
+      // Fallback: poll for snapshot over HTTP while WebSocket is down
+      if (!_snapshotPollActive) startSnapshotPoll();
     };
 
-    ws.onerror = function () { ws.close(); };
+    ws.onerror = function (err) {
+      console.warn('[RW] WebSocket error', err && err.message ? err.message : '');
+      ws.close();
+    };
+  }
+
+  // ── HTTP snapshot polling fallback ─────────────────────────────────────────
+  // Polls /api/snapshot when WebSocket is disconnected so the globe stays live.
+  var _snapshotPollActive = false;
+  var _snapshotPollTimer = null;
+  var SNAPSHOT_POLL_INTERVAL_MS = 5000;
+  function startSnapshotPoll() {
+    if (_snapshotPollActive) return;
+    _snapshotPollActive = true;
+    console.log('[RW] starting HTTP snapshot poll fallback');
+    function poll() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        _snapshotPollActive = false;
+        clearTimeout(_snapshotPollTimer);
+        _snapshotPollTimer = null;
+        console.log('[RW] WebSocket recovered — stopping HTTP poll fallback');
+        return;
+      }
+      fetch('/api/snapshot').then(function (r) { return r.json(); }).then(function (msg) {
+        if (msg && msg.type === 'snapshot' && msg.data) {
+          console.log('[RW] poll snapshot received tick=' + msg.data.tick);
+          snapshotQueue.push(msg.data);
+          processSnapshotQueue(true);
+        }
+        _snapshotPollTimer = setTimeout(poll, SNAPSHOT_POLL_INTERVAL_MS);
+      }).catch(function (err) {
+        console.warn('[RW] snapshot poll error:', err && err.message ? err.message : err);
+        _snapshotPollTimer = setTimeout(poll, SNAPSHOT_POLL_INTERVAL_MS);
+      });
+    }
+    _snapshotPollTimer = setTimeout(poll, SNAPSHOT_POLL_INTERVAL_MS);
   }
 
   // ── Multi-View Dashboard System ────────────────────────────────────────────
@@ -8083,14 +8135,6 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       }
       tray.classList.add('has-items');
     }
-
-function snapshot() {
-  // EntityStream is the canonical, priority-resolved view of all live entities.
-  // It is flushed by feedBroker.flushAll() on every sim tick and by each source
-  // adapter immediately after it updates its own state bucket.
-  const mergedAgents = entityStream.size() > 0
-    ? entityStream.asMap()
-    : { ...worldview.agents, ...openSkyFileState.flights, ...openSkyLiveState.flights }; // cold-start fallback
     // If minimizing the active screen in single-screen mode, switch to next available
     if (!dashboardState.gridMode && dashboardState.activeScreen === name) {
       var next = null;
@@ -12034,6 +12078,12 @@ function router(req, res) {
   }
 
   // ── GET /api/flights  → active provider's normalized flight entities
+  if (req.method === 'GET' && url === '/api/snapshot') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ type: 'snapshot', data: snapshot() }));
+    return;
+  }
+
   if (req.method === 'GET' && url === '/api/flights') {
     const { provider, flights } = selectActiveFlights();
     const entities = Object.values(flights);
