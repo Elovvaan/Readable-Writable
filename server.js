@@ -7,7 +7,8 @@ const path = require('path');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4001;
-const RW_OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED || 'true';
+// OpenSky is an optional future integration — disabled by default until access is confirmed.
+const RW_OPENSKY_ENABLED = process.env.RW_OPENSKY_ENABLED || 'false';
 const OPENSKY_ENABLED = RW_OPENSKY_ENABLED === 'true';
 const OPENSKY_PUBLIC_STATES_URL = 'https://opensky-network.org/api/states/all';
 const OPENSKY_STATES_URL = process.env.OPENSKY_STATES_URL || OPENSKY_PUBLIC_STATES_URL;
@@ -29,6 +30,16 @@ const AVIATIONSTACK_POLL_INTERVAL_MS = 20000;
 // Anything above this speed (m/s) is flagged as physically impossible for civil aircraft.
 // Commercial jets cruise at ~240–280 m/s; 600 m/s ≈ Mach 1.8.
 const ANOMALY_MAX_SPEED_MS = 600;
+
+// ─── Flight Provider Config ───────────────────────────────────────────────────
+// ADS-B Exchange (primary live source). Requires a RapidAPI key.
+const ADSB_EXCHANGE_API_KEY = process.env.ADSB_EXCHANGE_API_KEY || '';
+const ADSB_EXCHANGE_API_URL = process.env.ADSB_EXCHANGE_API_URL ||
+  'https://adsbexchange-com1.p.rapidapi.com/v2/lat/0/lon/0/dist/1600/';
+const ADSB_EXCHANGE_POLL_INTERVAL_MS = Math.max(5000,
+  Number(process.env.ADSB_EXCHANGE_POLL_INTERVAL_MS || 15000));
+// A provider is considered stale after this many ms without a successful poll.
+const FLIGHT_PROVIDER_STALE_MS = 90000;
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const worldview = {
@@ -110,6 +121,30 @@ const aviationstackState = {
   lastFetchedCount: 0,
   pollingRunning: false,
 };
+
+// ─── ADS-B Exchange State ─────────────────────────────────────────────────────
+const adsbExchangeState = {
+  flights: {},           // normalized flight entities keyed by id
+  lastPollAt: null,
+  lastErrorAt: null,
+  lastErrorMessage: null,
+  lastFetchedCount: 0,
+  lastNormalizedCount: 0,
+  pollingRunning: false,
+};
+
+// Tracks the result of the current provider cascade selection.
+const flightProviderState = {
+  activeProvider: 'sim',   // 'adsb-exchange' | <future-provider> | 'sim'
+  fetched: 0,
+  visible: 0,
+  drawn: 0,
+  lastSelectedAt: null,
+};
+
+// Persistent trail cache for simulated fallback flights (keyed by entity id).
+// Needed because getSimFlights() is a pure function that cannot reference itself.
+const _simFlightsCache = {};
 
 // ─── Planner / Worker / Task Runtime Stores ───────────────────────────────────
 const taskRegistry = new Map();   // taskId → task
@@ -317,6 +352,83 @@ function bootstrapFeedBroker() {
 }
 
 
+// ─── Quantum Simulation (Hilbert-Space Earth Engine) ─────────────────────────
+// Each clicked globe location spawns N parallel world-state branches.
+// Every branch carries agents with Earth+space roles, confidence, utility,
+// lineage, and cost.  Branches evolve independently until a collapse operator
+// picks the best outcome (utility × confidence) and archives an audit trail.
+
+const BRANCH_COUNT = 5;           // parallel futures per location click
+
+const BRANCH_AGENT_ROLES = [
+  'pilot', 'driver', 'operator', 'weather',
+  'satellite', 'logistics', 'response',
+];
+
+const EARTH_SPACE_LAYERS = [
+  'cities', 'traffic', 'sensors', 'aircraft',
+  'vessels', 'weather', 'satellites', 'orbital_signals',
+];
+
+// Probability threshold for an agent to include a given Earth/space layer
+// in its initial awareness set. 0.6 → each agent covers ~60% of layers on average.
+const AGENT_LAYER_COVERAGE_THRESHOLD = 0.4;
+
+// Interference thresholds: branches whose utility values are within ALIGN are
+// considered outcome-aligned (constructive); branches further apart than CONFLICT
+// are considered outcome-conflicting (destructive).  Values in between are unrelated.
+const INTERFERENCE_ALIGN_THRESHOLD    = 0.15;
+const INTERFERENCE_CONFLICT_THRESHOLD = 0.60;
+
+// Continuous-collapse engine constants
+// Interval at which active branches are re-scored and winner tracking updated.
+const CONTINUOUS_COLLAPSE_MS = 3000;
+// A new candidate must beat the current leader's score by at least this margin
+// to become the new leader (hysteresis guard against micro-oscillations).
+const HYSTERESIS_THRESHOLD = 0.05;
+// Once a leader's adjusted score reaches this value the branch is considered
+// "locked" — a challenger must also exceed WINNER_LOCK_MARGIN on top of
+// HYSTERESIS_THRESHOLD before it can unseat the locked leader.
+const WINNER_LOCK_THRESHOLD = 0.70;
+const WINNER_LOCK_MARGIN    = 0.12;
+// When the second-best branch score is within this delta of the leader, a
+// near-winner-pressure event is broadcast to the globe and SIM panel.
+const NEAR_WINNER_PRESSURE_THRESHOLD = 0.08;
+
+// ─── Strategy Presets ─────────────────────────────────────────────────────────
+// Each preset defines a mission priority profile that drives the strategicWeight
+// term in the final adjusted score formula:
+//   adjustedScore = (utility × confidence × interferenceWeight) - cost + strategicWeight
+//
+// strategicWeight is a deterministic, pure function of the branch's own attributes;
+// it adds a small bias (≤ 0.30) toward branches that best serve the active mission.
+const STRATEGY_PRESETS = {
+  balanced:            { label: 'Balanced',            description: 'Equal weight on all factors (default)' },
+  safety:              { label: 'Safety First',        description: 'Reward high-confidence branches' },
+  speed:               { label: 'Speed',               description: 'Reward high-utility branches' },
+  coverage:            { label: 'Coverage',            description: 'Reward broad layer awareness across agents' },
+  resource_efficiency: { label: 'Resource Efficiency', description: 'Penalise costly branches' },
+  response_urgency:    { label: 'Response Urgency',    description: 'Strong boost for highest-utility branches' },
+};
+
+const quantumSimState = {
+  locations: {},   // locationId → { id, lat, lng, label, createdAt, branches: [], collapsed: null, continuousState: {} }
+  auditTrail: [],  // collapsed events (last 200)
+  continuousCollapse: {
+    running: false,
+    intervalMs: CONTINUOUS_COLLAPSE_MS,
+    hysteresisThreshold: HYSTERESIS_THRESHOLD,
+    winnerLockThreshold: WINNER_LOCK_THRESHOLD,
+    winnerLockMargin:    WINNER_LOCK_MARGIN,
+    nearWinnerPressureThreshold: NEAR_WINNER_PRESSURE_THRESHOLD,
+  },
+  activeStrategy: 'balanced',  // key into STRATEGY_PRESETS; drives strategicWeight in scoring
+};
+
+// Internal timer handle — not exported (not serialisable).
+let _continuousCollapseTimer = null;
+
+// ─── Frontend HTML (inline) ───────────────────────────────────────────────────
 const FRONTEND_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -328,37 +440,60 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { height: 100%; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #08090b; color: #8fa8bb; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-    /* ── Header ──────────────────────────────────────────────────────────── */
-    header { background: #09090d; border-bottom: 1px solid #141820; padding: 5px 14px; display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-height: 40px; }
-    header h1 { font-size: .95rem; font-weight: 600; letter-spacing: .06em; color: #2ab8a4; margin-right: auto; }
-    #status { font-size: .72rem; padding: 2px 7px; border-radius: 999px; background: #0d2218; color: #3ecb92; border: 1px solid #1a4a32; white-space: nowrap; }
+    /* ── Top Status Bar ──────────────────────────────────────────────────── */
+    header { background: #05060a; border-bottom: 1px solid #1f2d3a; padding: 0 14px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; min-height: 38px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    header h1 { font-size: .72rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; margin-right: auto; border-right: 1px solid #1a2530; padding-right: 12px; }
+    #status { font-size: .65rem; padding: 2px 8px; border-radius: 2px; background: #0d2218; color: #3ecb92; border: 1px solid #1a4a32; white-space: nowrap; letter-spacing: .08em; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     #status.disconnected { background: #1e0d0d; color: #c05050; border-color: #3d1a1a; }
-    #telemetry-bar { display: inline-flex; align-items: center; gap: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .6rem; color: #4e7a8c; border: 1px solid #161e28; border-radius: 6px; padding: 3px 7px; background: #06080ccc; }
-    .telemetry-item { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
-    .telemetry-label { color: #354e5e; letter-spacing: .07em; }
-    .telemetry-value { color: #6fa8bc; }
+    #telemetry-bar { display: inline-flex; align-items: center; gap: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .62rem; color: #4e7a8c; border: 1px solid #161e28; border-radius: 2px; padding: 3px 10px; background: #06080c; }
+    .telemetry-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .telemetry-label { color: #2a4050; letter-spacing: .1em; text-transform: uppercase; font-size: .56rem; }
+    .telemetry-value { color: #7ab8cc; font-weight: 600; }
     #telemetry-rec.live { color: #d05858; text-shadow: 0 0 8px rgba(200,60,60,.3); animation: rec-pulse 1.4s ease-in-out infinite; }
     @keyframes rec-pulse { 0%, 100% { opacity: .62; } 50% { opacity: 1; } }
-    #pause-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+    #pause-btn { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 2px; font-size: .62rem; padding: 3px 9px; cursor: pointer; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; letter-spacing: .08em; text-transform: uppercase; }
     #pause-btn.active { background: #1a0f0f; color: #c28080; border-color: #3d2020; }
     /* ── Globe shell — fills remaining space ─────────────────────────────── */
-    #globe-shell { position: relative; flex: 1; overflow: hidden; background: #04050a; min-height: 0; }
+    #globe-shell { position: relative; flex: 1; overflow: hidden; background: #04050a; min-height: 0; box-shadow: inset 0 0 80px rgba(62, 201, 184, 0.06); }
     #cesium-world { position: absolute; inset: 0; z-index: 1; display: block; width: 100%; height: 100%; }
     canvas#world { position: absolute; inset: 0; z-index: 2; display: block; width: 100%; height: 100%; pointer-events: none; }
     #fx-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; mix-blend-mode: screen; opacity: .35; transition: opacity 320ms ease, background 320ms ease, filter 320ms ease; }
     #fx-overlay .scanlines, #fx-overlay .noise, #fx-overlay .vignette, #fx-overlay .pixel-grid { position: absolute; inset: 0; }
-    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(180,255,240,.05) 0, rgba(180,255,240,.05) 1px, transparent 1px, transparent 3px); opacity: .18; }
+    #fx-overlay .scanlines { background: repeating-linear-gradient(to bottom, rgba(180,255,240,.06) 0, rgba(180,255,240,.06) 1px, transparent 1px, transparent 3px); opacity: .22; }
     #fx-overlay .noise { background-image: radial-gradient(rgba(255,255,255,.07) 0.45px, transparent 0.55px); background-size: 3px 3px; opacity: .1; }
     #fx-overlay .pixel-grid { background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px); background-size: 10px 10px; opacity: .05; }
     #fx-overlay .vignette { background: radial-gradient(circle at center, transparent 42%, rgba(0,0,0,.72) 100%); opacity: .65; }
-    /* ── Launcher rail ───────────────────────────────────────────────────── */
-    #rail { position: absolute; left: 0; top: 0; bottom: 0; width: 44px; z-index: 20; display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 4px; background: #07080cdd; border-right: 1px solid #141820; backdrop-filter: blur(6px); }
-    .rail-btn { width: 34px; height: 34px; border: 1px solid #161e2a; background: #0c1219; color: #384e60; border-radius: 6px; font-size: .9rem; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 160ms, border-color 160ms, color 160ms, transform 160ms; user-select: none; }
-    .rail-btn:hover { background: #111e2e; border-color: #224060; color: #6ab0c8; transform: translateY(-1px); }
-    .rail-btn.active { background: #0a2422; border-color: #1f5e5a; color: #3ec9b8; }
-    .rail-sep { width: 22px; height: 1px; background: #141e28; margin: 4px 0; flex-shrink: 0; }
+    /* ── Left command panel ──────────────────────────────────────────────── */
+    #rail { position: absolute; left: 0; top: 0; bottom: 0; width: 160px; z-index: 20; display: flex; flex-direction: column; align-items: stretch; padding: 0; gap: 0; background: #06070add; border-right: 1px solid #141e2a; backdrop-filter: blur(6px); overflow-y: auto; overflow-x: hidden; transition: transform 220ms cubic-bezier(.4,0,.2,1); }
+    /* ── Rail tab — slim left-edge toggle strip ──────────────────────────── */
+    #rail-tab { position: absolute; left: 0; top: 0; bottom: 0; width: 16px; z-index: 21; background: #04050900; border-right: 1px solid transparent; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; cursor: pointer; user-select: none; transition: background 180ms, border-color 180ms; }
+    #rail-tab:hover { background: #0a182888; border-color: #1a3040; }
+    #rail-tab-arrow { display: block; font-size: .62rem; color: #1e3848; line-height: 1; transition: color 180ms, transform 220ms cubic-bezier(.4,0,.2,1); pointer-events: none; }
+    #rail-tab:hover #rail-tab-arrow { color: #3e8098; }
+    #rail-tab-label { writing-mode: vertical-lr; transform: rotate(180deg); font-size: .38rem; font-weight: 700; letter-spacing: .22em; text-transform: uppercase; color: #131e28; font-family: 'Cascadia Code', 'Fira Code', monospace; pointer-events: none; transition: color 180ms; white-space: nowrap; }
+    #rail-tab:hover #rail-tab-label { color: #2a5060; }
+    /* Rail-open state: arrow points left (collapse action) */
+    body:not(.rail-collapsed) #rail-tab-arrow { transform: rotate(180deg); color: #1a3040; }
+    body:not(.rail-collapsed) #rail-tab:hover #rail-tab-arrow { color: #3e8098; }
+    /* Rail-collapsed state: entire rail slides off left */
+    body.rail-collapsed #rail { transform: translateX(-160px); }
+    body.rail-collapsed #rail-tab { border-color: #1a2e3a; }
+    body.rail-collapsed #rail-tab-arrow { color: #2a5878; }
+    body.rail-collapsed #rail-tab:hover { background: #0e1e30aa; border-color: #1f4e5a; }
+    body.rail-collapsed #rail-tab:hover #rail-tab-arrow { color: #3ec9b8; }
+    body.rail-collapsed #rail-tab-label { color: #1e3848; }
+    body.rail-collapsed #rail-tab:hover #rail-tab-label { color: #3ec9b8; }
+    /* Active/live indicator on tab */
+    #rail-tab.tab-live #rail-tab-arrow { color: #3ec9b8; animation: rec-pulse 1.4s ease-in-out infinite; }
+    .rail-section-title { font-size: .5rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: #1e3040; padding: 8px 10px 4px; border-bottom: 1px solid #0e1820; background: #05060a; flex-shrink: 0; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .rail-btn { width: 100%; height: auto; min-height: 32px; border: none; border-bottom: 1px solid #0e1520; background: #07080c; color: #3a5060; border-radius: 0; font-size: .62rem; cursor: pointer; display: flex; align-items: center; justify-content: flex-start; flex-shrink: 0; gap: 8px; padding: 7px 10px; transition: background 160ms, color 160ms; user-select: none; font-family: 'Cascadia Code', 'Fira Code', monospace; letter-spacing: .06em; text-align: left; }
+    .rail-btn:hover { background: #0d1828; color: #6ab0c8; }
+    .rail-btn.active { background: #0a2018; color: #3ec9b8; border-left: 2px solid #3ec9b8; }
+    .rail-btn .rail-icon { font-size: .82rem; flex-shrink: 0; width: 16px; text-align: center; }
+    .rail-sep { width: 100%; height: 1px; background: #141e28; margin: 2px 0; flex-shrink: 0; }
     /* ── Viewport controls ───────────────────────────────────────────────── */
-    #viewport-controls { position: absolute; bottom: 14px; left: 56px; display: grid; gap: 5px; z-index: 10; pointer-events: auto; }
+    #viewport-controls { position: absolute; bottom: 14px; left: 172px; display: grid; gap: 5px; z-index: 10; pointer-events: auto; transition: left 220ms cubic-bezier(.4,0,.2,1); }
+    body.rail-collapsed #viewport-controls { left: 28px; }
     .viewport-row { display: flex; gap: 4px; }
     .viewport-btn { border: 1px solid #1c2e3a; background: #07101acc; color: #4e8898; border-radius: 4px; font-size: .66rem; padding: 5px 9px; cursor: pointer; transition: all 180ms ease; backdrop-filter: blur(4px); }
     .viewport-btn:hover { background: #0e2030e0; border-color: #2a5060; color: #7abcc8; transform: translateY(-1px); }
@@ -367,14 +502,18 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     /* ── Drawers — all position:absolute inside #globe-shell ─────────────── */
     .drawer { position: absolute; z-index: 15; background: #09090d; display: flex; flex-direction: column; overflow: hidden; pointer-events: none; opacity: 0; transition: transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
     .drawer.open { pointer-events: auto; opacity: 1; }
-    .drawer-left  { left: 44px; top: 0; bottom: 0; width: 240px; border-right: 1px solid #141820; transform: translateX(-240px); }
+    .drawer-left  { left: 160px; top: 0; bottom: 0; width: 240px; border-right: 1px solid #141820; transform: translateX(-240px); transition: left 220ms cubic-bezier(.4,0,.2,1), transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
     .drawer-right { right: 0; top: 0; bottom: 0; width: 280px; border-left: 1px solid #141820; transform: translateX(280px); }
-    .drawer-bottom { left: 44px; right: 0; bottom: 0; height: 280px; border-top: 1px solid #141820; transform: translateY(280px); }
-    .drawer-top { left: 44px; right: 0; top: 0; border-bottom: 1px solid #141820; transform: translateY(-100%); }
+    .drawer-bottom { left: 160px; right: 0; bottom: 0; height: 280px; border-top: 1px solid #141820; transform: translateY(280px); transition: left 220ms cubic-bezier(.4,0,.2,1), transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
+    .drawer-top { left: 160px; right: 0; top: 0; border-bottom: 1px solid #141820; transform: translateY(-100%); transition: left 220ms cubic-bezier(.4,0,.2,1), transform 220ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
     .drawer-left.open  { transform: translateX(0); }
     .drawer-right.open { transform: translateX(0); }
     .drawer-bottom.open { transform: translateY(0); }
     .drawer-top.open { transform: translateY(0); }
+    /* Shift drawers left when rail is collapsed */
+    body.rail-collapsed .drawer-left  { left: 16px; }
+    body.rail-collapsed .drawer-bottom { left: 16px; }
+    body.rail-collapsed .drawer-top   { left: 16px; }
     .drawer-header { display: flex; align-items: center; padding: 7px 12px; border-bottom: 1px solid #111820; flex-shrink: 0; gap: 8px; }
     .drawer-title { font-size: .6rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; flex: 1; }
     .drawer-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; line-height: 1; transition: color 160ms; flex-shrink: 0; }
@@ -387,6 +526,29 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .dtab.active { color: #3ec9b8; border-bottom-color: #3ec9b8; background: #09090d; }
     .rtab-content { display: flex; flex-direction: column; flex: 1; overflow-y: auto; min-height: 0; }
     .rtab-content.hidden { display: none; }
+    /* ── Layer feed drawer ───────────────────────────────────────────────── */
+    #drawer-layer-feed { width: 300px; right: 0; z-index: 18; }
+    #drawer-layer-feed.stacked { right: 280px; }
+    .lf-pulse { font-size: .7rem; color: #2a3840; margin-right: 4px; transition: color 400ms; }
+    .lf-pulse.live { color: #3ec9b8; animation: lf-blink 1.4s ease-in-out infinite; }
+    @keyframes lf-blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .lf-summary { padding: 8px 12px 6px; border-bottom: 1px solid #111820; }
+    .lf-count-row { display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }
+    .lf-count-label { font-size: .58rem; letter-spacing: .1em; text-transform: uppercase; color: #2a3840; }
+    .lf-count-val { font-size: .78rem; font-weight: 700; color: #3ec9b8; font-family: 'Cascadia Code','Fira Code',monospace; }
+    .lf-section-title { font-size: .55rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #2a3840; padding: 6px 12px 3px; border-top: 1px solid #111820; margin-top: 4px; }
+    .lf-events { padding: 0 8px 4px; display: flex; flex-direction: column; gap: 2px; }
+    .lf-event-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 4px; border-radius: 3px; background: #0b0d12; border-left: 2px solid #1a2430; }
+    .lf-event-ts { font-size: .52rem; color: #2a3840; white-space: nowrap; margin-top: 1px; min-width: 38px; font-family: monospace; }
+    .lf-event-msg { font-size: .6rem; color: #607a8c; line-height: 1.3; word-break: break-word; }
+    .lf-entities { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+    .lf-entity-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 3px; background: #0b0d12; }
+    .lf-entity-id { font-size: .58rem; color: #5a8098; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: monospace; }
+    .lf-entity-status { font-size: .52rem; font-weight: 700; letter-spacing: .06em; padding: 1px 5px; border-radius: 2px; text-transform: uppercase; }
+    .lf-entity-status.active { color: #3ec9b8; background: #0d2020; }
+    .lf-entity-status.offline { color: #607a8c; background: #0b0e12; }
+    .lf-entity-status.alert { color: #c8884a; background: #1a1208; }
+    .lf-empty { font-size: .62rem; color: #2a3840; font-style: italic; padding: 8px 12px; }
     /* ── Style drawer controls ───────────────────────────────────────────── */
     #style-drawer-body { padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
     .style-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .68rem; color: #607a8c; }
@@ -486,87 +648,35 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .lp-title, .selected-label, .stat-label, .drawer-title { color: color-mix(in srgb, var(--style-shell, #4ab8ac) 38%, #2a3840); }
     /* ── Global transitions ──────────────────────────────────────────────── */
     #cesium-world, canvas, .action-btn, #pause-btn, #style-indicator, .event-chip { transition: filter 260ms ease, box-shadow 260ms ease, color 260ms ease, background 260ms ease, border-color 260ms ease; }
-  /* === RW NEW LAYOUT === */
-
-#sidebar {
-  position: absolute;
-  left: 0;
-  top: 60px;
-  width: 200px;
-  bottom: 0;
-  background: rgba(0,0,0,0.85);
-  padding: 12px;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-#sidebar button {
-  background: #111;
-  color: #0ff;
-  border: 1px solid #0ff;
-  padding: 8px;
-  cursor: pointer;
-  text-align: left;
-}
-
-#sidebar button:hover {
-  background: #0ff;
-  color: #000;
-}
-
-#worldview {
-  position: absolute;
-  left: 200px;
-  top: 60px;
-  right: 0;
-  bottom: 0;
-}
-
-.panel {
-  position: absolute;
-  left: 200px;
-  right: 0;
-  bottom: 0;
-  height: 240px;
-  background: rgba(0,0,0,0.92);
-  color: white;
-  display: none;
-  z-index: 30;
-  overflow: auto;
-  padding: 12px;
-  border-top: 1px solid #0ff;
-}
     /* ── Orchestration overlay ──────────────────────────────────────────── */
     #orch-canvas { position: absolute; inset: 0; z-index: 4; pointer-events: none; display: block; }
     #orch-inspector {
       position: absolute; right: 0; top: 0; bottom: 0; width: 268px; z-index: 26;
-      background: #07080ce8; border-left: 1px solid #1a2530; backdrop-filter: blur(8px);
-      display: flex; flex-direction: column; transform: translateX(268px);
+      background: #06070bec; border-left: 1px solid #1a2d3a; backdrop-filter: blur(8px);
+      display: flex; flex-direction: column; transform: translateX(0);
       transition: transform 200ms cubic-bezier(.4,0,.2,1); pointer-events: auto;
     }
-    #orch-inspector.open { transform: translateX(0); }
+    #orch-inspector.closed { transform: translateX(268px); pointer-events: none; }
     #orch-inspector.shift-left { right: 280px; }
-    .oi-header { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #111820; flex-shrink: 0; gap: 8px; }
-    .oi-title { font-size: .6rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #2a3e4a; flex: 1; }
+    .oi-header { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #1a2d3a; flex-shrink: 0; gap: 8px; background: #05060a; }
+    .oi-title { font-size: .58rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: #3ec9b8; flex: 1; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .oi-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; }
     .oi-close:hover { color: #6898aa; }
-    .oi-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .oi-badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 8px; font-size: .6rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; border: 1px solid; }
+    .oi-body { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+    .oi-badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 2px; padding: 2px 8px; font-size: .6rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; border: 1px solid; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .oi-badge.idle  { color: #4e7888; border-color: #1a2a38; background: #0c1620; }
     .oi-badge.active{ color: #3ec9b8; border-color: #1f5e5a; background: #0a2422; }
     .oi-badge.error { color: #e05050; border-color: #4a1818; background: #1a0a0a; }
     .oi-badge.high-load { color: #f0a020; border-color: #4a3010; background: #1a1005; }
-    .oi-field { display: grid; gap: 2px; font-size: .66rem; }
-    .oi-field-label { color: #2a3a48; letter-spacing: .06em; text-transform: uppercase; font-size: .58rem; }
-    .oi-field-value { color: #7098a8; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .oi-field { display: grid; gap: 2px; font-size: .64rem; }
+    .oi-field-label { color: #1e3040; letter-spacing: .1em; text-transform: uppercase; font-size: .56rem; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .oi-field-value { color: #6898a8; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .oi-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .oi-metric { border: 1px solid #111820; border-radius: 4px; padding: 6px 8px; }
-    .oi-metric-val { color: #6ab0c8; font-family: monospace; font-size: .82rem; }
-    .oi-metric-key { color: #2a3840; font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; }
+    .oi-metric { border: 1px solid #111820; border-radius: 2px; padding: 6px 8px; background: #06080d; }
+    .oi-metric-val { color: #6ab0c8; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .8rem; }
+    .oi-metric-key { color: #1e3040; font-size: .56rem; letter-spacing: .08em; text-transform: uppercase; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .oi-section { border-top: 1px solid #111820; padding-top: 8px; margin-top: 4px; }
-    .oi-section-title { font-size: .58rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #1e3040; margin-bottom: 6px; }
+    .oi-section-title { font-size: .56rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #1e3040; margin-bottom: 6px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     /* Orchestration layer controls in layers drawer */
     .orch-ctrl-row { display: flex; gap: 5px; flex-wrap: wrap; padding: 4px 12px; }
     .orch-ctrl-btn { border: 1px solid #182430; background: #0b1018; color: #4e8096; border-radius: 4px; font-size: .62rem; padding: 4px 8px; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; }
@@ -669,12 +779,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .header-tab { border: 1px solid #1c2a36; background: #0e1520; color: #6898aa; border-radius: 4px; font-size: .66rem; padding: 3px 8px; cursor: pointer; white-space: nowrap; transition: background 160ms, border-color 160ms, color 160ms; }
     .header-tab:hover { background: #111e2a; border-color: #254056; color: #8abccc; }
     .header-tab.active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
-    /* ── Timeline Engine bar ─────────────────────────────────────────────── */
-    #timeline-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 44px; background: #07080cee; border-top: 1px solid #141820; z-index: 25; display: flex; align-items: center; padding: 0 10px; gap: 10px; backdrop-filter: blur(6px); }
+    /* ── Timeline Engine bar / Bottom action bar ─────────────────────────── */
+    #timeline-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 48px; background: #05060aee; border-top: 1px solid #1a2530; z-index: 25; display: flex; align-items: center; padding: 0 10px; gap: 6px; backdrop-filter: blur(6px); }
+    #bottom-quick-actions { display: flex; gap: 4px; flex-shrink: 0; border-right: 1px solid #1a2530; padding-right: 8px; margin-right: 4px; }
+    .bottom-action-btn { border: 1px solid #1a2d3a; background: #0a1018; color: #5a8898; border-radius: 2px; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 5px 10px; cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; }
+    .bottom-action-btn:hover { background: #0e1e2e; border-color: #2a5060; color: #8abccc; }
+    .bottom-action-btn.active { background: #0a2018; color: #3ec9b8; border-color: #1f5e5a; }
+    .tl-divider { width: 1px; height: 24px; background: #1a2530; flex-shrink: 0; margin: 0 4px; }
     #timeline-controls { display: flex; gap: 4px; flex-shrink: 0; }
-    .tl-btn { border: 1px solid #1c2a36; background: #0e1520; color: #4e7888; border-radius: 3px; font-size: .62rem; font-weight: 700; letter-spacing: .08em; padding: 4px 8px; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; }
+    .tl-btn { border: 1px solid #1c2a36; background: #0e1520; color: #4e7888; border-radius: 2px; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 4px 8px; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; }
     .tl-btn:hover { background: #111e2a; border-color: #254056; color: #7abcc8; }
-    .tl-btn.tl-btn-active { background: #0a2422; color: #3ec9b8; border-color: #1f5e5a; }
+    .tl-btn.tl-btn-active { background: #0a2018; color: #3ec9b8; border-color: #1f5e5a; }
     .tl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
     #timeline-scrub-area { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
     .tl-time-label { font-size: .55rem; color: #3a5060; font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: nowrap; flex-shrink: 0; }
@@ -698,10 +813,10 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     .profile-history-entry:last-child { border-bottom: none; }
     .profile-history-entry .phe-ts { color: #2a3840; margin-right: 5px; }
     .profile-history-entry .phe-kind { color: #3ec9b8; margin-right: 5px; }
-    /* ── Adjust globe shell bottom to make room for timeline ─────────────── */
-    #globe-shell { padding-bottom: 44px; }
+    /* ── Adjust globe shell bottom to make room for bottom action bar ────── */
+    #globe-shell { padding-bottom: 48px; }
     /* ── Mode Drawer: right-side slide-in console (Street Level / Ground Level) ── */
-    #mode-drawer { position: absolute; right: 0; top: 0; bottom: 44px; width: 268px; z-index: 18; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; transform: translateX(268px); opacity: 0; pointer-events: none; transition: transform 260ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
+    #mode-drawer { position: absolute; right: 0; top: 0; bottom: 48px; width: 268px; z-index: 18; background: #05060aee; border-left: 1px solid #141820; display: flex; flex-direction: column; overflow: hidden; transform: translateX(268px); opacity: 0; pointer-events: none; transition: transform 260ms cubic-bezier(.4,0,.2,1), opacity 180ms ease; }
     #mode-drawer.open { transform: translateX(0); opacity: 1; pointer-events: auto; }
     #mode-drawer-hdr { display: flex; align-items: center; padding: 6px 10px; border-bottom: 1px solid #1f5e5a; flex-shrink: 0; gap: 6px; background: #07080c; }
     #mode-drawer-indicator { color: #c05050; font-size: .66rem; animation: rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0; }
@@ -777,6 +892,162 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     /* layer row interactive feedback */
     .layer-row { cursor: pointer; }
     .layer-row.feed-open { background: #080e14; border-left: 2px solid #3ec9b8; }
+    /* ── Multi-View Dashboard System ──────────────────────────────────────── */
+    #screen-nav { background: #05060a; border-bottom: 1px solid #141e2a; padding: 0; display: flex; align-items: stretch; flex-shrink: 0; min-height: 32px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .screen-tab { border: none; border-bottom: 2px solid transparent; background: transparent; color: #3a5060; font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 0 16px; cursor: pointer; transition: color 160ms, border-color 160ms, background 160ms; white-space: nowrap; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .screen-tab:hover { color: #6ab0c8; background: #0a1018; }
+    .screen-tab.active { color: #3ec9b8; border-bottom-color: #3ec9b8; }
+    #screen-nav-sep { flex: 1; }
+    #grid-mode-btn { border: none; border-left: 1px solid #141e2a; border-bottom: 2px solid transparent; background: #07080c; color: #4e7888; font-size: .58rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 0 14px; cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace; transition: background 160ms, color 160ms, border-color 160ms; white-space: nowrap; flex-shrink: 0; }
+    #grid-mode-btn:hover { background: #0a1018; color: #8abccc; }
+    #grid-mode-btn.active { background: #0a2422; color: #3ec9b8; border-bottom-color: #3ec9b8; }
+    /* ── Screen Panels ─────────────────────────────────────────────────────── */
+    .screen-panel { position: absolute; z-index: 16; background: #07080cee; border: 1px solid #1a2d3a; display: flex; flex-direction: column; overflow: hidden; pointer-events: auto; opacity: 1; transform: translateX(0); transition: transform 280ms cubic-bezier(.4,0,.2,1), opacity 220ms ease; }
+    .screen-panel.hidden { opacity: 0; pointer-events: none; transform: translateX(14px); }
+    .screen-panel.minimized { display: none !important; }
+    .screen-panel-hdr { display: flex; align-items: center; padding: 5px 10px; border-bottom: 1px solid #141e2a; flex-shrink: 0; gap: 6px; background: #050609; }
+    .screen-panel-icon { font-size: .76rem; color: #3ec9b8; flex-shrink: 0; line-height: 1; }
+    .screen-panel-title { font-size: .57rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; }
+    .screen-panel-actions { display: flex; gap: 2px; flex-shrink: 0; }
+    .screen-panel-btn { border: 1px solid #141e2a; background: #08090d; color: #2e4050; border-radius: 2px; font-size: .66rem; cursor: pointer; padding: 1px 5px; line-height: 1.4; transition: color 160ms, background 160ms; }
+    .screen-panel-btn:hover { color: #6898aa; background: #0e1828; }
+    .screen-panel-body { flex: 1; overflow-y: auto; padding: 8px 10px; min-height: 0; font-size: .66rem; font-family: 'Cascadia Code', 'Fira Code', monospace; color: #4e7888; }
+    /* Single-screen: panel overlaid on right side */
+    #screen-overview, #screen-trajectory, #screen-environmental, #screen-log { right: 0; top: 0; bottom: 48px; width: 290px; border-right: none; border-top: none; border-bottom: none; }
+    #screen-overview { border-left-color: #1f5e5a; }
+    #screen-trajectory { border-left-color: #1a3a70; }
+    #screen-environmental { border-left-color: #1a4a30; }
+    #screen-log { border-left-color: #2a2050; }
+    /* ── Grid Mode ─────────────────────────────────────────────────────────── */
+    body.grid-mode .screen-panel { background: #07080cd0; border: 1px solid #1a2d3a !important; border-radius: 0; transition: transform 280ms cubic-bezier(.4,0,.2,1), opacity 220ms ease, width 280ms cubic-bezier(.4,0,.2,1), height 280ms cubic-bezier(.4,0,.2,1); }
+    body.grid-mode .screen-panel.hidden { opacity: 0; pointer-events: none; }
+    body.grid-mode #screen-overview  { top: 0; left: 0; right: auto; bottom: auto; width: calc(50% - 1px); height: calc(50% - 24px - 1px); }
+    body.grid-mode #screen-trajectory { top: 0; right: 0; left: auto; bottom: auto; width: calc(50%); height: calc(50% - 24px - 1px); border-left: none !important; }
+    body.grid-mode #screen-environmental { bottom: 49px; left: 0; top: auto; right: auto; width: calc(50% - 1px); height: calc(50% - 24px - 1px); border-top: none !important; }
+    body.grid-mode #screen-log { bottom: 49px; right: 0; top: auto; left: auto; width: calc(50%); height: calc(50% - 24px - 1px); border-left: none !important; border-top: none !important; }
+    body.grid-mode .screen-panel-hdr { cursor: zoom-in; }
+    /* Focused panel expands to fill viewport */
+    body.grid-mode .screen-panel.focused { width: 100% !important; height: calc(100% - 48px) !important; top: 0 !important; left: 0 !important; right: auto !important; bottom: auto !important; z-index: 17; border: 1px solid #1f5e5a !important; }
+    body.grid-mode .screen-panel.focused .screen-panel-hdr { cursor: zoom-out; }
+    /* ── Minimized Tray ────────────────────────────────────────────────────── */
+    #screen-tray { position: absolute; bottom: 48px; left: 160px; right: 0; height: 0; display: flex; align-items: flex-end; gap: 4px; padding: 0; z-index: 22; pointer-events: none; transition: left 220ms cubic-bezier(.4,0,.2,1), height 200ms ease, padding 200ms ease; }
+    #screen-tray.has-items { height: 32px; padding: 0 8px 4px; }
+    body.rail-collapsed #screen-tray { left: 16px; }
+    .tray-chip { border: 1px solid #1f5e5a; background: #07080cf0; color: #3ec9b8; border-radius: 3px; font-size: .57rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; padding: 4px 10px; cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace; transition: background 160ms, color 160ms; display: flex; align-items: center; gap: 5px; white-space: nowrap; pointer-events: auto; backdrop-filter: blur(4px); }
+    .tray-chip:hover { background: #0a2422; }
+    /* ── Panel content helpers ─────────────────────────────────────────────── */
+    .sp-section { font-size: .54rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: #1e3040; padding: 8px 0 3px; border-bottom: 1px solid #0e1820; margin-bottom: 4px; }
+    .sp-section:first-child { padding-top: 0; }
+    .sp-kv { display: flex; justify-content: space-between; align-items: baseline; padding: 3px 0; border-bottom: 1px solid #0e1820; }
+    .sp-kv:last-child { border-bottom: none; }
+    .sp-key { color: #2e4050; letter-spacing: .08em; text-transform: uppercase; font-size: .56rem; flex-shrink: 0; }
+    .sp-val { color: #7ab8cc; font-weight: 600; text-align: right; font-size: .66rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+    .sp-alert { padding: 4px 7px; border-left: 2px solid; border-radius: 2px; margin-bottom: 4px; font-size: .64rem; background: #07080c; }
+    .sp-alert.ok { border-color: #2ab8a4; color: #3ec9b8; }
+    .sp-alert.warn { border-color: #b89040; color: #c8a848; }
+    .sp-alert.err { border-color: #d05050; color: #e05858; }
+    .sp-log-entry { padding: 3px 0; border-bottom: 1px solid #0e1218; font-size: .62rem; line-height: 1.4; color: #4e6878; }
+    .sp-log-entry .sp-ts { color: #283038; margin-right: 4px; font-size: .54rem; }
+    .sp-log-agent { color: #3ec9b8 !important; }
+    .sp-log-system { color: #8060b8 !important; }
+    .sp-log-region { color: #b89040 !important; }
+    .sp-compass-wrap { display: flex; align-items: center; justify-content: center; padding: 10px 0; }
+    .sp-compass-ring { width: 80px; height: 80px; border-radius: 50%; border: 2px solid #1a3a70; position: relative; display: flex; align-items: center; justify-content: center; background: #06080e; flex-shrink: 0; }
+    .sp-compass-lbl { position: absolute; font-size: .5rem; color: #3ec9b8; font-weight: 700; }
+    .sp-compass-lbl.n { top: 3px; left: 50%; transform: translateX(-50%); }
+    .sp-compass-lbl.s { bottom: 3px; left: 50%; transform: translateX(-50%); color: #4e7888; }
+    .sp-compass-lbl.e { right: 3px; top: 50%; transform: translateY(-50%); color: #4e7888; }
+    .sp-compass-lbl.w { left: 3px; top: 50%; transform: translateY(-50%); color: #4e7888; }
+    #sp-compass-needle { width: 2px; height: 34px; background: linear-gradient(#3ec9b8 50%, #c05050 50%); transform-origin: center; border-radius: 1px; transition: transform 400ms ease; }
+    .sp-env-bar { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+    .sp-env-lbl { color: #2e4050; font-size: .56rem; letter-spacing: .08em; text-transform: uppercase; width: 58px; flex-shrink: 0; }
+    .sp-env-track { flex: 1; height: 4px; background: #111820; border-radius: 2px; overflow: hidden; }
+    .sp-env-fill { height: 100%; border-radius: 2px; transition: width 600ms ease; }
+    .sp-env-val { color: #7ab8cc; font-size: .6rem; width: 38px; text-align: right; flex-shrink: 0; }
+
+    /* ── Quantum Simulation Engine (Hilbert-Space Earth) ──────────────────── */
+    #sim-drawer { position: absolute; left: 160px; top: 0; bottom: 48px; width: 260px; z-index: 17;
+      background: #05060aee; border-right: 1px solid #141820; display: flex; flex-direction: column;
+      overflow: hidden; transform: translateX(-260px); opacity: 0; pointer-events: none;
+      transition: transform 260ms cubic-bezier(.4,0,.2,1), opacity 180ms ease, left 220ms cubic-bezier(.4,0,.2,1); }
+    #sim-drawer.open { transform: translateX(0); opacity: 1; pointer-events: auto; }
+    body.rail-collapsed #sim-drawer { left: 16px; }
+    #sim-header { display: flex; align-items: center; padding: 7px 10px; border-bottom: 1px solid #111820; gap: 6px; flex-shrink: 0; }
+    #sim-title { font-size: .6rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #3ec9b8; flex: 1; }
+    #sim-close { border: none; background: none; color: #2e4050; font-size: 1rem; cursor: pointer; padding: 0 2px; }
+    #sim-close:hover { color: #3ec9b8; }
+    #sim-controls { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-bottom: 1px solid #0e1820; flex-shrink: 0; }
+    .sim-ctrl-btn { border: 1px solid #1a2d3a; background: #0a1018; color: #5a8898; border-radius: 2px;
+      font-size: .57rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: 4px 8px;
+      cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace;
+      transition: background 140ms, color 140ms, border-color 140ms; }
+    .sim-ctrl-btn:hover { background: #0e1e2e; border-color: #2a5060; color: #3ec9b8; }
+    .sim-ctrl-btn:disabled { opacity: .35; cursor: not-allowed; }
+    #sim-hint { font-size: .6rem; color: #2a4050; padding: 6px 10px 4px; font-style: italic; flex-shrink: 0; line-height: 1.5; }
+    #sim-locations-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0; }
+    .sim-loc-card { border-bottom: 1px solid #0e1820; padding: 7px 10px; }
+    .sim-loc-label { font-size: .62rem; font-weight: 700; color: #5ab8ac; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 3px; }
+    .sim-loc-coords { font-size: .56rem; color: #2a4050; font-family: 'Cascadia Code', 'Fira Code', monospace; margin-bottom: 4px; }
+    .sim-loc-actions { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 5px; }
+    .sim-loc-btn { border: 1px solid #141e28; background: #080c14; color: #3a6070;
+      border-radius: 2px; font-size: .54rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+      padding: 3px 6px; cursor: pointer; font-family: 'Cascadia Code', 'Fira Code', monospace;
+      transition: background 120ms, color 120ms; }
+    .sim-loc-btn:hover { background: #0c1a28; color: #3ec9b8; border-color: #1f5e5a; }
+    .sim-branch-list { display: flex; flex-direction: column; gap: 2px; }
+    .sim-branch-row { display: flex; align-items: center; gap: 5px; padding: 2px 0; }
+    .sim-branch-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .sim-branch-dot.active   { background: #3ec9b8; box-shadow: 0 0 4px #3ec9b830; }
+    .sim-branch-dot.active.reinforced { background: #3ec9b8; box-shadow: 0 0 8px #3ec9b870; }
+    .sim-branch-dot.active.damped     { background: #3ec9b8; opacity: .45; box-shadow: none; }
+    .sim-branch-dot.pruned   { background: #3a3a4a; }
+    .sim-branch-dot.collapsed{ background: #f0b040; box-shadow: 0 0 4px #f0b04030; }
+    .sim-branch-info { font-size: .56rem; color: #4a6878; font-family: 'Cascadia Code', 'Fira Code', monospace; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sim-branch-score { font-size: .56rem; color: #2a8070; font-family: 'Cascadia Code', 'Fira Code', monospace; flex-shrink: 0; }
+    .sim-branch-iw { font-size: .52rem; font-family: 'Cascadia Code', 'Fira Code', monospace; flex-shrink: 0; padding: 0 3px; border-radius: 2px; }
+    .sim-branch-iw.reinforced { color: #3ec9b8; background: #0a2820; }
+    .sim-branch-iw.damped     { color: #8a5840; background: #180c08; }
+    .sim-branch-iw.neutral    { color: #2a4050; }
+    .sim-collapsed-badge { display: inline-block; margin-top: 3px; font-size: .54rem; color: #f0b040; letter-spacing: .08em; text-transform: uppercase; padding: 1px 5px; border: 1px solid #4a3800; border-radius: 2px; background: #1a1000; }
+    .sim-global-winner-badge { color: #ffe080; border-color: #8a6000; background: #2a1800; box-shadow: 0 0 6px #f0b04040; }
+    #sim-audit { flex-shrink: 0; border-top: 1px solid #0e1820; padding: 5px 10px; max-height: 90px; overflow-y: auto; }
+    #sim-audit-title { font-size: .54rem; color: #1e3040; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
+    .sim-audit-row { font-size: .54rem; color: #2a4a58; font-family: 'Cascadia Code', 'Fira Code', monospace; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Strategy preset row */
+    #sim-strategy-row { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid #0e1820; flex-shrink: 0; }
+    #sim-strategy-lbl { font-size: .54rem; color: #2a4050; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+    #sim-strategy-select { flex: 1; background: #080c14; border: 1px solid #1a2d3a; color: #5a8898; border-radius: 2px;
+      font-size: .54rem; padding: 3px 4px; font-family: 'Cascadia Code', 'Fira Code', monospace; cursor: pointer;
+      transition: border-color 140ms, color 140ms; }
+    #sim-strategy-select:hover, #sim-strategy-select:focus { border-color: #2a5060; color: #3ec9b8; outline: none; }
+    /* Continuous-collapse live status bar */
+    #sim-live-status { font-size: .54rem; color: #1e3040; padding: 3px 10px; min-height: 16px; }
+    #sim-live-status.running { color: #3ec9b8; }
+    #sim-signals-status { font-size: .50rem; color: #2a4050; padding: 2px 10px 3px; min-height: 14px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace; display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+    .sim-live-event { animation: simFade 2s ease-out forwards; }
+    @keyframes simFade { 0% { opacity:1; } 70% { opacity:1; } 100% { opacity:0.35; } }
+    /* Auto button active state */
+    .sim-ctrl-btn.auto-active { background: #0a2820; border-color: #3ec9b8; color: #3ec9b8; }
+    /* Live leader indicator on branch rows */
+    .sim-branch-row.live-leader { background: #0a1e18; }
+    .sim-live-leader-badge { font-size: .50rem; color: #3ec9b8; padding: 0 3px; flex-shrink: 0; }
+    .sim-live-leader-badge.locked { color: #f0b040; }
+    /* Near-winner pressure flash */
+    .sim-loc-card.pressure-flash { animation: pressureFlash 1s ease-out; }
+    @keyframes pressureFlash { 0%,100% { border-color: transparent; } 50% { border-color: #e05878; } }
+    /* Source-influence signal badge — shown per active branch */
+    .sim-branch-signals { display: flex; gap: 2px; flex-wrap: wrap; align-items: center; }
+    .sim-signal-chip { font-size: .48rem; font-family: 'Cascadia Code', 'Fira Code', monospace;
+      padding: 0 3px; border-radius: 2px; flex-shrink: 0; white-space: nowrap; }
+    .sim-signal-chip.traffic  { color: #e09040; background: #1a0e04; }
+    .sim-signal-chip.weather  { color: #4ab0e8; background: #041018; }
+    .sim-signal-chip.aircraft { color: #9870e8; background: #0c0418; }
+    .sim-signal-chip.vessel   { color: #40b8d0; background: #041418; }
+    .sim-signal-chip.satellite{ color: #80d070; background: #061408; }
+    .sim-signal-chip.sensor   { color: #d0a840; background: #141004; }
+    /* Signal-pressure origin dot glow when interferenceRelevance is high */
+    .sim-loc-card.signal-pressure .sim-loc-label { color: #e09050; }
   </style>
 </head>
 <body>
@@ -792,20 +1063,36 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <span id="style-indicator">mode: crt</span>
   <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
 </header>
+<nav id="screen-nav" role="navigation" aria-label="Dashboard Screens">
+  <button class="screen-tab active" data-screen="overview" type="button" title="Mission Overview">⊙ Overview</button>
+  <button class="screen-tab" data-screen="trajectory" type="button" title="Trajectory">◎ Trajectory</button>
+  <button class="screen-tab" data-screen="environmental" type="button" title="Environmental">◈ Environmental</button>
+  <button class="screen-tab" data-screen="log" type="button" title="Mission Log">◉ Mission Log</button>
+  <div id="screen-nav-sep" aria-hidden="true"></div>
+  <button id="grid-mode-btn" type="button" title="Toggle 2×2 Grid View" aria-pressed="false">⊞ Grid</button>
+</nav>
 <div id="globe-shell">
 
-  <!-- Launcher rail -->
-  <nav id="rail" aria-label="Panel launcher">
-    <button class="rail-btn" type="button" data-panel="layers" title="Data Layers" aria-label="Toggle Layers panel">☰</button>
-    <button class="rail-btn" type="button" data-panel="events" title="Event Stream" aria-label="Toggle Events panel">◉</button>
-    <button class="rail-btn" type="button" data-panel="target" title="Selected Target" aria-label="Toggle Target panel">⊕</button>
-    <button class="rail-btn" type="button" data-panel="stats"  title="Stats" aria-label="Toggle Stats panel">▦</button>
-    <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel">◈</button>
-    <div class="rail-sep"></div>
-    <button class="rail-btn" id="orch-rail-btn" type="button" title="Orchestration Overlay" aria-label="Toggle Orchestration Overlay">⬡</button>
-    <button class="rail-btn" type="button" data-panel="tactical" title="Tactical Controls" aria-label="Toggle Tactical panel">⊙</button>
-    <button class="rail-btn" id="rail-btn-street-level" type="button" title="Street Level" aria-label="Street Level" aria-pressed="false">⊞</button>
-    <button class="rail-btn" id="rail-btn-ground-level" type="button" title="Ground Level" aria-label="Ground Level" aria-pressed="false">▣</button>
+  <!-- Rail drawer tab — slim left-edge toggle strip -->
+  <button id="rail-tab" type="button" aria-label="Toggle command panel" title="Toggle command panel" aria-expanded="true">
+    <span id="rail-tab-arrow">❯</span>
+    <span id="rail-tab-label">CTRL</span>
+  </button>
+
+  <!-- Left command panel -->
+  <nav id="rail" aria-label="Command panel">
+    <div class="rail-section-title">SYSTEM</div>
+    <button class="rail-btn" type="button" data-panel="style"  title="Style / FX" aria-label="Toggle Style panel"><span class="rail-icon">◈</span> Style / FX</button>
+    <button class="rail-btn" type="button" data-panel="tactical" title="Tactical Controls" aria-label="Toggle Tactical panel"><span class="rail-icon">⊙</span> Tactical</button>
+    <button class="rail-btn" id="orch-rail-btn" type="button" title="Orchestration Overlay" aria-label="Toggle Orchestration Overlay"><span class="rail-icon">⬡</span> Orchestration</button>
+    <button class="rail-btn" id="rail-btn-street-level" type="button" title="Street Level" aria-label="Street Level" aria-pressed="false"><span class="rail-icon">⊞</span> Street Level</button>
+    <button class="rail-btn" id="rail-btn-ground-level" type="button" title="Ground Level" aria-label="Ground Level" aria-pressed="false"><span class="rail-icon">▣</span> Ground Level</button>
+    <div class="rail-section-title">LAYERS</div>
+    <button class="rail-btn" type="button" data-panel="layers" title="Data Layers" aria-label="Toggle Layers panel"><span class="rail-icon">☰</span> Data Layers</button>
+    <div class="rail-section-title">ACTIONS</div>
+    <button class="rail-btn" type="button" data-panel="events" title="Event Stream" aria-label="Toggle Events panel"><span class="rail-icon">◉</span> Events</button>
+    <button class="rail-btn" type="button" data-panel="target" title="Selected Target" aria-label="Toggle Target panel"><span class="rail-icon">⊕</span> Target</button>
+    <button class="rail-btn" type="button" data-panel="stats"  title="Stats" aria-label="Toggle Stats panel"><span class="rail-icon">▦</span> Stats</button>
   </nav>
 
   <!-- Layers drawer (left) -->
@@ -1010,6 +1297,28 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div class="feed-body">
       <div id="feed-list" class="feed-list"></div>
       <div id="feed-detail-pane" class="feed-detail-pane"></div>
+  <!-- Layer Feed drawer (right panel, opens when a layer is selected) -->
+  <div id="drawer-layer-feed" class="drawer drawer-right" role="region" aria-label="Layer Feed" style="width:300px;">
+    <div class="drawer-header">
+      <span class="lf-pulse" id="lf-pulse-indicator">●</span>
+      <span class="drawer-title" id="lf-title">Layer Feed</span>
+      <button class="drawer-close" id="lf-close-btn" type="button" aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body" id="lf-body">
+      <div id="lf-summary" class="lf-summary">
+        <div class="lf-count-row">
+          <span class="lf-count-label">Active</span>
+          <span class="lf-count-val" id="lf-count">—</span>
+        </div>
+        <div class="lf-count-row">
+          <span class="lf-count-label">Region</span>
+          <span class="lf-count-val" id="lf-region">—</span>
+        </div>
+      </div>
+      <div class="lf-section-title">Latest Events</div>
+      <div id="lf-events" class="lf-events"></div>
+      <div class="lf-section-title">Tracked Objects</div>
+      <div id="lf-entities" class="lf-entities"></div>
     </div>
   </div>
 
@@ -1183,15 +1492,24 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   <canvas id="orch-canvas" aria-hidden="true"></canvas>
 
   <!-- Orchestration node inspector — right-side panel, opens on node click -->
-  <div id="orch-inspector" role="complementary" aria-label="Node Inspector">
+  <div id="orch-inspector" class="closed" role="complementary" aria-label="Node Inspector" aria-hidden="true">
     <div class="oi-header">
       <span class="oi-title">Node Inspector</span>
       <button class="oi-close" id="orch-inspector-close" type="button" aria-label="Close inspector">✕</button>
     </div>
     <div class="oi-body" id="orch-inspector-body">
       <div class="oi-field"><span class="oi-field-label">Select a node</span></div>
-  <!-- Timeline Engine bar -->
-  <div id="timeline-bar" role="region" aria-label="Timeline Engine">
+    </div>
+  </div>
+  <!-- Bottom action bar + Timeline Engine -->
+  <div id="timeline-bar" role="region" aria-label="Bottom Action Bar">
+    <div id="bottom-quick-actions">
+      <button class="bottom-action-btn" id="act-write-btn" type="button" title="Write note or event">✍ WRITE</button>
+      <button class="bottom-action-btn" id="act-mission-btn" type="button" title="Mission planner">⊛ MISSION</button>
+      <button class="bottom-action-btn" id="act-logs-btn" type="button" title="Open event logs" data-panel="events">◉ LOGS</button>
+      <button class="bottom-action-btn" id="act-sim-btn" type="button" title="Quantum simulation engine — click globe to spawn world states">⟁ SIM</button>
+    </div>
+    <div class="tl-divider"></div>
     <div id="timeline-controls">
       <button id="tl-live-btn" class="tl-btn tl-btn-active" type="button" title="Switch to live mode" aria-pressed="true">⬤ LIVE</button>
       <button id="tl-replay-btn" class="tl-btn" type="button" title="Switch to replay mode" aria-pressed="false">⏪ REPLAY</button>
@@ -1398,6 +1716,153 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- ── Multi-View Dashboard Screen Panels ──────────────────────────────── -->
+
+  <!-- Mission Overview Panel -->
+  <div id="screen-overview" class="screen-panel" role="region" aria-label="Mission Overview">
+    <div class="screen-panel-hdr">
+      <span class="screen-panel-icon">⊙</span>
+      <span class="screen-panel-title">Mission Overview</span>
+      <div class="screen-panel-actions">
+        <button class="screen-panel-btn" data-action="minimize" data-panel="overview" type="button" title="Minimize panel" aria-label="Minimize Mission Overview">_</button>
+      </div>
+    </div>
+    <div class="screen-panel-body" id="sp-body-overview">
+      <div class="sp-section">System Status</div>
+      <div class="sp-kv"><span class="sp-key">Tick</span><span class="sp-val" id="sp-ov-tick">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Mode</span><span class="sp-val" id="sp-ov-mode">LIVE</span></div>
+      <div class="sp-kv"><span class="sp-key">Uptime</span><span class="sp-val" id="sp-ov-uptime">—</span></div>
+      <div class="sp-section">Active Entities</div>
+      <div class="sp-kv"><span class="sp-key">Agents</span><span class="sp-val" id="sp-ov-agents">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Regions</span><span class="sp-val" id="sp-ov-regions">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Flights</span><span class="sp-val" id="sp-ov-flights">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Satellites</span><span class="sp-val" id="sp-ov-sats">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Vehicles</span><span class="sp-val" id="sp-ov-vehicles">—</span></div>
+      <div class="sp-kv"><span class="sp-key" style="padding-left:8px;font-size:.56rem;color:#2e4a5a">↳ gen/drawn</span><span class="sp-val" id="sp-ov-vehicles-drawn" style="font-size:.56rem;color:#4e8098">—</span></div>
+      <div class="sp-section">Alerts</div>
+      <div class="sp-alert ok" id="sp-ov-alert">All systems nominal</div>
+    </div>
+  </div>
+
+  <!-- Trajectory Panel -->
+  <div id="screen-trajectory" class="screen-panel hidden" role="region" aria-label="Trajectory">
+    <div class="screen-panel-hdr">
+      <span class="screen-panel-icon">◎</span>
+      <span class="screen-panel-title">Trajectory</span>
+      <div class="screen-panel-actions">
+        <button class="screen-panel-btn" data-action="minimize" data-panel="trajectory" type="button" title="Minimize panel" aria-label="Minimize Trajectory">_</button>
+      </div>
+    </div>
+    <div class="screen-panel-body" id="sp-body-trajectory">
+      <div class="sp-compass-wrap">
+        <div class="sp-compass-ring">
+          <span class="sp-compass-lbl n">N</span>
+          <span class="sp-compass-lbl s">S</span>
+          <span class="sp-compass-lbl e">E</span>
+          <span class="sp-compass-lbl w">W</span>
+          <div id="sp-compass-needle"></div>
+        </div>
+      </div>
+      <div class="sp-section">Camera Position</div>
+      <div class="sp-kv"><span class="sp-key">Latitude</span><span class="sp-val" id="sp-tr-lat">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Longitude</span><span class="sp-val" id="sp-tr-lng">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Altitude</span><span class="sp-val" id="sp-tr-alt">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Heading</span><span class="sp-val" id="sp-tr-heading">—</span></div>
+      <div class="sp-section">Waypoints</div>
+      <div class="sp-kv"><span class="sp-key">Next WP</span><span class="sp-val">—</span></div>
+      <div class="sp-kv"><span class="sp-key">ETA</span><span class="sp-val">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Speed</span><span class="sp-val">—</span></div>
+    </div>
+  </div>
+
+  <!-- Environmental Panel -->
+  <div id="screen-environmental" class="screen-panel hidden" role="region" aria-label="Environmental">
+    <div class="screen-panel-hdr">
+      <span class="screen-panel-icon">◈</span>
+      <span class="screen-panel-title">Environmental</span>
+      <div class="screen-panel-actions">
+        <button class="screen-panel-btn" data-action="minimize" data-panel="environmental" type="button" title="Minimize panel" aria-label="Minimize Environmental">_</button>
+      </div>
+    </div>
+    <div class="screen-panel-body" id="sp-body-environmental">
+      <div class="sp-section">Atmosphere</div>
+      <div class="sp-env-bar">
+        <span class="sp-env-lbl">Visibility</span>
+        <div class="sp-env-track"><div class="sp-env-fill" id="sp-env-vis-fill" style="width:78%;background:#2ab8a4;"></div></div>
+        <span class="sp-env-val" id="sp-env-vis-val">78%</span>
+      </div>
+      <div class="sp-env-bar">
+        <span class="sp-env-lbl">Wind</span>
+        <div class="sp-env-track"><div class="sp-env-fill" id="sp-env-wind-fill" style="width:35%;background:#b89040;"></div></div>
+        <span class="sp-env-val" id="sp-env-wind-val">35%</span>
+      </div>
+      <div class="sp-env-bar">
+        <span class="sp-env-lbl">Cloud Cover</span>
+        <div class="sp-env-track"><div class="sp-env-fill" id="sp-env-cloud-fill" style="width:52%;background:#4e7888;"></div></div>
+        <span class="sp-env-val" id="sp-env-cloud-val">52%</span>
+      </div>
+      <div class="sp-section">Conditions</div>
+      <div class="sp-kv"><span class="sp-key">Temperature</span><span class="sp-val" id="sp-env-temp">—°C</span></div>
+      <div class="sp-kv"><span class="sp-key">Pressure</span><span class="sp-val" id="sp-env-pressure">—hPa</span></div>
+      <div class="sp-kv"><span class="sp-key">Humidity</span><span class="sp-val" id="sp-env-humidity">—%</span></div>
+      <div class="sp-section">Weather Cells</div>
+      <div class="sp-kv"><span class="sp-key">Active Cells</span><span class="sp-val" id="sp-env-cells">—</span></div>
+      <div class="sp-kv"><span class="sp-key">Status</span><span class="sp-val" id="sp-env-status">NOMINAL</span></div>
+    </div>
+  </div>
+
+  <!-- Mission Log Panel -->
+  <div id="screen-log" class="screen-panel hidden" role="region" aria-label="Mission Log">
+    <div class="screen-panel-hdr">
+      <span class="screen-panel-icon">◉</span>
+      <span class="screen-panel-title">Mission Log</span>
+      <div class="screen-panel-actions">
+        <button class="screen-panel-btn" data-action="minimize" data-panel="log" type="button" title="Minimize panel" aria-label="Minimize Mission Log">_</button>
+      </div>
+    </div>
+    <div class="screen-panel-body" id="sp-body-log">
+      <div style="color:#2e4050;font-style:italic;">Awaiting events…</div>
+    </div>
+  </div>
+
+  <!-- Quantum Simulation Drawer -->
+  <div id="sim-drawer" role="region" aria-label="Quantum Simulation Engine">
+    <div id="sim-header">
+      <span id="sim-title">⟁ Simulation Engine</span>
+      <button id="sim-close" type="button" aria-label="Close simulation panel">✕</button>
+    </div>
+    <div id="sim-hint">Click anywhere on the globe to spawn parallel world states at that location.</div>
+    <div id="sim-controls">
+      <button class="sim-ctrl-btn" id="sim-btn-evolve-all" type="button" title="Advance all branches one generation">▶ Evolve All</button>
+      <button class="sim-ctrl-btn" id="sim-btn-prune-all" type="button" title="Prune low-confidence branches">✂ Prune All</button>
+      <button class="sim-ctrl-btn" id="sim-btn-interfere" type="button" title="Apply quantum interference weights across all active branches">⊕ Interfere</button>
+      <button class="sim-ctrl-btn" id="sim-btn-collapse-all" type="button" title="Collapse all locations to their best branch">⊙ Collapse</button>
+      <button class="sim-ctrl-btn" id="sim-btn-auto-collapse" type="button" title="Toggle continuous re-scoring loop (hysteresis + winner-lock)">⟳ Auto</button>
+      <button class="sim-ctrl-btn" id="sim-btn-clear-all" type="button" title="Remove all simulation locations">⊘ Clear</button>
+    </div>
+    <div id="sim-strategy-row">
+      <span id="sim-strategy-lbl">Strategy</span>
+      <select id="sim-strategy-select" title="Mission priority profile — drives strategicWeight in adjustedScore = (u×c×iw) - cost + strategicWeight">
+        <option value="balanced">Balanced</option>
+        <option value="safety">Safety First</option>
+        <option value="speed">Speed</option>
+        <option value="coverage">Coverage</option>
+        <option value="resource_efficiency">Resource Efficiency</option>
+        <option value="response_urgency">Response Urgency</option>
+      </select>
+    </div>
+    <div id="sim-live-status"></div>
+    <div id="sim-signals-status" title="Active real-world signal contributions driving branch scoring"></div>
+    <div id="sim-locations-list"></div>
+    <div id="sim-audit">
+      <div id="sim-audit-title">Collapse Audit Trail</div>
+      <div id="sim-audit-rows"></div>
+    </div>
+  </div>
+
+  <!-- Minimized panel tray -->
+  <div id="screen-tray" role="region" aria-label="Minimized Panels"></div>
+
 </div>
 
 
@@ -1428,6 +1893,12 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let cesiumViewer = null;
   let cesiumGoogleTileset = null;
   const cesiumEntityRefs = { agents: {}, regions: {}, trails: {} };
+  // Persistent live-entity layer: kept in a separate DataSource so it survives
+  // the per-tick cesiumViewer.entities.removeAll() that clears agent/region/traffic.
+  // SampledPositionProperty lets Cesium interpolate positions at 60fps between
+  // 800ms server snapshots, giving smooth continuous agent motion.
+  let cesiumLiveDataSource = null;  // Cesium.CustomDataSource — initialized in initCesium
+  const cesiumLiveEntityMap = {};   // entityId -> { entity: CesiumEntity, sampledPos: SampledPositionProperty }
   let cesiumSelectionHandler = null;
   let cesiumSafetyViewApplied = false;
   let streetViewPanorama = null;
@@ -1727,6 +2198,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   let eventSearchQuery = '';
   let activeEventFilter = 'all';
   let styleMode = 'crt';
+  let activeLayerFeed = null;   // key of the layer whose feed panel is currently open
   const STYLE_PRESETS = {
     tactical:     { bloom: 20, sharpen: 30, noise: 18, vignette: 50, pixelation: 14, glow: 18 },
     surveillance: { bloom: 14, sharpen: 52, noise: 12, vignette: 60, pixelation: 20, glow: 10 },
@@ -1757,6 +2229,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     liveFlights: null,
     satellites:  null,
   };
+  // Tracks the active flight provider reported by the server (used for display)
+  let activeFlightProvider = 'sim';
 
   // ── Layer UI helpers ──────────────────────────────────────────────────────
   function timeSinceStr(tsMs) {
@@ -1788,7 +2262,149 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     if (!on) setLayerStatus(key, 'paused');
   }
 
-  // ── Panel / drawer state ──────────────────────────────────────────────────
+  // ── Layer Feed Panel ──────────────────────────────────────────────────────
+  const LAYER_FEED_LABELS = {
+    liveFlights:  'Live Flights',
+    satellites:   'Satellites',
+    vehicles:     'Ground Vehicles',
+    aircraft:     'Aircraft',
+    vessels:      'Maritime Vessels',
+    sensors:      'Sensor Nodes',
+    weatherCells: 'Weather Cells',
+    trafficSim:   'Traffic Simulation',
+  };
+
+  function openLayerFeed(layerKey) {
+    const drawerEl = document.getElementById('drawer-layer-feed');
+    if (!drawerEl) return;
+    if (activeLayerFeed === layerKey && drawerEl.classList.contains('open')) {
+      closeLayerFeed();
+      return;
+    }
+    activeLayerFeed = layerKey;
+    // Optionally stack to the left of the right drawer when that is also open
+    const rightDrawer = document.getElementById('drawer-right');
+    drawerEl.classList.toggle('stacked', !!(rightDrawer && rightDrawer.classList.contains('open')));
+    drawerEl.classList.add('open');
+    const titleEl = document.getElementById('lf-title');
+    if (titleEl) titleEl.textContent = (LAYER_FEED_LABELS[layerKey] || layerKey) + ' Feed';
+    renderLayerFeedPanel(layerKey, state);
+  }
+
+  function closeLayerFeed() {
+    const drawerEl = document.getElementById('drawer-layer-feed');
+    if (drawerEl) { drawerEl.classList.remove('open'); drawerEl.classList.remove('stacked'); }
+    activeLayerFeed = null;
+    const pulseEl = document.getElementById('lf-pulse-indicator');
+    if (pulseEl) pulseEl.classList.remove('live');
+  }
+
+  /**
+   * Render the layer feed panel for the given layerKey using the current snapshot state.
+   * Shows active count, latest events from entityEventHistory, tracked objects, regional summary.
+   */
+  function renderLayerFeedPanel(layerKey, snapState) {
+    if (!layerKey) return;
+    const liveEntities = (snapState && snapState.liveEntities) || {};
+    const traffic = (snapState && snapState.traffic) || {};
+    const agents = (snapState && snapState.agents) || {};
+
+    // ── Resolve entity list for this layer ─────────────────────────────────
+    let entities = [];
+    if (layerKey === 'vehicles')     entities = liveEntities.vehicles || [];
+    else if (layerKey === 'aircraft') entities = liveEntities.aircraft || [];
+    else if (layerKey === 'vessels')  entities = liveEntities.vessels  || [];
+    else if (layerKey === 'sensors')  entities = liveEntities.sensors  || [];
+    else if (layerKey === 'weatherCells') entities = liveEntities.weather || [];
+    else if (layerKey === 'liveFlights')  entities = Object.values(agents).filter(function (a) { return a && String(a.type).toLowerCase() === 'flight'; });
+    else if (layerKey === 'satellites')   entities = Object.values(agents).filter(function (a) { return a && String(a.type).toLowerCase() === 'satellite'; });
+    else if (layerKey === 'trafficSim')   entities = traffic.segments || [];
+
+    // ── Active count ────────────────────────────────────────────────────────
+    const countEl = document.getElementById('lf-count');
+    if (countEl) countEl.textContent = entities.length;
+
+    // ── Regional summary ────────────────────────────────────────────────────
+    const regionEl = document.getElementById('lf-region');
+    if (regionEl) {
+      const regions = snapState && snapState.regions ? Object.values(snapState.regions) : [];
+      regionEl.textContent = regions.length ? regions.length + ' zone' + (regions.length !== 1 ? 's' : '') + ' active' : '—';
+    }
+
+    // ── Pulse indicator ─────────────────────────────────────────────────────
+    const pulseEl = document.getElementById('lf-pulse-indicator');
+    if (pulseEl) pulseEl.classList.toggle('live', entities.length > 0);
+
+    // ── Latest events ───────────────────────────────────────────────────────
+    const eventsEl = document.getElementById('lf-events');
+    if (eventsEl) {
+      // Gather events from all entity IDs for this layer
+      const allEvents = [];
+      for (const e of entities) {
+        if (!e || !e.id) continue;
+        const hist = (typeof layerFeedEventCache !== 'undefined' && layerFeedEventCache[e.id]) || [];
+        for (const ev of hist) allEvents.push({ entityId: e.id, ts: ev.ts, kind: ev.kind, msg: ev.msg });
+      }
+      // Sort newest first, take top 8
+      allEvents.sort(function (a, b) { return (b.ts > a.ts ? 1 : b.ts < a.ts ? -1 : 0); });
+      const top = allEvents.slice(0, 8);
+      if (top.length === 0) {
+        eventsEl.innerHTML = '<div class="lf-empty">No recent events.</div>';
+      } else {
+        eventsEl.innerHTML = top.map(function (ev) {
+          const tsStr = ev.ts ? String(ev.ts).slice(11, 19) : '—';
+          return '<div class="lf-event-row">'
+            + '<span class="lf-event-ts">' + tsStr + '</span>'
+            + '<span class="lf-event-msg">' + (ev.entityId ? '[' + String(ev.entityId).slice(0, 12) + '] ' : '') + (ev.msg || ev.kind || '') + '</span>'
+            + '</div>';
+        }).join('');
+      }
+    }
+
+    // ── Tracked objects ─────────────────────────────────────────────────────
+    const entitiesEl = document.getElementById('lf-entities');
+    if (entitiesEl) {
+      if (layerKey === 'trafficSim') {
+        // Traffic segments: show count summary
+        const segs = traffic.segments || [];
+        const incidents = traffic.incidents || [];
+        entitiesEl.innerHTML = segs.length === 0
+          ? '<div class="lf-empty">No traffic data.</div>'
+          : '<div class="lf-entity-row"><span class="lf-entity-id">' + segs.length + ' segments</span>'
+            + '<span class="lf-entity-status active">LIVE</span></div>'
+            + (incidents.length ? '<div class="lf-entity-row"><span class="lf-entity-id">' + incidents.length + ' incidents</span>'
+              + '<span class="lf-entity-status alert">ALERT</span></div>' : '');
+      } else if (entities.length === 0) {
+        entitiesEl.innerHTML = '<div class="lf-empty">No tracked objects.</div>';
+      } else {
+        entitiesEl.innerHTML = entities.slice(0, 20).map(function (e) {
+          if (!e) return '';
+          const eid  = String(e.id || '').slice(0, 18);
+          const stat = String(e.status || e.state || 'active').toLowerCase();
+          const cls  = (stat === 'active' || stat === 'moving' || stat === 'airborne' || stat === 'online') ? 'active'
+                     : (stat === 'alert' || stat === 'warning') ? 'alert' : 'offline';
+          return '<div class="lf-entity-row">'
+            + '<span class="lf-entity-id">' + eid + '</span>'
+            + '<span class="lf-entity-status ' + cls + '">' + stat.toUpperCase() + '</span>'
+            + '</div>';
+        }).join('');
+        if (entities.length > 20) {
+          entitiesEl.innerHTML += '<div class="lf-empty">+' + (entities.length - 20) + ' more…</div>';
+        }
+      }
+    }
+  }
+
+  /** Called from applySnapshot — refreshes feed panel if one is open. */
+  function updateLayerFeedPanel() {
+    if (!activeLayerFeed) return;
+    renderLayerFeedPanel(activeLayerFeed, state);
+  }
+
+  // Cache for entity event history received from server (keyed by entity id)
+  let layerFeedEventCache = {};
+
+
   let activePanelId = null;
   let activeRightTab = 'target';
 
@@ -2117,7 +2733,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   async function initCesium() {
     if (!USE_CESIUM || typeof Cesium === 'undefined') return;
     if (BOOTSTRAP.cesiumAccessToken) Cesium.Ion.defaultAccessToken = BOOTSTRAP.cesiumAccessToken;
-    // Build terrain provider: use Cesium World Terrain when Ion token available for realistic elevation
+    // Build terrain provider with Cesium World Terrain when Ion token is available.
     let terrainProvider;
     if (BOOTSTRAP.cesiumAccessToken) {
       try {
@@ -2133,8 +2749,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       shouldAnimate: true,
       terrainProvider: terrainProvider || new Cesium.EllipsoidTerrainProvider(),
     });
-    // Immediately anchor the camera to a valid global view so the Earth fills the viewport
-    // before any async tile loading; this prevents the camera from starting off-screen.
+    // Anchor camera before async tiles arrive to keep Earth in view.
     cesiumViewer.trackedEntity = undefined;
     cesiumViewer.camera.setView({
       destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
@@ -2151,6 +2766,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     cesiumViewer.scene.sun.show = true;
     cesiumViewer.scene.moon.show = false;
     cesiumViewer.scene.requestRenderMode = false;
+    // Separate DataSource keeps live entities alive across removeAll() calls.
+    cesiumLiveDataSource = new Cesium.CustomDataSource('live-entities');
+    cesiumViewer.dataSources.add(cesiumLiveDataSource);
     // Camera controls: full orbit, tilt, zoom, and first-person look for street-level navigation
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.enableRotate = true;
@@ -2189,9 +2807,13 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         lastCesiumRenderCounts.tilesLoaded = true;
         lastCesiumRenderCounts.tilesState = 'ok';
         lastCesiumRenderCounts.tilesError = null;
-        cesiumViewer.camera.setView({
-          destination: Cesium.Cartesian3.fromDegrees(-95, 25, 20000000),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+        // Tiles supply own terrain geometry — hide globe surface to avoid z-fighting.
+        cesiumViewer.scene.globe.show = false;
+        // Fly to NYC with tilt so 3D buildings are immediately visible.
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-73.9857, 40.7484, 1200),
+          orientation: { heading: Cesium.Math.toRadians(15), pitch: Cesium.Math.toRadians(-30), roll: 0 },
+          duration: 3.0,
         });
       } else {
         console.warn('[RW Cesium] No Google Maps API key — using built-in Natural Earth imagery');
@@ -2234,8 +2856,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         console.warn('[RW Cesium] OSM Buildings unavailable', osmErr);
       }
     }
-    // Auto-tilt: when user finishes zooming below STREET_LEVEL_AUTO_TILT_ALT and camera
-    // is pointing near-nadir, smoothly pitch forward for a human-perspective ground view
+    // Auto-tilt: on zoom below STREET_LEVEL_AUTO_TILT_ALT, pitch forward for ground view
     cesiumViewer.camera.moveEnd.addEventListener(function () {
       if (cesiumCameraMoveInternal || cesiumStreetLevelMode) return;
       const alt = cesiumViewer.camera.positionCartographic.height;
@@ -2335,16 +2956,17 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   const BOUNDARY_MAX_POSITIONS    = 20000;     // skip entities with more positions to prevent RangeError
   const GEOJSON_MAX_BYTES         = 1048576;   // 1 MB — reject oversized datasets before loading
 
-  // CRT palette
-  const BOUNDARY_COLOR_COUNTRY_IDLE    = new Cesium.Color(0.12, 0.6, 0.55, 0.55);
-  const BOUNDARY_COLOR_COUNTRY_HOVER   = new Cesium.Color(0.24, 0.79, 0.72, 0.95);
-  const BOUNDARY_COLOR_COUNTRY_ACTIVE  = new Cesium.Color(0.35, 0.95, 0.85, 1.00);
-  const BOUNDARY_COLOR_STATE_IDLE      = new Cesium.Color(0.08, 0.45, 0.42, 0.40);
-  const BOUNDARY_COLOR_STATE_HOVER     = new Cesium.Color(0.20, 0.70, 0.65, 0.90);
-  const BOUNDARY_COLOR_STATE_ACTIVE    = new Cesium.Color(0.30, 0.88, 0.78, 0.98);
-  const BOUNDARY_FILL_IDLE             = new Cesium.Color(0.12, 0.60, 0.55, 0.04);
-  const BOUNDARY_FILL_HOVER            = new Cesium.Color(0.24, 0.79, 0.72, 0.12);
-  const BOUNDARY_FILL_ACTIVE           = new Cesium.Color(0.30, 0.88, 0.78, 0.20);
+  // CRT palette — guarded in case Cesium is not yet loaded (e.g. CDN blocked in dev)
+  const CESIUM_AVAIL = typeof Cesium !== 'undefined';
+  const BOUNDARY_COLOR_COUNTRY_IDLE    = CESIUM_AVAIL ? new Cesium.Color(0.12, 0.6, 0.55, 0.55)  : null;
+  const BOUNDARY_COLOR_COUNTRY_HOVER   = CESIUM_AVAIL ? new Cesium.Color(0.24, 0.79, 0.72, 0.95) : null;
+  const BOUNDARY_COLOR_COUNTRY_ACTIVE  = CESIUM_AVAIL ? new Cesium.Color(0.35, 0.95, 0.85, 1.00) : null;
+  const BOUNDARY_COLOR_STATE_IDLE      = CESIUM_AVAIL ? new Cesium.Color(0.08, 0.45, 0.42, 0.40) : null;
+  const BOUNDARY_COLOR_STATE_HOVER     = CESIUM_AVAIL ? new Cesium.Color(0.20, 0.70, 0.65, 0.90) : null;
+  const BOUNDARY_COLOR_STATE_ACTIVE    = CESIUM_AVAIL ? new Cesium.Color(0.30, 0.88, 0.78, 0.98) : null;
+  const BOUNDARY_FILL_IDLE             = CESIUM_AVAIL ? new Cesium.Color(0.12, 0.60, 0.55, 0.04) : null;
+  const BOUNDARY_FILL_HOVER            = CESIUM_AVAIL ? new Cesium.Color(0.24, 0.79, 0.72, 0.12) : null;
+  const BOUNDARY_FILL_ACTIVE           = CESIUM_AVAIL ? new Cesium.Color(0.30, 0.88, 0.78, 0.20) : null;
 
   let globeBoundaryCountryDs  = null;
   let globeBoundaryStateDs    = null;
@@ -3435,6 +4057,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     let flightsDrawn = 0;
     let flightsErrored = 0;
     let satellitesRendered = 0;
+    let vehiclesDrawn = 0;
+    let vesselsDrawn = 0;
+    let aircraftLiveDrawn = 0;
     const allAgents = Object.values(state.agents || {});
     const flights = allAgents.filter(function (a) { return getEntityType(a) === 'flight'; });
     flightsMerged = flights.length;
@@ -3628,22 +4253,62 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
 
     // ── Live Entity Layers: vehicles, aircraft, vessels, sensors, weather cells ─
+    // Live entities live in cesiumLiveDataSource (a CustomDataSource that is NOT
+    // cleared by cesiumViewer.entities.removeAll() above).  Each entity holds a
+    // SampledPositionProperty so Cesium interpolates at 60 fps between the 800 ms
+    // server snapshot updates — giving smooth, continuous on-screen motion.
     const liveEntities = (state && state.liveEntities) || { vehicles: [], aircraft: [], vessels: [], sensors: [], weather: [] };
 
-    // Helper to add a live entity point to Cesium
-    function addLiveEntityPoint(entity, color, pixelSize, altitude) {
+    // Track which live entity IDs are active this tick so stale ones can be removed.
+    const activeLiveIds = new Set();
+
+    /**
+     * Upsert a live-entity marker into cesiumLiveDataSource.
+     * First call creates an entity with SampledPositionProperty; subsequent calls
+     * add a new position sample so Cesium can interpolate movement smoothly.
+     */
+    function upsertLiveEntityPoint(entity, color, pixelSize, altitude) {
       if (!entity || !Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) return;
+      if (!cesiumLiveDataSource) return;
+      activeLiveIds.add(entity.id);
       const isSelected = selectedAgentId === entity.id;
+      const posAlt = Number.isFinite(altitude) ? altitude : 0;
+      const posCart = Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, posAlt);
+      const nowJd   = Cesium.JulianDate.now();
+      const effectivePixelSize = isSelected ? (pixelSize + 5) : pixelSize;
+      const pointColor = Cesium.Color.fromCssColorString(isSelected ? '#ffffff' : color);
+      const outlineColor = Cesium.Color.fromCssColorString(color);
+      const existing = cesiumLiveEntityMap[entity.id];
+      if (existing) {
+        // Add new position sample — Cesium linearly interpolates from the previous
+        // sample to this one, giving sub-second smooth motion at render frame rate.
+        existing.sampledPos.addSample(nowJd, posCart);
+        // Update appearance for selection state changes
+        try {
+          existing.entity.point.pixelSize = effectivePixelSize;
+          existing.entity.point.color = pointColor;
+          existing.entity.point.outlineColor = outlineColor;
+          existing.entity.point.outlineWidth = isSelected ? 3 : 1;
+          if (entity.label && existing.entity.label) {
+            existing.entity.label.show = true;
+          }
+        } catch (_) { /* ignore property mutation errors */ }
+        return;
+      }
+      // First encounter — create a new entity with SampledPositionProperty
       try {
-        cesiumViewer.entities.add({
+        const sampledPos = new Cesium.SampledPositionProperty();
+        sampledPos.addSample(nowJd, posCart);
+        const ent = cesiumLiveDataSource.entities.add({
           id: 'live-' + entity.id,
           rwMeta: { kind: 'agent', id: entity.id },
-          position: Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, altitude || 0),
+          position: sampledPos,
           point: {
-            pixelSize: isSelected ? (pixelSize + 5) : pixelSize,
-            color: Cesium.Color.fromCssColorString(isSelected ? '#ffffff' : color),
-            outlineColor: Cesium.Color.fromCssColorString(color),
+            pixelSize: effectivePixelSize,
+            color: pointColor,
+            outlineColor: outlineColor,
             outlineWidth: isSelected ? 3 : 1,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
           label: entity.label ? {
             text: entity.label,
@@ -3654,58 +4319,85 @@ const FRONTEND_HTML = `<!DOCTYPE html>
             style: Cesium.LabelStyle.FILL_AND_OUTLINE,
             verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
             pixelOffset: new Cesium.Cartesian2(0, -12),
-            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 4000000),
+            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 2000000),
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
           } : undefined,
         });
+        cesiumLiveEntityMap[entity.id] = { entity: ent, sampledPos };
         entitiesVisible++;
       } catch (_) { /* ignore single entity errors */ }
     }
 
+    // Remove stale live-entity entries for IDs no longer visible (layer off or entity gone)
+    function pruneStaleLiveEntities() {
+      if (!cesiumLiveDataSource) return;
+      for (const id of Object.keys(cesiumLiveEntityMap)) {
+        if (!activeLiveIds.has(id)) {
+          try { cesiumLiveDataSource.entities.removeById('live-' + id); } catch (_) { /* ignore */ }
+          delete cesiumLiveEntityMap[id];
+        }
+      }
+    }
+
     if (layerState.vehicles && visibleEntityTypes.vehicle) {
       for (const v of liveEntities.vehicles) {
-        addLiveEntityPoint(v, TYPE_STYLE.vehicle.fill, 9, 5);
+        upsertLiveEntityPoint(v, TYPE_STYLE.vehicle.fill, 12, 0);
       }
+      vehiclesDrawn = liveEntities.vehicles.length;
     }
     if (layerState.aircraft !== false && visibleEntityTypes.aircraft !== false) {
       for (const ac of (liveEntities.aircraft || [])) {
-        addLiveEntityPoint(ac, TYPE_STYLE.aircraft.fill, 8, ac.altitude || 10000);
+        upsertLiveEntityPoint(ac, TYPE_STYLE.aircraft.fill, 12, ac.altitude || 10000);
       }
+      aircraftLiveDrawn = (liveEntities.aircraft || []).length;
     }
     if (layerState.vessels && visibleEntityTypes.vessel) {
       for (const v of liveEntities.vessels) {
-        addLiveEntityPoint(v, TYPE_STYLE.vessel.fill, 10, 0);
+        upsertLiveEntityPoint(v, TYPE_STYLE.vessel.fill, 11, 0);
       }
+      vesselsDrawn = liveEntities.vessels.length;
     }
     if (layerState.sensors && visibleEntityTypes.sensor) {
       for (const s of liveEntities.sensors) {
-        addLiveEntityPoint(s, TYPE_STYLE.sensor.fill, 7, s.altitude || 10);
+        upsertLiveEntityPoint(s, TYPE_STYLE.sensor.fill, 8, s.altitude || 10);
       }
     }
     if (layerState.weatherCells && visibleEntityTypes.weather) {
       for (const w of liveEntities.weather) {
         if (!Number.isFinite(w.lat) || !Number.isFinite(w.lng)) continue;
+        activeLiveIds.add(w.id);
+        const wExisting = cesiumLiveEntityMap['wc-' + w.id];
         try {
           const wColor = w.subtype === 'storm' ? '#aaddff' : (w.subtype === 'fog' ? '#ccddee' : '#88ccff');
           const wRadius = (w.radiusKm || 50) * 1000;
-          cesiumViewer.entities.add({
-            id: 'live-' + w.id,
-            rwMeta: { kind: 'agent', id: w.id },
-            position: Cesium.Cartesian3.fromDegrees(w.lng, w.lat, 5000),
-            ellipse: {
-              semiMajorAxis: wRadius,
-              semiMinorAxis: wRadius,
-              material: Cesium.Color.fromCssColorString(wColor).withAlpha((w.intensity || 0.5) * 0.22),
-              outline: true,
-              outlineColor: Cesium.Color.fromCssColorString(wColor).withAlpha(0.55),
-              outlineWidth: 1.5,
-              height: 5000,
-            },
-          });
+          const wPosCart = Cesium.Cartesian3.fromDegrees(w.lng, w.lat, 5000);
+          if (wExisting) {
+            wExisting.sampledPos.addSample(Cesium.JulianDate.now(), wPosCart);
+          } else {
+            const wSampledPos = new Cesium.SampledPositionProperty();
+            wSampledPos.addSample(Cesium.JulianDate.now(), wPosCart);
+            const wEnt = cesiumLiveDataSource.entities.add({
+              id: 'live-' + w.id,
+              rwMeta: { kind: 'agent', id: w.id },
+              position: wSampledPos,
+              ellipse: {
+                semiMajorAxis: wRadius,
+                semiMinorAxis: wRadius,
+                material: Cesium.Color.fromCssColorString(wColor).withAlpha((w.intensity || 0.5) * 0.22),
+                outline: true,
+                outlineColor: Cesium.Color.fromCssColorString(wColor).withAlpha(0.55),
+                outlineWidth: 1.5,
+                height: 5000,
+              },
+            });
+            cesiumLiveEntityMap['wc-' + w.id] = { entity: wEnt, sampledPos: wSampledPos };
+          }
           entitiesVisible++;
         } catch (_) { /* ignore */ }
       }
     }
+
+    pruneStaleLiveEntities();
 
     // ── Traffic Layer: segments (color-coded polylines), incidents, zone alerts ─
     if (layerState.trafficSim) {
@@ -3796,6 +4488,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       regions: regionsVisible,
       satellites: satellitesRendered,
       flightsDrawn,
+      vehiclesDrawn,
+      vesselsDrawn,
+      aircraftLiveDrawn,
       earthInitialized: !!cesiumViewer,
       tilesLoaded: !!cesiumGoogleTileset,
       tilesState: lastCesiumRenderCounts.tilesState,
@@ -3808,6 +4503,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         earthInitialized: !!cesiumViewer,
         tilesLoaded: !!cesiumGoogleTileset,
         entities: entitiesVisible,
+        vehiclesDrawn,
+        vesselsDrawn,
+        aircraftLiveDrawn,
         satellites: satellitesRendered,
         regions: regionsVisible,
         flightsFetched: lastApiFetchedCount > 0 ? lastApiFetchedCount : (Number.isFinite(Number(openskyStatus.fetched)) ? Number(openskyStatus.fetched) : 0),
@@ -3818,6 +4516,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         layers: {
           liveFlights: layerState.liveFlights,
           satellites: layerState.satellites,
+          vehicles: layerState.vehicles,
+          vessels: layerState.vessels,
+          aircraft: layerState.aircraft,
           regions: layerState.regions,
           traffic: layerState.traffic,
           weather: layerState.weather,
@@ -5535,7 +6236,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       try { return new Date(raw).toISOString().slice(11, 19); } catch (e) { return raw; }
     }());
     const flightDebugText =
-      'fetched:' + fetched +
+      'src:' + activeFlightProvider +
+      ' fetched:' + fetched +
       ' visible:' + visibleFlights +
       ' drawn:' + drawnFlights +
       ' | at:' + fetchAtStr;
@@ -5568,10 +6270,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     }
     // ── Layer freshness panel update ──────────────────────────────────────
     if (layerState.liveFlights) {
-      const pollTs = openskyStatus && openskyStatus.lastPollAt
-        ? new Date(openskyStatus.lastPollAt).getTime() : null;
+      // Use flightProvider diagnostics (covers all providers including sim)
+      const fp = state && state.flightProvider;
+      const pollTs = fp && fp.lastSelectedAt
+        ? new Date(fp.lastSelectedAt).getTime()
+        : (openskyStatus && openskyStatus.lastPollAt ? new Date(openskyStatus.lastPollAt).getTime() : null);
       if (pollTs) layerLastUpdated.liveFlights = pollTs;
-      setLayerStatus('liveFlights', openskyStatus && openskyStatus.lastErrorAt
+      const hasError = (fp && fp.activeProvider !== 'sim' &&
+        ((fp.activeProvider === 'adsb-exchange' && fp.adsbExchange && fp.adsbExchange.lastErrorAt) ||
+         (fp.activeProvider === 'opensky' && fp.opensky && fp.opensky.lastErrorAt)));
+      setLayerStatus('liveFlights', hasError
         ? 'error · ' + timeSinceStr(layerLastUpdated.liveFlights)
         : timeSinceStr(layerLastUpdated.liveFlights));
     }
@@ -5787,6 +6495,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       updateLayerStatusBadges();
       updateStats();
       draw();
+      if (layerState[layerKey]) {
+        openLayerFeed(layerKey);
+      } else if (activeLayerFeed === layerKey) {
+        closeLayerFeed();
+      }
     });
   }
   makeLayerToggle(toggleLayerVehiclesEl, 'vehicles');
@@ -6215,6 +6928,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     refreshEventVisibilityStyling();
     updateStats();
     draw();
+    if (layerState.liveFlights) openLayerFeed('liveFlights');
+    else if (activeLayerFeed === 'liveFlights') closeLayerFeed();
   });
   toggleLayerSatellitesEl.addEventListener('click', function () {
     setLayerOn('satellites', !layerState.satellites);
@@ -6222,6 +6937,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     refreshEventVisibilityStyling();
     updateStats();
     draw();
+    if (layerState.satellites) openLayerFeed('satellites');
+    else if (activeLayerFeed === 'satellites') closeLayerFeed();
   });
   toggleLayerRegionsEl.addEventListener('change', function () {
     layerState.regions = !!toggleLayerRegionsEl.checked;
@@ -6273,8 +6990,16 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   document.querySelectorAll('.rail-btn[data-panel]').forEach(function (btn) {
     btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
   });
+  // Bottom action bar panel triggers (buttons with data-panel attribute)
+  document.querySelectorAll('.bottom-action-btn[data-panel]').forEach(function (btn) {
+    btn.addEventListener('click', function () { openPanel(btn.dataset.panel); });
+  });
   document.querySelectorAll('.drawer-close').forEach(function (btn) {
-    btn.addEventListener('click', closePanel);
+    if (btn.id === 'lf-close-btn') {
+      btn.addEventListener('click', closeLayerFeed);
+    } else {
+      btn.addEventListener('click', closePanel);
+    }
   });
   document.querySelectorAll('.dtab').forEach(function (btn) {
     btn.addEventListener('click', function () {
@@ -6285,6 +7010,35 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       });
     });
   });
+
+  // ── Rail tab collapsible drawer ────────────────────────────────────────────
+  (function () {
+    const railTabEl  = document.getElementById('rail-tab');
+    const railEl     = document.getElementById('rail');
+    let   _railOpen  = true;
+
+    function setRailOpen(open) {
+      _railOpen = open;
+      document.body.classList.toggle('rail-collapsed', !open);
+      if (railTabEl) railTabEl.setAttribute('aria-expanded', String(open));
+    }
+
+    if (railTabEl) {
+      railTabEl.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setRailOpen(!_railOpen);
+      });
+    }
+
+    // Outside-click: auto-collapse rail when user interacts with globe or other panels.
+    // Guard prevents redundant calls when rail is already collapsed.
+    document.addEventListener('click', function (e) {
+      if (!_railOpen) return;                                    // already collapsed
+      if (railEl    && railEl.contains(e.target))    return;    // click inside rail
+      if (railTabEl && railTabEl.contains(e.target)) return;    // click on tab itself
+      setRailOpen(false);
+    }, false);
+  }());
 
   speedSelectEl.addEventListener('change', function () {
     const nextSpeed = Number(speedSelectEl.value);
@@ -6336,6 +7090,20 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     openskyStatus = nextSnapshot && nextSnapshot.opensky
       ? nextSnapshot.opensky
       : Object.assign({}, OPENSKY_STATUS_DEFAULTS);
+    // Sync active flight provider from server snapshot
+    if (nextSnapshot && nextSnapshot.flightProvider && nextSnapshot.flightProvider.activeProvider) {
+      activeFlightProvider = nextSnapshot.flightProvider.activeProvider;
+      // Update the layer provider label to reflect the live source
+      const providerLabelEl = document.querySelector('[data-layer="liveFlights"] .layer-provider');
+      if (providerLabelEl) {
+        const labels = {
+          'adsb-exchange': 'ADS-B Exchange',
+          'opensky':       'OpenSky Network',
+          'sim':           'Simulated (fallback)',
+        };
+        providerLabelEl.textContent = labels[activeFlightProvider] || activeFlightProvider;
+      }
+    }
     // Sync timeline state from server
     if (nextSnapshot && nextSnapshot.timeline && timelineEngine.mode === 'live') {
       timelineEngine.replayStart = nextSnapshot.timeline.replayStart;
@@ -6360,6 +7128,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     renderSelectedPanel();
     updateLayerStatusBadges();
     if (typeof refreshFeedPanel === 'function') refreshFeedPanel();
+    updateLayerFeedPanel();
     draw();
   }
 
@@ -6468,40 +7237,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
-      const states = Array.isArray(data.states) ? data.states : [];
-      if (!states.length) {
+      // New format: { provider, entities, count, fetched, visible, drawn, time }
+      const entities = Array.isArray(data.entities) ? data.entities : [];
+      if (!entities.length) {
         setTimeout(fetchFlightsSafe, flightPollDelay);
         return;
       }
 
       const now = Date.now();
       const normalized = {};
-      for (const row of states) {
-        if (!Array.isArray(row)) continue;
-        const icao24 = String(row[0] || '').trim().toLowerCase();
-        const callsign = String(row[1] || '').trim();
-        const lon = parseFloat(row[5]);
-        const lat = parseFloat(row[6]);
-        if (!icao24 || !isFinite(lat) || !isFinite(lon)) continue;
-        const altitude = parseFloat(
-          row[7] !== null && row[7] !== undefined ? row[7] : (row[13] !== null ? row[13] : 0)
-        ) || 0;
-        const velocity = parseFloat(row[9])  || 0;
-        const heading  = parseFloat(row[10]) || 0;
-        const onGround = Boolean(row[8]);
-        const id = 'flight-' + icao24;
-        const grid = latLngToGridFE(lat, lon);
-        normalized[id] = {
-          id, type: 'flight', label: callsign || icao24,
-          callsign, icao24, lat, lng: lon, x: grid.x, y: grid.y,
-          altitude, velocity, heading, onGround,
-          source: 'opensky', lastUpdateMs: now,
-        };
+      for (const entity of entities) {
+        if (!entity || !entity.id || !Number.isFinite(entity.lat) || !Number.isFinite(entity.lng)) continue;
+        normalized[entity.id] = { ...entity, lastUpdateMs: now };
       }
 
       apiFetchedFlights = normalized;
-      lastApiFetchedCount = states.length;
+      lastApiFetchedCount = entities.length;
       layerLastUpdated.liveFlights = now;
+      // Track active provider from REST response for diagnostics
+      if (data.provider) activeFlightProvider = data.provider;
       mergeEntities(normalized);
 
       // Success — reset to base delay
@@ -6872,13 +7626,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         + entityHtml;
 
       orchInspEl.classList.add('open');
+      orchInspEl.classList.remove('closed');
+      orchInspEl.setAttribute('aria-hidden', 'false');
+      // Shift left if right drawer is open
       const drawerRight = document.getElementById('drawer-right');
       orchInspEl.classList.toggle('shift-left', drawerRight && drawerRight.classList.contains('open'));
     }
 
     function closeInspector() {
       orchSelId = null;
-      orchInspEl.classList.remove('open');
+      orchInspEl.classList.add('closed');
+      orchInspEl.setAttribute('aria-hidden', 'true');
+      // Reset body to idle state
+      if (orchBodyEl) orchBodyEl.innerHTML = '<div class="oi-field"><span class="oi-field-label">Select a node</span></div>';
     }
 
     orchCloseEl && orchCloseEl.addEventListener('click', closeInspector);
@@ -7179,6 +7939,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           updateStats();
           updateLayerStatusBadges();
           if (typeof refreshFeedPanel === 'function') refreshFeedPanel();
+          updateDashboardPanels();
           draw();
         }
         snapshotQueue.push(msg.data);
@@ -7192,6 +7953,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         if (paused) return;
         if (msg.data.patch) Object.assign(state, msg.data.patch);
         renderSelectedPanel();
+        updateLogPanel();
         draw();
       } else if (msg.type === 'timeline_ack') {
         if (msg.data) {
@@ -7204,6 +7966,11 @@ const FRONTEND_HTML = `<!DOCTYPE html>
           timelineEngine.replayTs = msg.data.replayTs || null;
         }
         updateTimelineUI();
+      } else if (msg.type === 'sim_winner_change' || msg.type === 'sim_near_winner_pressure' || msg.type === 'sim_collapse') {
+        // Route to the quantum sim module's handler (registered once initQuantumSim runs)
+        if (typeof window._simHandleWsEvent === 'function') {
+          window._simHandleWsEvent(msg.type, msg.data);
+        }
       }
     };
 
@@ -7219,6 +7986,924 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 
     ws.onerror = function () { ws.close(); };
   }
+
+  // ── Multi-View Dashboard System ────────────────────────────────────────────
+  var dashboardState = {
+    activeScreen: 'overview',
+    gridMode: false,
+    minimized: {},   // { screenName: true }
+    focused: null,   // focused grid panel name, or null
+  };
+
+  var SCREENS = ['overview', 'trajectory', 'environmental', 'log'];
+  var SCREEN_ICONS  = { overview: '⊙', trajectory: '◎', environmental: '◈', log: '◉' };
+  var SCREEN_LABELS = { overview: 'OVERVIEW', trajectory: 'TRAJECTORY', environmental: 'ENVIRON', log: 'MISSION LOG' };
+
+  function switchScreen(name) {
+    if (SCREENS.indexOf(name) === -1) return;
+    dashboardState.activeScreen = name;
+    dashboardState.focused = null;
+    // Update nav tabs
+    document.querySelectorAll('.screen-tab').forEach(function (tab) {
+      tab.classList.toggle('active', tab.dataset.screen === name);
+    });
+    // In single-screen mode, show only the active panel
+    if (!dashboardState.gridMode) {
+      SCREENS.forEach(function (s) {
+        var panel = document.getElementById('screen-' + s);
+        if (!panel) return;
+        if (dashboardState.minimized[s]) return;
+        panel.classList.toggle('hidden', s !== name);
+      });
+    }
+  }
+
+  function toggleGridMode() {
+    dashboardState.gridMode = !dashboardState.gridMode;
+    dashboardState.focused = null;
+    var btn = document.getElementById('grid-mode-btn');
+    if (btn) {
+      btn.classList.toggle('active', dashboardState.gridMode);
+      btn.setAttribute('aria-pressed', dashboardState.gridMode ? 'true' : 'false');
+    }
+    document.body.classList.toggle('grid-mode', dashboardState.gridMode);
+    SCREENS.forEach(function (s) {
+      var panel = document.getElementById('screen-' + s);
+      if (!panel || dashboardState.minimized[s]) return;
+      panel.classList.remove('focused');
+      if (dashboardState.gridMode) {
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.toggle('hidden', s !== dashboardState.activeScreen);
+      }
+    });
+  }
+
+  function focusGridPanel(name) {
+    if (!dashboardState.gridMode) return;
+    if (dashboardState.focused === name) {
+      // Un-focus — restore all panels
+      dashboardState.focused = null;
+      SCREENS.forEach(function (s) {
+        var panel = document.getElementById('screen-' + s);
+        if (!panel || dashboardState.minimized[s]) return;
+        panel.classList.remove('hidden');
+        panel.classList.remove('focused');
+      });
+    } else {
+      dashboardState.focused = name;
+      SCREENS.forEach(function (s) {
+        var panel = document.getElementById('screen-' + s);
+        if (!panel || dashboardState.minimized[s]) return;
+        panel.classList.toggle('hidden', s !== name);
+        panel.classList.toggle('focused', s === name);
+      });
+    }
+  }
+
+  function minimizePanel(name) {
+    dashboardState.minimized[name] = true;
+    var panel = document.getElementById('screen-' + name);
+    if (panel) panel.classList.add('minimized');
+
+    // Show tray chip
+    var tray = document.getElementById('screen-tray');
+    if (tray) {
+      var existing = tray.querySelector('[data-tray="' + name + '"]');
+      if (!existing) {
+        var chip = document.createElement('button');
+        chip.className = 'tray-chip';
+        chip.dataset.tray = name;
+        chip.type = 'button';
+        chip.title = 'Restore ' + SCREEN_LABELS[name];
+        chip.setAttribute('aria-label', 'Restore ' + SCREEN_LABELS[name]);
+        chip.innerHTML = SCREEN_ICONS[name] + ' ' + SCREEN_LABELS[name];
+        chip.addEventListener('click', function () { restorePanel(name); });
+        tray.appendChild(chip);
+      }
+      tray.classList.add('has-items');
+    }
+
+function snapshot() {
+  // EntityStream is the canonical, priority-resolved view of all live entities.
+  // It is flushed by feedBroker.flushAll() on every sim tick and by each source
+  // adapter immediately after it updates its own state bucket.
+  const mergedAgents = entityStream.size() > 0
+    ? entityStream.asMap()
+    : { ...worldview.agents, ...openSkyFileState.flights, ...openSkyLiveState.flights }; // cold-start fallback
+    // If minimizing the active screen in single-screen mode, switch to next available
+    if (!dashboardState.gridMode && dashboardState.activeScreen === name) {
+      var next = null;
+      for (var i = 0; i < SCREENS.length; i++) {
+        if (!dashboardState.minimized[SCREENS[i]]) { next = SCREENS[i]; break; }
+      }
+      if (next) switchScreen(next);
+    }
+  }
+
+  function restorePanel(name) {
+    delete dashboardState.minimized[name];
+    var panel = document.getElementById('screen-' + name);
+    if (panel) {
+      panel.classList.remove('minimized');
+      if (dashboardState.gridMode) {
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.toggle('hidden', name !== dashboardState.activeScreen);
+      }
+    }
+    // Remove tray chip
+    var tray = document.getElementById('screen-tray');
+    if (tray) {
+      var chip = tray.querySelector('[data-tray="' + name + '"]');
+      if (chip) tray.removeChild(chip);
+      if (!tray.querySelector('.tray-chip')) tray.classList.remove('has-items');
+    }
+  }
+
+  // ── Dashboard Panel Content Updaters ────────────────────────────────────────
+  function updateDashboardPanels() {
+    updateOverviewPanel();
+    updateTrajectoryPanel();
+    updateEnvironmentalPanel();
+    updateLogPanel();
+  }
+
+  function updateOverviewPanel() {
+    var tick = state.tick || 0;
+    var agentCount = Object.keys(state.agents || {}).length;
+    var regionCount = Object.keys(state.regions || {}).length;
+    var flightCount = lastFlightDebugCounts ? (lastFlightDebugCounts.drawn || 0) : 0;
+    var satCount = lastCesiumRenderCounts ? (lastCesiumRenderCounts.satellites || 0) : 0;
+
+    var tickEl = document.getElementById('sp-ov-tick');
+    if (tickEl) tickEl.textContent = tick;
+    var modeEl = document.getElementById('sp-ov-mode');
+    if (modeEl) modeEl.textContent = (typeof timelineEngine !== 'undefined' && timelineEngine.mode === 'replay') ? 'REPLAY' : 'LIVE';
+    var uptimeEl = document.getElementById('sp-ov-uptime');
+    if (uptimeEl && state.started) {
+      var sec = Math.floor((Date.now() - new Date(state.started)) / 1000);
+      var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+      uptimeEl.textContent = (h ? h + 'h ' : '') + m + 'm ' + s + 's';
+    }
+    var agentsEl = document.getElementById('sp-ov-agents');
+    if (agentsEl) agentsEl.textContent = agentCount;
+    var regionsEl = document.getElementById('sp-ov-regions');
+    if (regionsEl) regionsEl.textContent = regionCount;
+    var flightsEl = document.getElementById('sp-ov-flights');
+    if (flightsEl) flightsEl.textContent = flightCount;
+    var satsEl = document.getElementById('sp-ov-sats');
+    if (satsEl) satsEl.textContent = satCount;
+    // Read vehicle counts from snapshot data (state.liveEntities) — liveEntityState is server-side only
+    var vehicleList = (state && state.liveEntities && state.liveEntities.vehicles) || [];
+    var vehicleGenerated = vehicleList.length;
+    var vehicleDrawn = lastCesiumRenderCounts ? (lastCesiumRenderCounts.vehiclesDrawn || 0) : 0;
+    var vehiclesEl = document.getElementById('sp-ov-vehicles');
+    if (vehiclesEl) vehiclesEl.textContent = vehicleGenerated;
+    var vehiclesDrawnEl = document.getElementById('sp-ov-vehicles-drawn');
+    if (vehiclesDrawnEl) vehiclesDrawnEl.textContent = vehicleGenerated + ' gen / ' + vehicleDrawn + ' drawn';
+  }
+
+  function updateTrajectoryPanel() {
+    var lat = '—', lng = '—', alt = '—', heading = 0, headingStr = '—';
+    try {
+      if (cesiumViewer) {
+        var cam = cesiumViewer.camera;
+        var pos = Cesium.Cartographic.fromCartesian(cam.position);
+        lat = Cesium.Math.toDegrees(pos.latitude).toFixed(4) + '°';
+        lng = Cesium.Math.toDegrees(pos.longitude).toFixed(4) + '°';
+        alt = (pos.height / 1000).toFixed(1) + ' km';
+        heading = ((Cesium.Math.toDegrees(cam.heading) % 360) + 360) % 360;
+        headingStr = heading.toFixed(1) + '°';
+      }
+    } catch (_e) {}
+
+    var latEl = document.getElementById('sp-tr-lat');
+    if (latEl) latEl.textContent = lat;
+    var lngEl = document.getElementById('sp-tr-lng');
+    if (lngEl) lngEl.textContent = lng;
+    var altEl = document.getElementById('sp-tr-alt');
+    if (altEl) altEl.textContent = alt;
+    var hdgEl = document.getElementById('sp-tr-heading');
+    if (hdgEl) hdgEl.textContent = headingStr;
+    var needle = document.getElementById('sp-compass-needle');
+    if (needle) needle.style.transform = 'rotate(' + heading.toFixed(1) + 'deg)';
+  }
+
+  function updateEnvironmentalPanel() {
+    var weatherCellCount = typeof liveEntityState !== 'undefined' ? Object.keys(liveEntityState.weather || {}).length : 0;
+    var cellsEl = document.getElementById('sp-env-cells');
+    if (cellsEl) cellsEl.textContent = weatherCellCount;
+    var envStatusEl = document.getElementById('sp-env-status');
+    if (envStatusEl) {
+      envStatusEl.textContent = weatherCellCount > 0 ? 'ACTIVE' : 'NOMINAL';
+      envStatusEl.style.color = weatherCellCount > 0 ? '#c8a848' : '#3ec9b8';
+    }
+  }
+
+  var LOG_MESSAGE_MAX_LENGTH = 90;
+
+  function updateLogPanel() {
+    var el = document.getElementById('sp-body-log');
+    if (!el) return;
+    var entries = eventLog.slice(-40).reverse();
+    if (!entries.length) {
+      el.innerHTML = '<div style="color:#2e4050;font-style:italic;padding:4px 0;">No events yet.</div>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      var ts = (e._tick != null) ? 'T' + e._tick : '—';
+      var cls = 'sp-log-entry';
+      if (e.kind === 'agent') cls += ' sp-log-agent';
+      else if (e.kind === 'system') cls += ' sp-log-system';
+      else if (e.kind === 'region') cls += ' sp-log-region';
+      var msg = String(e.msg || '').slice(0, LOG_MESSAGE_MAX_LENGTH);
+      html += '<div class="' + cls + '"><span class="sp-ts">' + ts + '</span>' + msg + '</div>';
+    }
+    el.innerHTML = html;
+  }
+
+  // ── Dashboard Initialization ────────────────────────────────────────────────
+  (function initDashboard() {
+    // Nav tab clicks
+    document.querySelectorAll('.screen-tab').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        if (dashboardState.gridMode) {
+          // Exit grid mode and switch to the clicked screen
+          toggleGridMode();
+        }
+        switchScreen(tab.dataset.screen);
+      });
+    });
+
+    // Grid mode toggle
+    var gridBtn = document.getElementById('grid-mode-btn');
+    if (gridBtn) gridBtn.addEventListener('click', toggleGridMode);
+
+    // Panel header click (for grid focus) and minimize buttons
+    SCREENS.forEach(function (name) {
+      var panel = document.getElementById('screen-' + name);
+      if (!panel) return;
+
+      // Header click → focus in grid mode
+      var hdr = panel.querySelector('.screen-panel-hdr');
+      if (hdr) {
+        hdr.addEventListener('click', function (e) {
+          if (e.target.closest('.screen-panel-btn')) return;
+          if (dashboardState.gridMode) focusGridPanel(name);
+        });
+      }
+
+      // Minimize button
+      var minBtn = panel.querySelector('[data-action="minimize"]');
+      if (minBtn) {
+        minBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          minimizePanel(name);
+        });
+      }
+    });
+
+    // Set initial state: show only overview
+    switchScreen('overview');
+  }());
+
+  // Periodically refresh trajectory panel for live camera position
+  setInterval(function () {
+    if (cesiumViewer) updateTrajectoryPanel();
+  }, 2000);
+
+  // ── Quantum Simulation Engine (client) ─────────────────────────────────────
+  (function initQuantumSim() {
+    var simOpen = false;
+    var simLocations = [];       // local cache from server
+    var simGlobeEntities = {};   // locationId → [cesium entities]
+    var simPickMode = false;     // true when SIM drawer is open → globe clicks go to sim
+    var simAutoRunning = false;  // mirrors server continuous-collapse running state
+    // Per-location live leader state: locationId → { leaderId, leaderScore, locked }
+    var simLiveLeaders = {};
+
+    // Branch colour palette for globe visualisation
+    var BRANCH_COLOURS = [
+      '#3ec9b8', '#56b8f0', '#f0c040', '#e05878', '#78d878',
+      '#c878e0', '#e09840', '#80b0ff',
+    ];
+
+    // Signal type icon map — shared by refreshSimPanel and setSimSignalsStatus
+    var SIGNAL_ICONS = { traffic: '🚦', weather: '⛅', aircraft: '✈', vessel: '⛴', satellite: '🛰', sensor: '📡' };
+
+    // ── Panel open/close ───────────────────────────────────────────────────
+    function openSimDrawer() {
+      document.getElementById('sim-drawer').classList.add('open');
+      document.getElementById('act-sim-btn').classList.add('active');
+      simOpen = true;
+      simPickMode = true;
+      syncAutoState();
+      syncStrategySelect();
+      refreshSimPanel();
+    }
+
+    function closeSimDrawer() {
+      document.getElementById('sim-drawer').classList.remove('open');
+      document.getElementById('act-sim-btn').classList.remove('active');
+      simOpen = false;
+      simPickMode = false;
+    }
+
+    document.getElementById('act-sim-btn').addEventListener('click', function () {
+      simOpen ? closeSimDrawer() : openSimDrawer();
+    });
+    document.getElementById('sim-close').addEventListener('click', closeSimDrawer);
+
+    // ── Globe click → generate world states ───────────────────────────────
+    // Intercepts Cesium LEFT_CLICK when sim panel is open and the click
+    // lands on empty terrain (not on an entity already handled by pickCesiumTarget).
+    function hookSimGlobeClick() {
+      if (!cesiumViewer) return;
+      var handler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
+      handler.setInputAction(function (click) {
+        if (!simPickMode) return;
+        // Only intercept if no entity was picked (let existing entity selection pass through)
+        var picks = cesiumViewer.scene.drillPick(click.position, 5) || [];
+        var hasEntity = picks.some(function (p) { return p && p.id && p.id.rwMeta; });
+        if (hasEntity) return;
+        var cartesian = cesiumViewer.scene.pickPosition(click.position);
+        if (!cartesian) {
+          // Fallback: ray from camera
+          var ray = cesiumViewer.camera.getPickRay(click.position);
+          if (ray) cartesian = cesiumViewer.scene.globe.pick(ray, cesiumViewer.scene);
+        }
+        if (!cartesian) return;
+        var carto = Cesium.Cartographic.fromCartesian(cartesian);
+        var lat = Cesium.Math.toDegrees(carto.latitude);
+        var lng = Cesium.Math.toDegrees(carto.longitude);
+        generateSimAtLatLng(lat, lng);
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    }
+
+    // ── API helpers ────────────────────────────────────────────────────────
+    function generateSimAtLatLng(lat, lng) {
+      var label = lat.toFixed(2) + '°, ' + lng.toFixed(2) + '°';
+      fetch('/api/sim/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat: lat, lng: lng, label: label }),
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data.location) {
+          simLocations.push(data.location);
+          renderSimLocationOnGlobe(data.location);
+          refreshSimPanel();
+        }
+      }).catch(function () {});
+    }
+
+    function evolveLocation(locationId) {
+      fetch('/api/sim/evolve/' + encodeURIComponent(locationId), { method: 'POST' })
+        .then(function (r) { return r.json(); }).then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    }
+
+    function pruneLocation(locationId) {
+      fetch('/api/sim/prune/' + encodeURIComponent(locationId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threshold: 0.2 }),
+      }).then(function (r) { return r.json(); }).then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    }
+
+    function collapseLocation(locationId) {
+      fetch('/api/sim/collapse/' + encodeURIComponent(locationId), { method: 'POST' })
+        .then(function (r) { return r.json(); }).then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    }
+
+    function entanglePair(id1, id2) {
+      fetch('/api/sim/entangle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branchId1: id1, branchId2: id2 }),
+      }).then(function (r) { return r.json(); }).then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    }
+
+    function fetchAndRefresh() {
+      fetch('/api/sim/locations').then(function (r) { return r.json(); }).then(function (data) {
+        simLocations = data.locations || [];
+        // Re-render all globe overlays
+        clearAllSimGlobeEntities();
+        simLocations.forEach(function (loc) { renderSimLocationOnGlobe(loc); });
+        refreshSimPanel(data.auditTrail || []);
+      }).catch(function () {});
+    }
+
+    // ── Globe visualisation ────────────────────────────────────────────────
+    function clearAllSimGlobeEntities() {
+      if (!cesiumViewer) return;
+      Object.values(simGlobeEntities).forEach(function (entities) {
+        entities.forEach(function (e) {
+          try { cesiumViewer.entities.remove(e); } catch (ex) {}
+        });
+      });
+      simGlobeEntities = {};
+    }
+
+    function renderSimLocationOnGlobe(loc) {
+      if (!cesiumViewer) return;
+      var entities = [];
+      var origin = Cesium.Cartesian3.fromDegrees(loc.lng, loc.lat, 0);
+
+      // Compute aggregate signal pressure from active branches
+      var activeBranches = (loc.branches || []).filter(function (b) { return b.status === 'active'; });
+      var maxIR = 0;
+      activeBranches.forEach(function (b) {
+        if (b.sourceInfluence && b.sourceInfluence.interferenceRelevance > maxIR) {
+          maxIR = b.sourceInfluence.interferenceRelevance;
+        }
+      });
+      var hasWeatherPressure = activeBranches.some(function (b) {
+        return b.sourceInfluence && b.sourceInfluence.sources && b.sourceInfluence.sources.some(function (s) { return s.type === 'weather'; });
+      });
+
+      // Origin point (pulsing glow) — gold for global winner, amber-orange when weather pressure
+      // is high (interferenceRelevance > 0.5), teal otherwise
+      var isGlobalWinner = !!(loc.collapsed && loc.collapsed.type === 'global');
+      var originColor = isGlobalWinner ? '#f0b040'
+                      : (hasWeatherPressure && maxIR > 0.5) ? '#e08030'
+                      : '#3ec9b8';
+      var originSize  = isGlobalWinner ? 14
+                      : (maxIR > 0.5 ? 12 : 10);
+      var originOutlineWidth = isGlobalWinner ? 6 : (maxIR > 0.5 ? 5 : 4);
+      var originEnt = cesiumViewer.entities.add({
+        position: origin,
+        point: {
+          pixelSize: originSize,
+          color: Cesium.Color.fromCssColorString(originColor).withAlpha(0.9),
+          outlineColor: Cesium.Color.fromCssColorString(originColor).withAlpha(0.4),
+          outlineWidth: originOutlineWidth,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: isGlobalWinner ? '★ ' + loc.label : loc.label,
+          font: isGlobalWinner ? 'bold 11px monospace' : '10px monospace',
+          fillColor: Cesium.Color.fromCssColorString(originColor),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(0, -14),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+      entities.push(originEnt);
+
+      // Branch trajectories as glowing polylines
+      loc.branches.forEach(function (branch, i) {
+        if (!branch.trajectory || branch.trajectory.length < 2) return;
+        var colourHex = BRANCH_COLOURS[i % BRANCH_COLOURS.length];
+        // Base alpha by status; for active branches, modulate by interferenceWeight and
+        // signal interferenceRelevance (high IR → amplify glow on the leader branch).
+        var iw = (branch.status === 'active' && typeof branch.interferenceWeight === 'number')
+          ? branch.interferenceWeight : 1.0;
+        var ir = (branch.status === 'active' && branch.sourceInfluence)
+          ? (branch.sourceInfluence.interferenceRelevance || 0) : 0;
+        var IW_MIN = 0.7; // == 1.0 + (-3 * 0.1) — minimum possible interferenceWeight
+        var baseAlpha = branch.status === 'active' ? 0.85 * Math.min(1.0, iw / IW_MIN) * (1 + ir * 0.2)
+                      : branch.status === 'collapsed' ? 1.0
+                      : 0.2;  // pruned
+        var alpha = Math.max(0.1, Math.min(1.0, baseAlpha));
+        var lineWidth = branch.status === 'collapsed' ? 3
+                      : branch.status === 'active' ? Math.max(1, Math.round(2 * iw * (1 + ir * 0.3)))
+                      : 1;
+        var glowPower = branch.status === 'collapsed' ? 0.4
+                      : branch.status === 'active' ? Math.min(0.6, 0.2 * iw + ir * 0.1)
+                      : 0.1;
+        var tipPixelSize = branch.status === 'collapsed' ? 8
+                         : branch.status === 'active' ? Math.max(3, Math.round(5 * iw * (1 + ir * 0.2)))
+                         : 3;
+
+        var positions = branch.trajectory.map(function (wp) {
+          return Cesium.Cartesian3.fromDegrees(wp.lng, wp.lat, wp.alt || 0);
+        });
+
+        var lineEnt = cesiumViewer.entities.add({
+          polyline: {
+            positions: positions,
+            width: lineWidth,
+            material: new Cesium.PolylineGlowMaterialProperty({
+              glowPower: glowPower,
+              color: Cesium.Color.fromCssColorString(colourHex).withAlpha(alpha),
+            }),
+            arcType: Cesium.ArcType.NONE,
+            clampToGround: false,
+          },
+        });
+        entities.push(lineEnt);
+
+        // Endpoint dot for each branch
+        var tip = branch.trajectory[branch.trajectory.length - 1];
+        var tipEnt = cesiumViewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(tip.lng, tip.lat, tip.alt || 0),
+          point: {
+            pixelSize: tipPixelSize,
+            color: Cesium.Color.fromCssColorString(colourHex).withAlpha(alpha),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+        entities.push(tipEnt);
+      });
+
+      simGlobeEntities[loc.id] = entities;
+    }
+
+    // ── Panel UI ───────────────────────────────────────────────────────────
+    function refreshSimPanel(auditTrail) {
+      var list = document.getElementById('sim-locations-list');
+      list.innerHTML = '';
+
+      if (!simLocations.length) {
+        var hint = document.createElement('div');
+        hint.style.cssText = 'padding:12px 10px;color:#1e3040;font-size:.6rem;font-style:italic;';
+        hint.textContent = 'No simulation locations yet. Open the panel and click the globe.';
+        list.appendChild(hint);
+        return;
+      }
+
+      simLocations.forEach(function (loc) {
+        var card = document.createElement('div');
+        card.className = 'sim-loc-card';
+        card.dataset.locId = loc.id;   // used by pressure-flash targeting
+
+        var labelEl = document.createElement('div');
+        labelEl.className = 'sim-loc-label';
+        labelEl.textContent = loc.label;
+        card.appendChild(labelEl);
+
+        var coordEl = document.createElement('div');
+        coordEl.className = 'sim-loc-coords';
+        coordEl.textContent = loc.lat.toFixed(4) + ', ' + loc.lng.toFixed(4);
+        card.appendChild(coordEl);
+
+        // Action buttons
+        var actions = document.createElement('div');
+        actions.className = 'sim-loc-actions';
+
+        var btnEvolve = document.createElement('button');
+        btnEvolve.className = 'sim-loc-btn';
+        btnEvolve.textContent = '▶ Evolve';
+        btnEvolve.title = 'Advance branches one generation';
+        btnEvolve.addEventListener('click', function () { evolveLocation(loc.id); });
+        actions.appendChild(btnEvolve);
+
+        var btnPrune = document.createElement('button');
+        btnPrune.className = 'sim-loc-btn';
+        btnPrune.textContent = '✂ Prune';
+        btnPrune.title = 'Remove low-confidence branches';
+        btnPrune.addEventListener('click', function () { pruneLocation(loc.id); });
+        actions.appendChild(btnPrune);
+
+        var btnCollapse = document.createElement('button');
+        btnCollapse.className = 'sim-loc-btn';
+        btnCollapse.textContent = '⊙ Collapse';
+        btnCollapse.title = 'Select best branch (utility × confidence)';
+        btnCollapse.addEventListener('click', function () { collapseLocation(loc.id); });
+        actions.appendChild(btnCollapse);
+
+        // Entangle: if exactly two locs selected, show entangle btn on second
+        if (simLocations.length >= 2) {
+          var btnEntangle = document.createElement('button');
+          btnEntangle.className = 'sim-loc-btn';
+          btnEntangle.textContent = '⊗ Entangle';
+          btnEntangle.title = 'Entangle first branch of this location with the previous location';
+          btnEntangle.addEventListener('click', function () {
+            var myIdx = simLocations.findIndex(function (l) { return l.id === loc.id; });
+            if (myIdx < 1) return;
+            var other = simLocations[myIdx - 1];
+            if (other && loc.branches.length && other.branches.length) {
+              entanglePair(loc.branches[0].id, other.branches[0].id);
+            }
+          });
+          actions.appendChild(btnEntangle);
+        }
+
+        card.appendChild(actions);
+
+        // Branch rows
+        var branchList = document.createElement('div');
+        branchList.className = 'sim-branch-list';
+        var liveLeader = simLiveLeaders[loc.id] || null;
+        (loc.branches || []).forEach(function (branch) {
+          var row = document.createElement('div');
+          var isLiveLead = liveLeader && branch.id === liveLeader.leaderId && branch.status === 'active';
+          row.className = 'sim-branch-row' + (isLiveLead ? ' live-leader' : '');
+          var dot = document.createElement('div');
+          var iwReason = branch.interferenceReason || 'neutral';
+          dot.className = 'sim-branch-dot ' + branch.status + (branch.status === 'active' ? ' ' + iwReason : '');
+          row.appendChild(dot);
+          var info = document.createElement('div');
+          info.className = 'sim-branch-info';
+          info.textContent = branch.agents.map(function (a) { return (a.role && a.role.length) ? a.role[0].toUpperCase() : '?'; }).join('');
+          info.title = branch.agents.map(function (a) { return a.role + ':' + a.skill.toFixed(2); }).join(' ');
+          row.appendChild(info);
+          var score = document.createElement('div');
+          score.className = 'sim-branch-score';
+          var iw = typeof branch.interferenceWeight === 'number' ? branch.interferenceWeight : 1.0;
+          var cost = typeof branch.cost === 'number' ? branch.cost : 0;
+          var baseScore = branch.confidence * branch.utility * iw;
+          var adjScore = baseScore - cost;
+          var stratSel = document.getElementById('sim-strategy-select');
+          var stratKey = stratSel ? stratSel.value : 'balanced';
+          score.textContent = adjScore.toFixed(3);
+          score.title = '(u×c×iw)-cost = (' + branch.utility.toFixed(2) + '×' + branch.confidence.toFixed(2) + '×' + iw.toFixed(2) + ')-' + cost.toFixed(2) + ' [strategy: ' + stratKey + ']';
+          row.appendChild(score);
+          if (branch.status === 'active') {
+            var iwBadge = document.createElement('div');
+            iwBadge.className = 'sim-branch-iw ' + iwReason;
+            iwBadge.textContent = (iwReason === 'reinforced' ? '⊕' : iwReason === 'damped' ? '⊖' : '·') + iw.toFixed(2);
+            iwBadge.title = 'interference: ' + iwReason + ' (×' + iw.toFixed(2) + ')';
+            row.appendChild(iwBadge);
+          }
+          // Live-leader badge (only shown when continuous-collapse is running)
+          if (isLiveLead) {
+            var liveTag = document.createElement('div');
+            liveTag.className = 'sim-live-leader-badge' + (liveLeader.locked ? ' locked' : '');
+            liveTag.textContent = liveLeader.locked ? '⟳🔒' : '⟳';
+            liveTag.title = 'Live leader — score ' + liveLeader.leaderScore.toFixed(3) + (liveLeader.locked ? ' (locked)' : '');
+            row.appendChild(liveTag);
+          }
+          // Source-influence signal chips — only for active branches
+          if (branch.status === 'active' && branch.sourceInfluence && branch.sourceInfluence.sources && branch.sourceInfluence.sources.length) {
+            var signalWrap = document.createElement('div');
+            signalWrap.className = 'sim-branch-signals';
+            branch.sourceInfluence.sources.forEach(function (src) {
+              var chip = document.createElement('span');
+              chip.className = 'sim-signal-chip ' + src.type;
+              chip.textContent = (SIGNAL_ICONS[src.type] || src.type[0].toUpperCase());
+              var contrib = src.contribution || {};
+              var contribParts = [];
+              if (typeof contrib.utility    === 'number') contribParts.push('u' + (contrib.utility    >= 0 ? '+' : '') + contrib.utility.toFixed(3));
+              if (typeof contrib.confidence === 'number') contribParts.push('c' + (contrib.confidence >= 0 ? '+' : '') + contrib.confidence.toFixed(3));
+              if (typeof contrib.cost       === 'number') contribParts.push('cost' + (contrib.cost    >= 0 ? '+' : '') + contrib.cost.toFixed(3));
+              if (typeof contrib.strategicWeight === 'number') contribParts.push('sw' + (contrib.strategicWeight >= 0 ? '+' : '') + contrib.strategicWeight.toFixed(3));
+              chip.title = src.type + (src.count !== undefined ? ' ×' + src.count : '') + (contribParts.length ? ' → ' + contribParts.join(' ') : '');
+              signalWrap.appendChild(chip);
+            });
+            row.appendChild(signalWrap);
+          }
+          branchList.appendChild(row);
+        });
+        card.appendChild(branchList);
+
+        // Collapsed badge — distinguish global winner from per-location collapse
+        if (loc.collapsed) {
+          var badge = document.createElement('div');
+          badge.className = ['sim-collapsed-badge', loc.collapsed.type === 'global' ? 'sim-global-winner-badge' : ''].filter(Boolean).join(' ');
+          var siSummary = '';
+          if (loc.collapsed.sourceInfluence && loc.collapsed.sourceInfluence.sources && loc.collapsed.sourceInfluence.sources.length) {
+            siSummary = ' [' + loc.collapsed.sourceInfluence.sources.map(function (s) { return s.type[0].toUpperCase(); }).join('') + ']';
+          }
+          badge.textContent = loc.collapsed.type === 'global'
+            ? '★ GLOBAL WINNER · score ' + loc.collapsed.score.toFixed(3) + siSummary
+            : '⊙ COLLAPSED · score ' + loc.collapsed.score.toFixed(3) + siSummary;
+          if (siSummary) badge.title = 'Signal sources: ' + (loc.collapsed.sourceInfluence.sources || []).map(function (s) { return s.type; }).join(', ');
+          card.appendChild(badge);
+        }
+
+        // Flag card with signal-pressure if interferenceRelevance is high across active branches
+        var activeBranches = (loc.branches || []).filter(function (b) { return b.status === 'active'; });
+        var highIR = activeBranches.some(function (b) { return b.sourceInfluence && b.sourceInfluence.interferenceRelevance > 0.5; });
+        if (highIR) card.classList.add('signal-pressure');
+
+        list.appendChild(card);
+      });
+
+      // Audit trail
+      if (auditTrail && auditTrail.length) {
+        var auditRows = document.getElementById('sim-audit-rows');
+        auditRows.innerHTML = '';
+        auditTrail.slice().reverse().slice(0, 10).forEach(function (entry) {
+          var row = document.createElement('div');
+          row.className = 'sim-audit-row';
+          var t = new Date(entry.at);
+          var hm = t.toTimeString().slice(0, 5);
+          var stratTag = entry.strategy && entry.strategy !== 'balanced' ? ' [' + entry.strategy + ']' : '';
+          var sigTag = (entry.sourceInfluenceSources && entry.sourceInfluenceSources.length)
+            ? ' {' + entry.sourceInfluenceSources.map(function (s) { return s[0].toUpperCase(); }).join('') + '}'
+            : '';
+          row.textContent = hm + ' · ' + entry.label + ' → ' + entry.score.toFixed(3) + stratTag + sigTag;
+          row.title = 'strategy: ' + (entry.strategy || 'balanced') + ' · score: ' + entry.score.toFixed(4) + (sigTag ? ' · signals: ' + (entry.sourceInfluenceSources || []).join(',') : '');
+          auditRows.appendChild(row);
+        });
+      }
+    }
+
+    // ── Global controls ────────────────────────────────────────────────────
+    document.getElementById('sim-btn-evolve-all').addEventListener('click', function () {
+      var ids = simLocations.map(function (l) { return l.id; });
+      var chain = Promise.resolve();
+      ids.forEach(function (id) {
+        chain = chain.then(function () {
+          return fetch('/api/sim/evolve/' + encodeURIComponent(id), { method: 'POST' }).then(function (r) { return r.json(); });
+        });
+      });
+      chain.then(function () { fetchAndRefresh(); }).catch(function () {});
+    });
+
+    document.getElementById('sim-btn-prune-all').addEventListener('click', function () {
+      var ids = simLocations.map(function (l) { return l.id; });
+      var chain = Promise.resolve();
+      ids.forEach(function (id) {
+        chain = chain.then(function () {
+          return fetch('/api/sim/prune/' + encodeURIComponent(id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ threshold: 0.2 }),
+          }).then(function (r) { return r.json(); });
+        });
+      });
+      chain.then(function () { fetchAndRefresh(); }).catch(function () {});
+    });
+
+    document.getElementById('sim-btn-interfere').addEventListener('click', function () {
+      fetch('/api/sim/interfere', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    });
+
+    document.getElementById('sim-btn-collapse-all').addEventListener('click', function () {
+      fetch('/api/sim/collapse-all', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function () { fetchAndRefresh(); })
+        .catch(function () {});
+    });
+
+    // Toggle continuous-collapse engine on the server
+    document.getElementById('sim-btn-auto-collapse').addEventListener('click', function () {
+      var action = simAutoRunning ? 'stop' : 'start';
+      fetch('/api/sim/continuous-collapse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: action }),
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        simAutoRunning = data.running;
+        updateAutoBtn();
+        setSimLiveStatus(simAutoRunning ? '⟳ Continuous collapse active — scoring every ' + data.intervalMs + ' ms' : '', simAutoRunning);
+      }).catch(function () {});
+    });
+
+    function updateAutoBtn() {
+      var btn = document.getElementById('sim-btn-auto-collapse');
+      if (!btn) return;
+      if (simAutoRunning) {
+        btn.classList.add('auto-active');
+        btn.title = 'Stop continuous re-scoring loop';
+      } else {
+        btn.classList.remove('auto-active');
+        btn.title = 'Start continuous re-scoring loop (hysteresis + winner-lock)';
+      }
+    }
+
+    function setSimLiveStatus(msg, active) {
+      var el = document.getElementById('sim-live-status');
+      if (!el) return;
+      el.textContent = msg;
+      el.className = active ? 'running' : '';
+    }
+
+    function setSimSignalsStatus(signalSources, interferenceRelevance) {
+      var el = document.getElementById('sim-signals-status');
+      if (!el) return;
+      el.innerHTML = '';
+      if (!signalSources || !signalSources.length) return;
+      var label = document.createElement('span');
+      label.style.cssText = 'color:#1e3040;font-size:.48rem;letter-spacing:.06em;text-transform:uppercase;margin-right:3px;';
+      label.textContent = 'Signals:';
+      el.appendChild(label);
+      signalSources.forEach(function (type) {
+        var chip = document.createElement('span');
+        chip.className = 'sim-signal-chip ' + type;
+        chip.textContent = (SIGNAL_ICONS[type] || type[0].toUpperCase()) + ' ' + type;
+        el.appendChild(chip);
+      });
+      if (typeof interferenceRelevance === 'number' && interferenceRelevance > 0.1) {
+        var irSpan = document.createElement('span');
+        irSpan.style.cssText = 'color:#3a5060;font-size:.48rem;margin-left:4px;';
+        irSpan.textContent = 'IR:' + interferenceRelevance.toFixed(2);
+        irSpan.title = 'interferenceRelevance — how much external conditions affect branch separation';
+        el.appendChild(irSpan);
+      }
+    }
+
+    // ── WebSocket sim event handlers ───────────────────────────────────────
+    // Called by the ws.onmessage handler when a sim_* event arrives.
+    function handleSimWsEvent(type, data) {
+      if (type === 'sim_winner_change') {
+        // Update live leader cache
+        simLiveLeaders[data.locationId] = {
+          leaderId:    data.winnerId,
+          leaderScore: data.score,
+          locked:      data.locked,
+        };
+        // Surface signal sources in the signals strip
+        if (data.signalSources) setSimSignalsStatus(data.signalSources, data.interferenceRelevance);
+        // Flash live status
+        var sigSuffix = (data.signalSources && data.signalSources.length)
+          ? ' [' + data.signalSources.map(function (s) { return s[0].toUpperCase(); }).join('') + ']'
+          : '';
+        setSimLiveStatus(
+          '⟳ ' + data.label + ' → leader ' + data.score.toFixed(3) + (data.locked ? ' 🔒' : '') + sigSuffix,
+          true
+        );
+        // Refresh panel if open
+        if (simOpen) fetchAndRefresh();
+      } else if (type === 'sim_near_winner_pressure') {
+        setSimLiveStatus(
+          '⚡ ' + data.label + ' under pressure — gap ' + data.gap.toFixed(3),
+          true
+        );
+        // Flash the card if panel is open
+        if (simOpen) {
+          var cards = document.querySelectorAll('.sim-loc-card');
+          cards.forEach(function (card) {
+            if (card.dataset.locId === data.locationId) {
+              card.classList.remove('pressure-flash');
+              // Force reflow so re-adding the class triggers the animation
+              void card.offsetWidth;
+              card.classList.add('pressure-flash');
+            }
+          });
+        }
+      } else if (type === 'sim_collapse') {
+        var colSigSuffix = (data.signalSources && data.signalSources.length)
+          ? ' [' + data.signalSources.map(function (s) { return s[0].toUpperCase(); }).join('') + ']'
+          : '';
+        setSimLiveStatus(
+          '⊙ Collapsed ' + (data.label || '') + ' → ' + (data.score || 0).toFixed(3) + colSigSuffix,
+          false
+        );
+        if (simOpen) fetchAndRefresh();
+      }
+    }
+
+    // Expose to ws.onmessage (hoisted into outer scope via assignment below)
+    window._simHandleWsEvent = handleSimWsEvent;
+
+    document.getElementById('sim-btn-clear-all').addEventListener('click', function () {
+      clearAllSimGlobeEntities();
+      simLocations = [];
+      simLiveLeaders = {};
+      refreshSimPanel([]);
+    });
+
+    // Hook globe click after Cesium viewer is ready (cesiumViewer is set during initCesium)
+    var _simHookTries = 0;
+    function tryHookSimClick() {
+      if (cesiumViewer) { hookSimGlobeClick(); return; }
+      if (_simHookTries++ < 40) setTimeout(tryHookSimClick, 250);
+    }
+    tryHookSimClick();
+
+    // Sync auto-collapse running state from server on panel open
+    function syncAutoState() {
+      fetch('/api/sim/continuous-collapse').then(function (r) { return r.json(); }).then(function (data) {
+        simAutoRunning = data.running;
+        updateAutoBtn();
+        if (simAutoRunning) setSimLiveStatus('⟳ Continuous collapse active — scoring every ' + data.intervalMs + ' ms', true);
+      }).catch(function () {});
+    }
+
+    // Sync strategy selector value from server
+    function syncStrategySelect() {
+      fetch('/api/sim/strategy').then(function (r) { return r.json(); }).then(function (data) {
+        var sel = document.getElementById('sim-strategy-select');
+        if (sel && data.activeStrategy) sel.value = data.activeStrategy;
+      }).catch(function () {});
+    }
+
+    // Push selected strategy to server
+    function setStrategy(key) {
+      fetch('/api/sim/strategy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strategy: key }),
+      }).catch(function () {});
+    }
+
+    // Wire strategy selector change → server update
+    var strategySelect = document.getElementById('sim-strategy-select');
+    if (strategySelect) {
+      strategySelect.addEventListener('change', function () {
+        setStrategy(this.value);
+      });
+    }
+
+    // Periodic refresh when drawer is open
+    setInterval(function () {
+      if (simOpen) fetchAndRefresh();
+    }, 5000);
+  }());
 
   connect();
 })();
@@ -7246,6 +8931,21 @@ function normalizeStateBatch(states, previous, sourceOverride) {
     const entity = buildOpenSkyFlightEntity(row, prev);
     if (!entity) continue;
     if (sourceOverride) entity.source = sourceOverride;
+    count++;
+    flights[entity.id] = entity;
+  }
+  return { flights, count };
+}
+
+// Converts an ADS-B Exchange aircraft array into a flights map.
+function normalizeAdsbBatch(acArray, previous) {
+  const flights = {};
+  let count = 0;
+  for (const ac of acArray) {
+    const icao24 = ac && String(ac.hex || '').trim().toLowerCase();
+    const prev = icao24 ? previous['flight-' + icao24] : null;
+    const entity = buildAdsbExchangeFlightEntity(ac, prev);
+    if (!entity) continue;
     count++;
     flights[entity.id] = entity;
   }
@@ -7282,7 +8982,6 @@ function broadcast(type, data) {
     console.warn('[RW Worldview] broadcast payload too large (' + byteLen + ' bytes), skipping type=' + type);
     return;
   }
-  console.log('[RW Worldview] broadcast type=' + type + ' size=' + byteLen + 'B');
   for (const client of wsClients) {
     if (!client.destroyed && client.writable) {
       wsSend(client, msg);
@@ -7300,12 +8999,14 @@ function emit(kind, msg, patch, entityType) {
 }
 
 function snapshot() {
-  // EntityStream is the canonical, priority-resolved view of all live entities.
-  // It is flushed by feedBroker.flushAll() on every sim tick and by each source
-  // adapter immediately after it updates its own state bucket.
-  const mergedAgents = entityStream.size() > 0
-    ? entityStream.asMap()
-    : { ...worldview.agents, ...openSkyFileState.flights, ...openSkyLiveState.flights }; // cold-start fallback
+  // Run the provider cascade to get the authoritative flights map.
+  const { provider: activeProvider, flights: activeFlights } = selectActiveFlights();
+
+  const mergedAgents = {
+    ...worldview.agents,
+    ...openSkyFileState.flights,   // file-sourced flights always merged
+    ...activeFlights,              // cascade: adsb-exchange → opensky → sim
+  };
 
   // Annotate agents with current task status where a worker is assigned
   for (const worker of workerRuntime.values()) {
@@ -7393,6 +9094,31 @@ function snapshot() {
       replayStart:  timelineState.replayStart,
       replayEnd:    timelineState.replayEnd,
       snapshotCount: timelineState.snapshots.length,
+    },
+    // ── Flight provider diagnostics ──────────────────────────────────────────
+    flightProvider: {
+      activeProvider: flightProviderState.activeProvider,
+      fetched:        flightProviderState.fetched,
+      visible:        flightProviderState.visible,
+      drawn:          flightProviderState.drawn,
+      lastSelectedAt: flightProviderState.lastSelectedAt,
+      adsbExchange: {
+        configured:  !!ADSB_EXCHANGE_API_KEY,
+        fetched:     adsbExchangeState.lastFetchedCount,
+        normalized:  adsbExchangeState.lastNormalizedCount,
+        lastPollAt:  adsbExchangeState.lastPollAt,
+        lastErrorAt: adsbExchangeState.lastErrorAt,
+      },
+      opensky: {
+        // OpenSky is not in the active provider cascade (access pending).
+        // It is preserved here for diagnostics and optional future use.
+        inActiveCascade: false,
+        enabled:     OPENSKY_ENABLED,
+        fetched:     openSkyLiveState.lastFetchedCount,
+        normalized:  openSkyLiveState.lastNormalizedCount,
+        lastPollAt:  openSkyLiveState.lastPollAt,
+        lastErrorAt: openSkyLiveState.lastErrorAt,
+      },
     },
   };
 }
@@ -7513,7 +9239,211 @@ function buildOpenSkyFlightEntity(row, previousEntity) {
   return entity;
 }
 
-// ─── Live Entity Builders ─────────────────────────────────────────────────────
+/**
+ * Build a flight entity from an ADS-B Exchange aircraft record.
+ * Normalizes to the same internal schema as buildOpenSkyFlightEntity so the
+ * rest of the render/stats pipeline can treat both sources identically.
+ * @param {object} ac  - ADS-B Exchange aircraft object (hex, flight, lat, lon, alt_baro, gs, track …)
+ * @param {object|null} previousEntity
+ * @returns {object|null}
+ */
+function buildAdsbExchangeFlightEntity(ac, previousEntity) {
+  if (!ac || typeof ac !== 'object') return null;
+  const icao24 = String(ac.hex || '').trim().toLowerCase();
+  const callsign = String(ac.flight || '').trim();
+  const lat = safeNumber(ac.lat);
+  const lng = safeNumber(ac.lon);
+  if (!icao24 || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const altitude = safeNumber(ac.alt_baro !== undefined ? ac.alt_baro : ac.alt_geom);
+  const velocity = safeNumber(ac.gs);       // ground speed in knots
+  const heading  = safeNumber(ac.track);
+  const verticalRate = safeNumber(ac.baro_rate);
+  const onGround = Boolean(ac.on_ground) || (altitude !== null && altitude <= 0);
+  const now = Date.now();
+  const entity = {
+    id: 'flight-' + icao24,
+    type: 'flight',
+    label: callsign || icao24,
+    name: callsign || icao24,
+    icao24,
+    lat,
+    lng,
+    altitude,
+    heading,
+    velocity,
+    speed: velocity,
+    verticalRate,
+    onGround,
+    source: 'adsb-exchange',
+    region: null,
+    active: true,
+    state: onGround ? 'grounded' : 'airborne',
+    memory: [],
+    lastSeen: new Date().toISOString(),
+    prevLat: previousEntity && Number.isFinite(previousEntity.lat) ? previousEntity.lat : null,
+    prevLng: previousEntity && Number.isFinite(previousEntity.lng) ? previousEntity.lng : null,
+    trail: Array.isArray(previousEntity && previousEntity.trail) ? previousEntity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS) : [],
+    lastUpdateMs: now,
+  };
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    const moved = !previousEntity
+      || !Number.isFinite(previousEntity.lat)
+      || !Number.isFinite(previousEntity.lng)
+      || Math.abs(previousEntity.lat - lat) > 0.0001
+      || Math.abs(previousEntity.lng - lng) > 0.0001;
+    if (entity.trail.length === 0 || moved) {
+      entity.trail.push({ lat, lng, ts: now });
+    }
+    entity.trail = entity.trail.slice(-OPENSKY_TRAIL_MAX_POINTS);
+  }
+  normalizeEntityGridPosition(entity);
+  entity.region = resolveClosestRegion(entity);
+  return entity;
+}
+
+/**
+ * Generate deterministic simulated flights for the final fallback tier.
+ * Uses the same orbital-motion math as refreshLiveEntityLayers aircraft seeds
+ * so the globe always shows visible moving aircraft even when all live APIs fail.
+ * @returns {{ [id: string]: object }} flights map keyed by entity id
+ */
+function getSimFlights() {
+  const now = Date.now();
+  const simSeeds = [
+    { id: 'sim-f001', baseLat: 51.48,  baseLng:   -0.45, callsign: 'BAW001', altitude: 11000 },
+    { id: 'sim-f002', baseLat: 40.63,  baseLng:  -73.79, callsign: 'AAL202', altitude:  9500 },
+    { id: 'sim-f003', baseLat: 35.55,  baseLng:  139.78, callsign: 'JAL301', altitude: 10500 },
+    { id: 'sim-f004', baseLat: -33.94, baseLng:  151.18, callsign: 'QFA410', altitude: 12000 },
+    { id: 'sim-f005', baseLat: 48.36,  baseLng:   11.79, callsign: 'DLH505', altitude: 10000 },
+    { id: 'sim-f006', baseLat: 25.25,  baseLng:   55.36, callsign: 'UAE771', altitude: 11500 },
+    { id: 'sim-f007', baseLat: 37.62,  baseLng: -122.38, callsign: 'UAL891', altitude:  9000 },
+    { id: 'sim-f008', baseLat:  1.36,  baseLng:  103.99, callsign: 'SIA312', altitude: 10800 },
+  ];
+  const flights = {};
+  for (const s of simSeeds) {
+    const orbitR  = 0.06;
+    const orbitMs = 20000;
+    const phase0  = seededRand(s.id, 3) * 2 * Math.PI;
+    const orbitPhase = (now % orbitMs) / orbitMs * 2 * Math.PI + phase0;
+    const lat     = s.baseLat + Math.sin(orbitPhase) * orbitR;
+    const lng     = s.baseLng + Math.cos(orbitPhase) * orbitR;
+    const heading = (Math.atan2(-Math.sin(orbitPhase), Math.cos(orbitPhase)) * 180 / Math.PI + 360) % 360;
+    const velocity = 240 + seededRand(s.id, now % 47) * 40;
+    const altitude = s.altitude + (seededRand(s.id, now % 29) - 0.5) * 200;
+    // Use the dedicated sim cache for trail persistence (ids: 'flight-sim-f001', etc.)
+    const entityId = 'flight-' + s.id;
+    const prev    = _simFlightsCache[entityId] || null;
+    const grid    = latLngToGrid(lat, lng);
+    const trail   = Array.isArray(prev && prev.trail) ? prev.trail.slice(-OPENSKY_TRAIL_MAX_POINTS) : [];
+    const moved   = !prev
+      || !Number.isFinite(prev.lat) || !Number.isFinite(prev.lng)
+      || Math.abs(prev.lat - lat) > 0.0001
+      || Math.abs(prev.lng - lng) > 0.0001;
+    if (trail.length === 0 || moved) trail.push({ lat, lng, ts: now });
+    const entity = {
+      id: entityId,
+      type: 'flight',
+      label: s.callsign,
+      name: s.callsign,
+      icao24: s.id,
+      lat, lng,
+      x: grid.x, y: grid.y,
+      altitude,
+      heading,
+      velocity,
+      speed: velocity,
+      verticalRate: 0,
+      onGround: false,
+      source: 'sim',
+      region: resolveClosestRegion({ lat, lng }),
+      active: true,
+      state: 'airborne',
+      memory: [],
+      lastSeen: new Date().toISOString(),
+      prevLat: prev ? prev.lat : null,
+      prevLng: prev ? prev.lng : null,
+      trail: trail.slice(-OPENSKY_TRAIL_MAX_POINTS),
+      lastUpdateMs: now,
+    };
+    _simFlightsCache[entityId] = entity;
+    flights[entityId] = entity;
+  }
+  return flights;
+}
+
+/**
+ * Returns true if the given ISO timestamp is within the provider-stale window.
+ * @param {string|null} pollAt  ISO timestamp of the last successful poll
+ * @returns {boolean}
+ */
+function isRecentPoll(pollAt) {
+  if (!pollAt) return false;
+  return Date.now() - new Date(pollAt).getTime() < FLIGHT_PROVIDER_STALE_MS;
+}
+
+/**
+ * Ordered list of real flight providers.  selectActiveFlights() walks this
+ * list and picks the first entry whose isReady() returns true.
+ *
+ * To add a new provider: append an object with { name, isReady, getFlights }.
+ *
+ * OpenSky is intentionally excluded from the active cascade while access is
+ * pending / unreliable.  The commented-out entry below shows how to re-enable
+ * it once access is confirmed — no other code changes required.
+ */
+const REAL_FLIGHT_PROVIDERS = [
+  {
+    name:       'adsb-exchange',
+    isReady:    () =>
+      !!ADSB_EXCHANGE_API_KEY &&
+      !adsbExchangeState.lastErrorAt &&
+      isRecentPoll(adsbExchangeState.lastPollAt) &&
+      Object.keys(adsbExchangeState.flights).length > 0,
+    getFlights: () => adsbExchangeState.flights,
+  },
+  // ── OpenSky (optional — uncomment once access is confirmed) ───────────────
+  // {
+  //   name:       'opensky',
+  //   isReady:    () =>
+  //     OPENSKY_ENABLED &&
+  //     !openSkyLiveState.lastErrorAt &&
+  //     isRecentPoll(openSkyLiveState.lastPollAt) &&
+  //     Object.keys(openSkyLiveState.flights).length > 0,
+  //   getFlights: () => openSkyLiveState.flights,
+  // },
+];
+
+/**
+ * Select the active flight provider using the priority cascade:
+ *   1. First ready entry in REAL_FLIGHT_PROVIDERS (e.g. ADS-B Exchange)
+ *   2. Simulated — deterministic orbital flights, always available as fallback
+ *
+ * Side-effect: updates flightProviderState.
+ * @returns {{ provider: string, flights: object }}
+ */
+function selectActiveFlights() {
+  let provider, flights;
+
+  // Walk real providers in priority order; use the first that is ready.
+  const active = REAL_FLIGHT_PROVIDERS.find(p => p.isReady());
+  if (active) {
+    provider = active.name;
+    flights  = active.getFlights();
+  } else {
+    // Simulated fallback — always-on so the globe keeps moving.
+    provider = 'sim';
+    flights  = getSimFlights();
+  }
+
+  const vis = countVisibleOpenSkyFlights(flights, OPENSKY_GLOBE_MIN_Z);
+  flightProviderState.activeProvider  = provider;
+  flightProviderState.fetched         = Object.keys(flights).length;
+  flightProviderState.visible         = vis.passProjection;
+  flightProviderState.drawn           = vis.passMinZ;
+  flightProviderState.lastSelectedAt  = new Date().toISOString();
+
+  return { provider, flights };
+}
 
 /**
  * Build a ground vehicle entity with full structured metadata.
@@ -7718,7 +9648,7 @@ function seededRand(key, slot) {
   return (h >>> 0) / 0xFFFFFFFF;
 }
 
-const LIVE_ENTITY_UPDATE_MS = 8000; // refresh interval for simulated live entities
+const LIVE_ENTITY_UPDATE_MS = 800;  // refresh interval for simulated live entities — matches the 800ms simulationLoop interval so positions update every tick for smooth, continuous motion
 let lastLiveEntityUpdateAt = 0;
 
 /**
@@ -7732,18 +9662,33 @@ function refreshLiveEntityLayers() {
 
   // ── Vehicles (ground traffic in major city corridors) ──────────────────────
   const vehicleSeeds = [
+    // Original 6 seeds — kept for backward compatibility with tests
     { id: 'v001', baseLat: 40.71, baseLng: -74.01, label: 'UNIT-01', subtype: 'police' },
     { id: 'v002', baseLat: 51.50, baseLng: -0.12,  label: 'UNIT-02', subtype: 'ambulance' },
     { id: 'v003', baseLat: 48.85, baseLng: 2.35,   label: 'TRK-03',  subtype: 'truck' },
     { id: 'v004', baseLat: 35.68, baseLng: 139.69, label: 'CAR-04',  subtype: 'car' },
     { id: 'v005', baseLat: 34.05, baseLng: -118.24, label: 'UNIT-05', subtype: 'fire' },
     { id: 'v006', baseLat: 19.43, baseLng: -99.13, label: 'TRK-06',  subtype: 'truck' },
+    // Additional seeds for global coverage and visible density
+    { id: 'v007', baseLat: 41.88, baseLng: -87.63, label: 'CAR-07',  subtype: 'car' },
+    { id: 'v008', baseLat: 37.77, baseLng: -122.42, label: 'TRK-08', subtype: 'truck' },
+    { id: 'v009', baseLat: 55.75, baseLng: 37.62,  label: 'UNIT-09', subtype: 'police' },
+    { id: 'v010', baseLat: 28.61, baseLng: 77.21,  label: 'BUS-10',  subtype: 'bus' },
+    { id: 'v011', baseLat: -23.55, baseLng: -46.63, label: 'CAR-11', subtype: 'car' },
+    { id: 'v012', baseLat: 1.35,  baseLng: 103.82, label: 'TRK-12',  subtype: 'truck' },
+    { id: 'v013', baseLat: 37.57, baseLng: 126.98, label: 'UNIT-13', subtype: 'ambulance' },
+    { id: 'v014', baseLat: -33.87, baseLng: 151.21, label: 'BUS-14', subtype: 'bus' },
+    { id: 'v015', baseLat: 52.52, baseLng: 13.40,  label: 'CAR-15',  subtype: 'car' },
   ];
   for (const s of vehicleSeeds) {
-    const drift = 0.004;
-    const lat = s.baseLat + (seededRand(s.id, now % 97) - 0.5) * drift;
-    const lng = s.baseLng + (seededRand(s.id, now % 113) - 0.5) * drift;
-    const heading = (seededRand(s.id, now % 67) * 360);
+    // Orbital motion: radius ~2 km, one full lap per 30 s — visibly moves on globe
+    const orbitR  = 0.018;
+    const orbitMs = 30000;
+    const phase0  = seededRand(s.id, 5) * 2 * Math.PI;
+    const orbitPhase = (now % orbitMs) / orbitMs * 2 * Math.PI + phase0;
+    const lat = s.baseLat + Math.sin(orbitPhase) * orbitR;
+    const lng = s.baseLng + Math.cos(orbitPhase) * orbitR;
+    const heading = (Math.atan2(-Math.sin(orbitPhase), Math.cos(orbitPhase)) * 180 / Math.PI + 360) % 360;
     const speed = 5 + seededRand(s.id, now % 41) * 25;
     const prev = liveEntityState.vehicles[s.id] || null;
     const entity = buildVehicleEntity(s.id, {
@@ -7762,10 +9707,14 @@ function refreshLiveEntityLayers() {
     { id: 'sh004', baseLat: 29.98, baseLng: 32.56,  label: 'CARGO-4',  subtype: 'cargo',  mmsi: '636091000' },
   ];
   for (const s of vesselSeeds) {
-    const drift = 0.02;
-    const lat = s.baseLat + (seededRand(s.id, now % 89) - 0.5) * drift;
-    const lng = s.baseLng + (seededRand(s.id, now % 101) - 0.5) * drift;
-    const heading = seededRand(s.id, now % 53) * 360;
+    // Orbital motion: radius ~5 km, one full lap per 90 s — visible in port/coastal view
+    const orbitR  = 0.045;
+    const orbitMs = 90000;
+    const phase0  = seededRand(s.id, 7) * 2 * Math.PI;
+    const orbitPhase = (now % orbitMs) / orbitMs * 2 * Math.PI + phase0;
+    const lat = s.baseLat + Math.sin(orbitPhase) * orbitR;
+    const lng = s.baseLng + Math.cos(orbitPhase) * orbitR;
+    const heading = (Math.atan2(-Math.sin(orbitPhase), Math.cos(orbitPhase)) * 180 / Math.PI + 360) % 360;
     const speed = 3 + seededRand(s.id, now % 37) * 15;
     const prev = liveEntityState.vessels[s.id] || null;
     const entity = buildVesselEntity(s.id, {
@@ -7812,10 +9761,14 @@ function refreshLiveEntityLayers() {
     { id: 'ac008', baseLat: 1.36,  baseLng: 103.99,  callsign: 'SIA312', subtype: 'commercial', altitude: 10800 },
   ];
   for (const s of aircraftSeeds) {
-    const drift = 0.03;
-    const lat = s.baseLat + (seededRand(s.id, now % 71) - 0.5) * drift;
-    const lng = s.baseLng + (seededRand(s.id, now % 107) - 0.5) * drift;
-    const heading = seededRand(s.id, now % 61) * 360;
+    // Orbital motion: radius ~7 km, one full lap per 20 s — matches flight-path scale
+    const orbitR  = 0.06;
+    const orbitMs = 20000;
+    const phase0  = seededRand(s.id, 3) * 2 * Math.PI;
+    const orbitPhase = (now % orbitMs) / orbitMs * 2 * Math.PI + phase0;
+    const lat = s.baseLat + Math.sin(orbitPhase) * orbitR;
+    const lng = s.baseLng + Math.cos(orbitPhase) * orbitR;
+    const heading = (Math.atan2(-Math.sin(orbitPhase), Math.cos(orbitPhase)) * 180 / Math.PI + 360) % 360;
     const speed = 180 + seededRand(s.id, now % 47) * 100;  // m/s
     const prev = liveEntityState.aircraft[s.id] || null;
     const entity = buildAircraftEntity(s.id, {
@@ -7826,6 +9779,11 @@ function refreshLiveEntityLayers() {
     }, prev);
     if (entity) liveEntityState.aircraft[s.id] = entity;
   }
+  console.info('[RW Live] entities refreshed — vehicles=%d vessels=%d aircraft=%d sensors=%d',
+    Object.keys(liveEntityState.vehicles).length,
+    Object.keys(liveEntityState.vessels).length,
+    Object.keys(liveEntityState.aircraft).length,
+    Object.keys(liveEntityState.sensors).length);
 }
 
 /** Seed static sensor nodes once at startup. */
@@ -7839,6 +9797,11 @@ function seedSensorNodes() {
     { id: 'sn006', lat: 1.35,  lng: 103.82,  label: 'CAM-SIN-06', subtype: 'cctv',   source: 'infra' },
     { id: 'sn007', lat: 25.20, lng: 55.27,   label: 'WX-DXB-07',  subtype: 'weather',source: 'noaa'  },
     { id: 'sn008', lat: -33.86, lng: 151.21, label: 'CAM-SYD-08', subtype: 'cctv',   source: 'infra' },
+    // Traffic camera nodes — support for future traffic camera feeds
+    { id: 'tc001', lat: 40.75, lng: -74.00, label: 'TCAM-NYC-01', subtype: 'traffic_cam', source: 'infra' },
+    { id: 'tc002', lat: 51.52, lng: -0.10,  label: 'TCAM-LON-02', subtype: 'traffic_cam', source: 'infra' },
+    { id: 'tc003', lat: 34.07, lng: -118.26, label: 'TCAM-LAX-03', subtype: 'traffic_cam', source: 'infra' },
+    { id: 'tc004', lat: 35.69, lng: 139.70, label: 'TCAM-TKY-04', subtype: 'traffic_cam', source: 'infra' },
   ];
   for (const s of sensorSeeds) {
     if (!liveEntityState.sensors[s.id]) {
@@ -7969,7 +9932,6 @@ async function pollOpenSkyFlights() {
     : (usingFileCreds && fileCredentials.credentialType === 'client_credentials')
       ? 'client_credentials'
       : 'username_password';
-  console.log('[RW Worldview] Polling OpenSky... running=' + openSkyLiveState.pollingRunning + ' authConfigured=' + authConfigured);
   try {
     const authHeader = authConfigured
       ? 'Basic ' + Buffer.from(effectiveUser + ':' + effectivePass).toString('base64')
@@ -7979,12 +9941,7 @@ async function pollOpenSkyFlights() {
     let requestUrl = authConfigured ? OPENSKY_STATES_URL : OPENSKY_PUBLIC_STATES_URL;
     let useAuth = !!authConfigured;
 
-    if (!authConfigured) {
-      console.warn('[RW Worldview] Falling back to public OpenSky endpoint');
-    }
-
     const runRequest = async (url, auth) => {
-      console.log('[RW Worldview] OpenSky request lifecycle: url=' + url + ' auth=' + (auth ? 'basic' : 'none'));
       const response = await fetch(url, {
         method: 'GET',
         headers: auth && authHeader ? { Authorization: authHeader } : undefined,
@@ -7992,7 +9949,6 @@ async function pollOpenSkyFlights() {
       openSkyLiveState.lastRequestUrl = url;
       openSkyLiveState.lastRequestStatus = response.status;
       const rawBody = await response.text();
-      console.log('[RW Worldview] OpenSky response status=' + response.status + ' bodyLength=' + rawBody.length);
       return { response, rawBody };
     };
 
@@ -8022,7 +9978,6 @@ async function pollOpenSkyFlights() {
 
     const hasStates = Array.isArray(payload && payload.states);
     const states = hasStates ? payload.states : [];
-    console.log('[RW Worldview] OpenSky payload states exists=' + hasStates + ' count=' + states.length);
     if (!hasStates || states.length === 0) {
       console.warn('[RW Worldview] OpenSky returned empty or invalid response');
       return;
@@ -8038,22 +9993,10 @@ async function pollOpenSkyFlights() {
 
     openSkyLiveState.lastFetchedCount = states.length;
     openSkyLiveState.lastNormalizedCount = normalizedCount;
-    console.log(
-      '[RW Worldview] OpenSky visibility: fetched=' + states.length
-      + ' normalized=' + normalizedCount
-      + ' projection=' + visibilityStats.passProjection
-      + ' minZ=' + visibilityStats.passMinZ
-      + ' (threshold=' + OPENSKY_GLOBE_MIN_Z + ')'
-    );
-    console.info('[RW Flights][poll]', {
-      flightsFetched: states.length,
-      flightsMerged: normalizedCount,
-      flightsRendered: Object.keys(nextFlights).length,
-    });
     openSkyLiveState.lastVisibleCount = visibleCount;
     openSkyLiveState.lastDrawnCount = drawnCount;
 
-    console.log('OpenSky: fetched ' + states.length + ' flights, normalized ' + normalizedCount + ', visible ' + visibleCount + ', drawn ' + drawnCount);
+    console.log('[RW Worldview] OpenSky: fetched=' + states.length + ' normalized=' + normalizedCount + ' visible=' + visibleCount + ' drawn=' + drawnCount);
 
     let updatedCount = 0;
     for (const flightId of Object.keys(nextFlights)) {
@@ -8112,6 +10055,59 @@ function startOpenSkyPolling() {
       console.warn('[RW Worldview] OpenSky poll failed — retrying in 30s');
       setTimeout(schedulePoll, 30000);
     }
+  }
+
+  schedulePoll();
+}
+
+// ─── ADS-B Exchange polling ───────────────────────────────────────────────────
+
+async function pollAdsbExchangeFlights() {
+  if (!ADSB_EXCHANGE_API_KEY) return;
+  console.log('[RW Worldview] Polling ADS-B Exchange...');
+  try {
+    const response = await fetch(ADSB_EXCHANGE_API_URL, {
+      method: 'GET',
+      headers: {
+        'x-rapidapi-key':  ADSB_EXCHANGE_API_KEY,
+        'x-rapidapi-host': 'adsbexchange-com1.p.rapidapi.com',
+      },
+    });
+    if (!response.ok) {
+      throw new Error('ADS-B Exchange request failed with HTTP ' + response.status);
+    }
+    const payload = await response.json();
+    const acArray = Array.isArray(payload && payload.ac) ? payload.ac : [];
+    // normalizeAdsbBatch handles empty arrays correctly (returns { flights: {}, count: 0 })
+    const previous = adsbExchangeState.flights;
+    const { flights: nextFlights, count: normalizedCount } = normalizeAdsbBatch(acArray, previous);
+    adsbExchangeState.lastFetchedCount    = acArray.length;
+    adsbExchangeState.lastNormalizedCount = normalizedCount;
+    adsbExchangeState.flights             = nextFlights;
+    adsbExchangeState.lastPollAt          = new Date().toISOString();
+    adsbExchangeState.lastErrorAt         = null;
+    adsbExchangeState.lastErrorMessage    = null;
+    console.log('[RW Worldview] ADS-B Exchange: fetched=' + acArray.length + ' normalized=' + normalizedCount);
+    broadcast('snapshot', snapshot());
+  } catch (err) {
+    console.warn('[RW Worldview] ADS-B Exchange poll error: ' + err.message);
+    adsbExchangeState.lastErrorAt      = new Date().toISOString();
+    adsbExchangeState.lastErrorMessage = err.message;
+  }
+}
+
+function startAdsbExchangePolling() {
+  if (!ADSB_EXCHANGE_API_KEY) {
+    console.log('[RW Worldview] ADS-B Exchange polling disabled (ADSB_EXCHANGE_API_KEY not set) — using OpenSky/sim cascade');
+    return;
+  }
+  adsbExchangeState.pollingRunning = true;
+  console.log('[RW Worldview] ADS-B Exchange polling enabled; interval=' + ADSB_EXCHANGE_POLL_INTERVAL_MS + 'ms');
+
+  function schedulePoll() {
+    // pollAdsbExchangeFlights always resolves (internal try-catch handles errors).
+    pollAdsbExchangeFlights()
+      .then(() => setTimeout(schedulePoll, ADSB_EXCHANGE_POLL_INTERVAL_MS));
   }
 
   schedulePoll();
@@ -8464,6 +10460,810 @@ function tickAgent(agent) {
     closest.agents.push(agent.id);
     emit('region', '[' + agent.type + '] ' + agent.id + ' entered ' + closest.id, null, agent.type);
   }
+}
+
+// ─── Quantum Simulation Engine ────────────────────────────────────────────────
+
+// ─── Signal Model ─────────────────────────────────────────────────────────────
+// Normalised real-world signal contributions for branch scoring.
+// Each field is an additive delta applied to the corresponding scoring component.
+
+// ── Signal model tuning constants ─────────────────────────────────────────────
+// Weights for the weather severity ratio: storms are weighted twice as heavily
+// as fog; adding 1 to the denominator prevents division by zero on an empty
+// weather set and keeps the ratio bounded below 1 even with all storms.
+const WEATHER_STORM_WEIGHT        = 2;    // multiplicative weight of storm cells in severity ratio
+const WEATHER_SEVERITY_DENOM_OFFSET = 1; // denominator offset preventing zero-division
+
+// Controls how strongly interferenceRelevance amplifies a branch's interference
+// weight in _branchAdjustedScore (interferenceWeight × (1 + IR × multiplier)).
+const INTERFERENCE_RELEVANCE_MULTIPLIER = 0.10;
+
+/** Zero-delta fallback used when sourceInfluence is not yet computed. */
+const NULL_SIGNAL_INFLUENCE = Object.freeze({
+  utilityDelta:          0,
+  confidenceDelta:       0,
+  costDelta:             0,
+  interferenceRelevance: 0,
+  strategicWeightDelta:  0,
+  sources:               [],
+});
+
+/**
+ * Compute the aggregate signal influence from all live entity layers and the
+ * traffic layer.  Called on branch creation and each evolution tick so that
+ * stored influence reflects current world conditions.
+ *
+ * Signal-to-score mapping (all additive, clamped at use-site):
+ *   traffic    → cost ↑ / utility ↓ when congested; confidence ↓ on incidents
+ *   weather    → utility ↓ / confidence ↓ on severe cells; interferenceRelevance ↑
+ *   aircraft   → utility ↑ / confidence ↑ with density; interferenceRelevance ↑
+ *   vessel     → utility ↑ / confidence ↑ with density
+ *   satellite  → confidence ↑ / strategicWeightDelta ↑
+ *   sensor     → confidence ↑ / strategicWeightDelta ↑
+ *
+ * Returns a frozen sourceInfluence snapshot that is safe to store on a branch.
+ */
+function computeSignalInfluence() {
+  const aircraft = Object.values(liveEntityState.aircraft);
+  const vessels  = Object.values(liveEntityState.vessels);
+  const vehicles = Object.values(liveEntityState.vehicles);
+  const sensors  = Object.values(liveEntityState.sensors);
+  const weather  = Object.values(liveEntityState.weather);
+
+  const segments  = trafficState.segments  || [];
+  const incidents = trafficState.incidents || [];
+  const closures  = trafficState.closures  || [];
+
+  let utilityDelta          = 0;
+  let confidenceDelta       = 0;
+  let costDelta             = 0;
+  let interferenceRelevance = 0;
+  let strategicWeightDelta  = 0;
+  const sources = [];
+
+  // ── Traffic ──────────────────────────────────────────────────────────────
+  if (segments.length > 0) {
+    const heavySegs = segments.filter(function (s) { return s.level === 'heavy'; });
+    const congestionRatio = heavySegs.length / segments.length;
+    const incidentLoad    = Math.min(1, (incidents.length + closures.length) / 5);
+    const tUtility = -(0.10 * congestionRatio);
+    const tCost    =  (0.08 * congestionRatio) + (0.05 * incidentLoad);
+    const tConf    = -(0.06 * incidentLoad);
+    utilityDelta    += tUtility;
+    costDelta       += tCost;
+    confidenceDelta += tConf;
+    if (heavySegs.length > 0 || incidents.length > 0) {
+      sources.push({
+        type: 'traffic',
+        heavySegments: heavySegs.length,
+        totalSegments: segments.length,
+        incidentCount: incidents.length,
+        contribution: { utility: tUtility, cost: tCost, confidence: tConf },
+      });
+    }
+  }
+
+  // ── Weather ───────────────────────────────────────────────────────────────
+  if (weather.length > 0) {
+    const stormCount = weather.filter(function (w) { return w.subtype === 'storm'; }).length;
+    const fogCount   = weather.filter(function (w) { return w.subtype === 'fog'; }).length;
+    const severityRatio = Math.min(1, (stormCount * WEATHER_STORM_WEIGHT + fogCount) / (weather.length * WEATHER_STORM_WEIGHT + WEATHER_SEVERITY_DENOM_OFFSET));
+    const wUtility = -(0.12 * severityRatio);
+    const wConf    = -(0.10 * severityRatio);
+    const wCost    =  (0.06 * severityRatio);
+    utilityDelta          += wUtility;
+    confidenceDelta       += wConf;
+    costDelta             += wCost;
+    interferenceRelevance += severityRatio * 0.40;
+    sources.push({
+      type: 'weather',
+      cellCount: weather.length,
+      stormCount,
+      fogCount,
+      contribution: { utility: wUtility, confidence: wConf, cost: wCost },
+    });
+  }
+
+  // ── Aircraft ──────────────────────────────────────────────────────────────
+  if (aircraft.length > 0) {
+    const avgConf     = aircraft.reduce(function (s, a) { return s + (a.confidence || 0); }, 0) / aircraft.length;
+    const density     = Math.min(1, aircraft.length / 20);
+    const acUtility   = 0.08 * density;
+    const acConf      = 0.06 * avgConf * density;
+    utilityDelta          += acUtility;
+    confidenceDelta       += acConf;
+    interferenceRelevance += density * 0.30;
+    sources.push({
+      type: 'aircraft',
+      count: aircraft.length,
+      avgConfidence: parseFloat(avgConf.toFixed(3)),
+      contribution: { utility: acUtility, confidence: acConf },
+    });
+  }
+
+  // ── Vessels ───────────────────────────────────────────────────────────────
+  if (vessels.length > 0) {
+    const avgConf   = vessels.reduce(function (s, v) { return s + (v.confidence || 0); }, 0) / vessels.length;
+    const density   = Math.min(1, vessels.length / 10);
+    const vsUtility = 0.05 * density;
+    const vsConf    = 0.04 * avgConf * density;
+    utilityDelta    += vsUtility;
+    confidenceDelta += vsConf;
+    sources.push({
+      type: 'vessel',
+      count: vessels.length,
+      avgConfidence: parseFloat(avgConf.toFixed(3)),
+      contribution: { utility: vsUtility, confidence: vsConf },
+    });
+  }
+
+  // ── Satellites ────────────────────────────────────────────────────────────
+  const satAgents = Object.values(worldview.agents).filter(function (a) { return a.type === 'satellite'; });
+  if (satAgents.length > 0) {
+    const satFactor  = Math.min(1, satAgents.length / 2);
+    const satConf    = 0.05 * satFactor;
+    const satSW      = 0.04 * satFactor;
+    confidenceDelta      += satConf;
+    strategicWeightDelta += satSW;
+    sources.push({
+      type: 'satellite',
+      count: satAgents.length,
+      contribution: { confidence: satConf, strategicWeight: satSW },
+    });
+  }
+
+  // ── Sensors ───────────────────────────────────────────────────────────────
+  if (sensors.length > 0) {
+    const active     = sensors.filter(function (s) { return (s.confidence || 0) > 0.5; });
+    const density    = Math.min(1, active.length / 4);
+    const snConf     = 0.06 * density;
+    const snSW       = 0.03 * density;
+    confidenceDelta      += snConf;
+    strategicWeightDelta += snSW;
+    sources.push({
+      type: 'sensor',
+      count: sensors.length,
+      activeCount: active.length,
+      contribution: { confidence: snConf, strategicWeight: snSW },
+    });
+  }
+
+  return Object.freeze({
+    utilityDelta:          parseFloat(utilityDelta.toFixed(4)),
+    confidenceDelta:       parseFloat(confidenceDelta.toFixed(4)),
+    costDelta:             parseFloat(costDelta.toFixed(4)),
+    interferenceRelevance: parseFloat(Math.min(1, interferenceRelevance).toFixed(4)),
+    strategicWeightDelta:  parseFloat(strategicWeightDelta.toFixed(4)),
+    sources,
+    computedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * Compute the full adjusted score for a branch, incorporating both the
+ * mission strategy and any real-world signal contributions stored in
+ * branch.sourceInfluence.
+ *
+ * Formula:
+ *   effectiveU   = clamp(utility  + si.utilityDelta,    0, 1)
+ *   effectiveC   = clamp(confidence + si.confidenceDelta, 0, 1)
+ *   effectiveIW  = interferenceWeight × (1 + si.interferenceRelevance × 0.10)
+ *   effectiveCost= max(0, cost + si.costDelta)
+ *   effectiveSW  = computeStrategicWeight(branch, strategy) + si.strategicWeightDelta
+ *   score        = (effectiveU × effectiveC × effectiveIW) − effectiveCost + effectiveSW
+ *
+ * Deterministic for a given branch snapshot; call computeSignalInfluence() first
+ * to refresh sourceInfluence when world conditions change.
+ */
+function _branchAdjustedScore(branch, strategy) {
+  const si = branch.sourceInfluence || NULL_SIGNAL_INFLUENCE;
+  const effectiveU    = Math.max(0, Math.min(1, branch.utility   + si.utilityDelta));
+  const effectiveC    = Math.max(0, Math.min(1, branch.confidence + si.confidenceDelta));
+  const effectiveCost = Math.max(0, branch.cost + si.costDelta);
+  const effectiveIW   = branch.interferenceWeight * (1 + si.interferenceRelevance * INTERFERENCE_RELEVANCE_MULTIPLIER);
+  const effectiveSW   = computeStrategicWeight(branch, strategy) + si.strategicWeightDelta;
+  return (effectiveU * effectiveC * effectiveIW) - effectiveCost + effectiveSW;
+}
+
+/**
+ * Build a single simulation branch with randomised initial state.
+ * Agents in BRANCH_AGENT_ROLES are seeded with Earth+space layer awareness.
+ */
+function _buildBranch(locationId, branchIndex, parentBranchId) {
+  const id = uid('branch');
+  const agents = BRANCH_AGENT_ROLES.map(function (role) {
+    return {
+      role,
+      id: uid('ba'),
+      confidence: 0.5 + Math.random() * 0.5,
+      skill: Math.random(),
+      layers: EARTH_SPACE_LAYERS.filter(function () { return Math.random() > AGENT_LAYER_COVERAGE_THRESHOLD; }),
+      trainingSteps: 0,
+    };
+  });
+  // Weighted initial branch state
+  const confidence = agents.reduce(function (s, a) { return s + a.confidence; }, 0) / agents.length;
+  const utility    = Math.random();
+  const cost       = 0.1 + Math.random() * 0.9;
+  return {
+    id,
+    locationId,
+    branchIndex,
+    parentBranchId: parentBranchId || null,
+    agents,
+    confidence,
+    utility,
+    cost,
+    generation: 0,
+    status: 'active',          // 'active' | 'pruned' | 'collapsed'
+    entangledWith: [],          // branchIds this branch is linked to
+    lineage: parentBranchId ? [parentBranchId] : [],
+    createdAt: new Date().toISOString(),
+    evolvedAt: null,
+    trajectory: [],             // [{lat,lng,alt,ts}] — projected path on globe
+    interferenceWeight: 1.0,   // adjusted by applyInterference(); used in collapse score
+    interferenceReason: 'neutral', // 'reinforced' | 'damped' | 'neutral'
+    sourceInfluence: null,     // set by createSimLocation / evolveSimBranches from computeSignalInfluence()
+  };
+}
+
+/**
+ * Create a simulation location at (lat, lng) and spawn N parallel branches.
+ * Returns the location object.
+ */
+function createSimLocation(lat, lng, label) {
+  const id = uid('simloc');
+  const branches = [];
+  for (let i = 0; i < BRANCH_COUNT; i++) {
+    branches.push(_buildBranch(id, i, null));
+  }
+  // Attach initial real-world signal influence snapshot to every branch
+  const initialInfluence = computeSignalInfluence();
+  branches.forEach(function (b) { b.sourceInfluence = initialInfluence; });
+  // Generate initial trajectories for each branch
+  branches.forEach(function (b) { _generateTrajectory(b, lat, lng); });
+
+  const loc = {
+    id,
+    lat,
+    lng,
+    label: label || ('loc@' + lat.toFixed(3) + ',' + lng.toFixed(3)),
+    createdAt: new Date().toISOString(),
+    branches,
+    collapsed: null,
+    // Continuous-collapse live tracking: updated each tick without permanently
+    // collapsing branches.  leaderId/leaderScore reflect the current scoring leader.
+    continuousState: {
+      leaderId:    null,
+      leaderScore: 0,
+      locked:      false,
+      since:       null,
+    },
+  };
+  quantumSimState.locations[id] = loc;
+  return loc;
+}
+
+/**
+ * Generate a branching trajectory for globe visualisation.
+ * Produces a series of (lat,lng,alt) waypoints fanning out from the origin.
+ */
+function _generateTrajectory(branch, originLat, originLng) {
+  const STEPS = 8;
+  const bearing = (branch.branchIndex / BRANCH_COUNT) * 360;
+  const spreadDeg = 0.5 + branch.utility * 2.0;
+  const trail = [];
+  for (let s = 0; s <= STEPS; s++) {
+    const frac = s / STEPS;
+    const rad = (bearing * Math.PI) / 180;
+    const dlat = Math.cos(rad) * spreadDeg * frac;
+    const dlng = Math.sin(rad) * spreadDeg * frac;
+    trail.push({
+      lat: originLat + dlat,
+      lng: originLng + dlng,
+      alt: 5000 + frac * 50000 * branch.utility,
+      ts: Date.now() + s * 60000,
+    });
+  }
+  branch.trajectory = trail;
+}
+
+/**
+ * Advance all branches at a location by one evolution tick.
+ * Agents train, confidence drifts, and trajectories are extended.
+ */
+function evolveSimBranches(locationId) {
+  const loc = quantumSimState.locations[locationId];
+  if (!loc) return null;
+  const active = loc.branches.filter(function (b) { return b.status === 'active'; });
+  active.forEach(function (branch) {
+    branch.generation++;
+    // Train agents: each accumulates a small skill delta weighted by layer coverage
+    branch.agents.forEach(function (agent) {
+      const layerBonus = agent.layers.length / EARTH_SPACE_LAYERS.length;
+      agent.skill = Math.min(1, agent.skill + layerBonus * 0.05 * Math.random());
+      agent.confidence = Math.min(1, agent.confidence + 0.02 * Math.random());
+      agent.trainingSteps++;
+    });
+    // Recalculate branch-level confidence and utility
+    branch.confidence = branch.agents.reduce(function (s, a) { return s + a.confidence; }, 0) / branch.agents.length;
+    branch.utility    = Math.min(1, branch.utility + 0.05 * Math.random() - 0.02);
+    branch.cost       = Math.max(0, branch.cost - 0.01 * Math.random());
+    branch.evolvedAt  = new Date().toISOString();
+    // Refresh real-world signal influence snapshot for this branch
+    branch.sourceInfluence = computeSignalInfluence();
+    // Extend trajectory
+    const last = branch.trajectory[branch.trajectory.length - 1];
+    if (last) {
+      const jitterLat = (Math.random() - 0.5) * 0.3;
+      const jitterLng = (Math.random() - 0.5) * 0.3;
+      branch.trajectory.push({
+        lat: last.lat + jitterLat,
+        lng: last.lng + jitterLng,
+        alt: Math.max(5000, last.alt + (Math.random() - 0.4) * 8000),
+        ts: Date.now(),
+      });
+    }
+  });
+  return active.length;
+}
+
+/**
+ * Remove branches whose confidence × utility falls below `threshold`.
+ * Returns the count of pruned branches.
+ */
+function pruneSimBranches(locationId, threshold) {
+  const loc = quantumSimState.locations[locationId];
+  if (!loc) return 0;
+  const thresh = typeof threshold === 'number' ? threshold : 0.2;
+  let pruned = 0;
+  loc.branches.forEach(function (b) {
+    if (b.status !== 'active') return;
+    if (b.confidence * b.utility < thresh) {
+      b.status = 'pruned';
+      pruned++;
+    }
+  });
+  return pruned;
+}
+
+/**
+ * Entangle two branches so their confidence co-evolves.
+ * Both branches receive a mutual reference.
+ */
+function entangleSimBranches(branchId1, branchId2) {
+  let b1 = null;
+  let b2 = null;
+  for (const loc of Object.values(quantumSimState.locations)) {
+    for (const b of loc.branches) {
+      if (b.id === branchId1) b1 = b;
+      if (b.id === branchId2) b2 = b;
+    }
+  }
+  if (!b1 || !b2) return false;
+  if (!b1.entangledWith.includes(branchId2)) b1.entangledWith.push(branchId2);
+  if (!b2.entangledWith.includes(branchId1)) b2.entangledWith.push(branchId1);
+  // Average their confidence to create correlation
+  const avg = (b1.confidence + b2.confidence) / 2;
+  b1.confidence = avg;
+  b2.confidence = avg;
+  b1.lineage.push(branchId2);
+  b2.lineage.push(branchId1);
+  return true;
+}
+
+/**
+ * Compute the strategicWeight term for a branch under the given strategy profile.
+ *
+ * The full adjusted-score formula is:
+ *   adjustedScore = (utility × confidence × interferenceWeight) - cost + strategicWeight
+ *
+ * strategicWeight is a deterministic, pure function of the branch's own attributes.
+ * It is bounded to [0, 0.30] so it can influence close races without overwhelming
+ * the base signal.  The 'balanced' (default) strategy returns 0, which preserves
+ * the prior behaviour exactly.
+ *
+ * @param {object} branch      - A sim branch object (must have utility, confidence,
+ *                               cost, and agents array).
+ * @param {string} strategyKey - Key into STRATEGY_PRESETS; unknown keys fall through
+ *                               to 'balanced' (i.e. return 0).
+ * @returns {number} strategicWeight in [0, 0.30].
+ */
+function computeStrategicWeight(branch, strategyKey) {
+  switch (strategyKey) {
+    case 'safety':
+      // Reward high-confidence branches — reduce risk of wrong outcome.
+      return 0.25 * branch.confidence;
+
+    case 'speed':
+      // Reward high-utility branches — fast, high-value results.
+      return 0.20 * branch.utility;
+
+    case 'coverage': {
+      // Reward broad agent layer awareness across the team.
+      if (!branch.agents.length) return 0;
+      const totalLayers = EARTH_SPACE_LAYERS.length;
+      const avgCoverage = branch.agents.reduce(function (s, a) {
+        return s + a.layers.length / totalLayers;
+      }, 0) / branch.agents.length;
+      return 0.25 * avgCoverage;
+    }
+
+    case 'resource_efficiency':
+      // Reward low-cost branches — (1 − cost) bonus so cheapest branches rise.
+      return 0.30 * (1 - branch.cost);
+
+    case 'response_urgency':
+      // Strong utility boost — prioritise highest-value branches for urgent missions.
+      return 0.30 * branch.utility;
+
+    case 'balanced':
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Apply quantum interference across ALL active branches in all sim locations.
+ *
+ * For every pair of active branches, the absolute difference in utility is used
+ * as a similarity measure:
+ *   |Δutility| < INTERFERENCE_ALIGN_THRESHOLD    → outcome-aligned  → reinforce both
+ *   |Δutility| > INTERFERENCE_CONFLICT_THRESHOLD → outcome-conflicting → damp both
+ *   otherwise                                    → unrelated → no effect
+ *
+ * Each branch accumulates reinforceCount and conflictCount.  The net effect
+ * (clamped to [−3, +3]) is multiplied by 0.1 and added to a base weight of 1.0,
+ * giving interferenceWeight in [0.7, 1.3].  The weight and reason are persisted
+ * on the branch so collapse functions and the UI can read them immediately.
+ *
+ * Returns an array of { branchId, interferenceWeight, interferenceReason } for
+ * every active branch that was processed.
+ */
+function applyInterference() {
+  // Gather all active branches across every location
+  const allActive = [];
+  for (const loc of Object.values(quantumSimState.locations)) {
+    for (const b of loc.branches) {
+      if (b.status === 'active') allActive.push(b);
+    }
+  }
+
+  // Per-branch counters (using index into allActive for speed)
+  const reinforceCount = new Array(allActive.length).fill(0);
+  const conflictCount  = new Array(allActive.length).fill(0);
+
+  // O(n²) pairwise comparison — lightweight for typical branch counts
+  for (let i = 0; i < allActive.length; i++) {
+    for (let j = i + 1; j < allActive.length; j++) {
+      const diff = Math.abs(allActive[i].utility - allActive[j].utility);
+      if (diff < INTERFERENCE_ALIGN_THRESHOLD) {
+        reinforceCount[i]++;
+        reinforceCount[j]++;
+      } else if (diff > INTERFERENCE_CONFLICT_THRESHOLD) {
+        conflictCount[i]++;
+        conflictCount[j]++;
+      }
+      // else: unrelated — no effect
+    }
+  }
+
+  // Compute and persist weight + reason on each branch
+  const results = [];
+  for (let i = 0; i < allActive.length; i++) {
+    const net = Math.max(-3, Math.min(3, reinforceCount[i] - conflictCount[i]));
+    const weight = parseFloat((1.0 + net * 0.1).toFixed(2)); // net is integer so result is exact
+    const reason = net > 0 ? 'reinforced' : net < 0 ? 'damped' : 'neutral';
+    allActive[i].interferenceWeight = weight;
+    allActive[i].interferenceReason = reason;
+    results.push({ branchId: allActive[i].id, interferenceWeight: weight, interferenceReason: reason });
+  }
+  return results;
+}
+
+/**
+ * Collapse active branches for a single location.
+ * Calls applyInterference() first, then selects the winner by the full
+ * adjusted score formula incorporating real-world signal influence:
+ *   adjustedScore = (effectiveU × effectiveC × effectiveIW) − effectiveCost + effectiveSW
+ * where effectiveU/C/cost absorb sourceInfluence deltas and effectiveSW adds
+ * both strategicWeight and si.strategicWeightDelta.
+ * Marks losers pruned, stamps the winner as 'collapsed', and writes an audit
+ * trail entry.  Returns the winning branch, or null if no active branches exist.
+ */
+function collapseSimLocation(locationId) {
+  const loc = quantumSimState.locations[locationId];
+  if (!loc) return null;
+  const active = loc.branches.filter(function (b) { return b.status === 'active'; });
+  if (!active.length) return null;
+
+  // Apply interference weights before ranking so the adjusted score drives selection
+  applyInterference();
+
+  const strategy = quantumSimState.activeStrategy || 'balanced';
+
+  // Rank by full adjusted score incorporating signal influence
+  active.sort(function (a, b) {
+    return _branchAdjustedScore(b, strategy) - _branchAdjustedScore(a, strategy);
+  });
+  const winner = active[0];
+  winner.status = 'collapsed';
+
+  // Mark all other active branches as pruned
+  active.slice(1).forEach(function (b) { b.status = 'pruned'; });
+
+  // Record collapse in location (score = full adjusted score of winner)
+  const score = _branchAdjustedScore(winner, strategy);
+  const winnerSI = winner.sourceInfluence || NULL_SIGNAL_INFLUENCE;
+  loc.collapsed = {
+    winnerId: winner.id,
+    score,
+    strategy,
+    at: new Date().toISOString(),
+    survivingAgents: winner.agents.map(function (a) { return { role: a.role, skill: a.skill, confidence: a.confidence, trainingSteps: a.trainingSteps }; }),
+    sourceInfluence: { utilityDelta: winnerSI.utilityDelta, confidenceDelta: winnerSI.confidenceDelta, costDelta: winnerSI.costDelta, interferenceRelevance: winnerSI.interferenceRelevance, strategicWeightDelta: winnerSI.strategicWeightDelta, sources: winnerSI.sources },
+  };
+
+  // Append audit trail entry (cap at 200)
+  quantumSimState.auditTrail.push({
+    locationId,
+    label: loc.label,
+    winnerId: winner.id,
+    score: loc.collapsed.score,
+    strategy,
+    generation: winner.generation,
+    branchCount: loc.branches.length,
+    at: loc.collapsed.at,
+    sourceInfluenceSources: winnerSI.sources.map(function (s) { return s.type; }),
+  });
+  if (quantumSimState.auditTrail.length > 200) {
+    quantumSimState.auditTrail = quantumSimState.auditTrail.slice(-200);
+  }
+
+  // Stream collapse event to all connected clients (globe + SIM panel)
+  broadcast('sim_collapse', {
+    type: 'location',
+    locationId,
+    label: loc.label,
+    winnerId: winner.id,
+    score: loc.collapsed.score,
+    strategy,
+    at: loc.collapsed.at,
+    signalSources: winnerSI.sources.map(function (s) { return s.type; }),
+  });
+
+  return winner;
+}
+
+/**
+ * Global collapse across ALL sim locations.
+ * Applies interference weights first, then gathers every active branch from
+ * every location, selects the single highest adjusted scoring one
+ * (utility × confidence × interferenceWeight), marks it 'collapsed', prunes
+ * every other active branch system-wide, writes a collapse_all audit entry,
+ * and returns { winner, winnerLocationId, prunedCount, locationCount }.
+ * Returns null when there are no locations or no active branches.
+ */
+function collapseAllSimLocations() {
+  const locs = Object.values(quantumSimState.locations);
+  if (!locs.length) return null;
+
+  // Apply interference weights before scoring so selection uses adjusted scores
+  applyInterference();
+
+  const strategy = quantumSimState.activeStrategy || 'balanced';
+
+  // Collect all active branches with their parent location and full adjusted score
+  const candidates = [];
+  for (const loc of locs) {
+    for (const branch of loc.branches) {
+      if (branch.status === 'active') {
+        candidates.push({
+          branch,
+          loc,
+          score: _branchAdjustedScore(branch, strategy),
+        });
+      }
+    }
+  }
+  if (!candidates.length) return null;
+
+  // Pick the single global winner (highest adjusted score; branch.id breaks ties deterministically)
+  candidates.sort(function (a, b) {
+    const diff = b.score - a.score;
+    if (diff !== 0) return diff;
+    return a.branch.id < b.branch.id ? -1 : 1;
+  });
+  const { branch: winner, loc: winnerLoc, score: winnerScore } = candidates[0];
+
+  // Mark winner as collapsed
+  winner.status = 'collapsed';
+
+  // Prune every other active branch system-wide
+  let prunedCount = 0;
+  for (let i = 1; i < candidates.length; i++) {
+    candidates[i].branch.status = 'pruned';
+    prunedCount++;
+  }
+
+  // Record collapse on the winning location
+  const at = new Date().toISOString();
+  const winnerSI = winner.sourceInfluence || NULL_SIGNAL_INFLUENCE;
+  winnerLoc.collapsed = {
+    type: 'global',
+    winnerId: winner.id,
+    score: winnerScore,
+    strategy,
+    at,
+    survivingAgents: winner.agents.map(function (a) {
+      return { role: a.role, skill: a.skill, confidence: a.confidence, trainingSteps: a.trainingSteps };
+    }),
+    sourceInfluence: { utilityDelta: winnerSI.utilityDelta, confidenceDelta: winnerSI.confidenceDelta, costDelta: winnerSI.costDelta, interferenceRelevance: winnerSI.interferenceRelevance, strategicWeightDelta: winnerSI.strategicWeightDelta, sources: winnerSI.sources },
+  };
+
+  // Write a collapse_all audit entry (cap at 200)
+  quantumSimState.auditTrail.push({
+    type: 'collapse_all',
+    locationId: winnerLoc.id,
+    label: winnerLoc.label,
+    winnerId: winner.id,
+    score: winnerScore,
+    strategy,
+    generation: winner.generation,
+    branchCount: candidates.length,
+    prunedCount,
+    locationCount: locs.length,
+    at,
+    sourceInfluenceSources: winnerSI.sources.map(function (s) { return s.type; }),
+  });
+  if (quantumSimState.auditTrail.length > 200) {
+    quantumSimState.auditTrail = quantumSimState.auditTrail.slice(-200);
+  }
+
+  // Stream global collapse event to all connected clients (globe + SIM panel)
+  broadcast('sim_collapse', {
+    type: 'global',
+    winnerLocationId: winnerLoc.id,
+    label: winnerLoc.label,
+    winnerId: winner.id,
+    score: winnerScore,
+    strategy,
+    prunedCount,
+    locationCount: locs.length,
+    at,
+    signalSources: winnerSI.sources.map(function (s) { return s.type; }),
+  });
+
+  return { winner, winnerLocationId: winnerLoc.id, prunedCount, locationCount: locs.length };
+}
+
+// ─── Continuous Collapse Engine ───────────────────────────────────────────────
+
+/**
+ * One tick of the continuous-collapse scoring loop.
+ *
+ * For every sim location that still has active branches:
+ *  1. Apply interference weights (same as manual collapse).
+ *  2. Score every active branch using the full adjusted-score formula:
+ *       (utility × confidence × interferenceWeight) - cost + strategicWeight
+ *     where strategicWeight is driven by quantumSimState.activeStrategy.
+ *  3. Identify the current leader (highest score).
+ *  4. Apply hysteresis guard: the challenger must exceed the sitting leader by
+ *     at least `hysteresisThreshold` (and `winnerLockMargin` more if the leader
+ *     is above `winnerLockThreshold`) before it takes the leader role.
+ *  5. Broadcast `sim_winner_change` when the leader ID changes.
+ *  6. Broadcast `sim_near_winner_pressure` when the 2nd-place score is within
+ *     `nearWinnerPressureThreshold` of the leader's score.
+ *
+ * Nothing is permanently collapsed — branch.status stays 'active'.
+ * Call startContinuousCollapse() to run this on a repeating timer.
+ */
+function runContinuousCollapseTick() {
+  const cfg      = quantumSimState.continuousCollapse;
+  const strategy = quantumSimState.activeStrategy || 'balanced';
+  const now      = new Date().toISOString();
+
+  // Run interference once across all active branches before scoring
+  applyInterference();
+
+  for (const loc of Object.values(quantumSimState.locations)) {
+    const active = loc.branches.filter(function (b) { return b.status === 'active'; });
+    if (!active.length) continue;
+
+    // Score using full adjusted formula (with signal influence) and sort descending
+    const scored = active.map(function (b) {
+      return {
+        branch: b,
+        score: _branchAdjustedScore(b, strategy),
+      };
+    }).sort(function (a, b) { return b.score - a.score; });
+
+    const top    = scored[0];
+    const second = scored[1] || null;
+    const cs     = loc.continuousState;
+
+    // --- Hysteresis / winner-lock check ---
+    let newLeader = false;
+    if (!cs.leaderId) {
+      // No leader yet — seat the top scorer immediately
+      newLeader = true;
+    } else if (top.branch.id !== cs.leaderId) {
+      // A different branch is on top — apply thresholds
+      const required = cs.locked
+        ? cfg.hysteresisThreshold + cfg.winnerLockMargin
+        : cfg.hysteresisThreshold;
+      if (top.score - cs.leaderScore >= required) {
+        newLeader = true;
+      }
+    } else {
+      // Same leader — refresh score and lock status
+      cs.leaderScore = top.score;
+      cs.locked      = top.score >= cfg.winnerLockThreshold;
+    }
+
+    if (newLeader) {
+      const prevId = cs.leaderId;
+      cs.leaderId    = top.branch.id;
+      cs.leaderScore = top.score;
+      cs.locked      = top.score >= cfg.winnerLockThreshold;
+      cs.since       = now;
+
+      // Broadcast winner change — include signal source summary for globe + SIM panel
+      const topSI = top.branch.sourceInfluence || NULL_SIGNAL_INFLUENCE;
+      broadcast('sim_winner_change', {
+        locationId:   loc.id,
+        label:        loc.label,
+        winnerId:     top.branch.id,
+        score:        top.score,
+        prevWinnerId: prevId,
+        locked:       cs.locked,
+        strategy,
+        at:           now,
+        signalSources: topSI.sources.map(function (s) { return s.type; }),
+        interferenceRelevance: topSI.interferenceRelevance,
+      });
+    }
+
+    // --- Near-winner pressure check ---
+    if (second && (top.score - second.score) <= cfg.nearWinnerPressureThreshold) {
+      broadcast('sim_near_winner_pressure', {
+        locationId:     loc.id,
+        label:          loc.label,
+        leaderId:       cs.leaderId,
+        leaderScore:    top.score,
+        challengerId:   second.branch.id,
+        challengerScore: second.score,
+        gap:            top.score - second.score,
+        strategy,
+        at:             now,
+      });
+    }
+  }
+}
+
+/**
+ * Start the continuous-collapse timer.
+ * Safe to call multiple times — only one timer runs at once.
+ * @param {number} [intervalMs]  Optional override for the tick interval.
+ */
+function startContinuousCollapse(intervalMs) {
+  if (_continuousCollapseTimer) return; // already running
+  const cfg = quantumSimState.continuousCollapse;
+  if (typeof intervalMs === 'number' && intervalMs > 0) cfg.intervalMs = intervalMs;
+  cfg.running = true;
+  _continuousCollapseTimer = setInterval(runContinuousCollapseTick, cfg.intervalMs);
+}
+
+/**
+ * Stop the continuous-collapse timer.
+ */
+function stopContinuousCollapse() {
+  if (_continuousCollapseTimer) {
+    clearInterval(_continuousCollapseTimer);
+    _continuousCollapseTimer = null;
+  }
+  quantumSimState.continuousCollapse.running = false;
 }
 
 function simulationLoop() {
@@ -9233,11 +12033,20 @@ function router(req, res) {
     return;
   }
 
-  // ── GET /api/flights  → Aviationstack normalized flights
+  // ── GET /api/flights  → active provider's normalized flight entities
   if (req.method === 'GET' && url === '/api/flights') {
-    const flights = aviationstackState.flights;
+    const { provider, flights } = selectActiveFlights();
+    const entities = Object.values(flights);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ flights, count: flights.length, time: aviationstackState.lastPollAt || Date.now() }));
+    res.end(JSON.stringify({
+      provider,
+      entities,
+      count: entities.length,
+      fetched: flightProviderState.fetched,
+      visible: flightProviderState.visible,
+      drawn:   flightProviderState.drawn,
+      time:    flightProviderState.lastSelectedAt || new Date().toISOString(),
+    }));
     return;
   }
 
@@ -9250,6 +12059,22 @@ function router(req, res) {
       vessels:  Object.values(liveEntityState.vessels).map(sanitizeEntityForRender).filter(Boolean),
       sensors:  Object.values(liveEntityState.sensors).map(sanitizeEntityForRender).filter(Boolean),
       weather:  Object.values(liveEntityState.weather).map(sanitizeEntityForRender).filter(Boolean),
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // ── GET /api/ground-vehicles  → ground vehicle runtime stats and entity list
+  if (req.method === 'GET' && url === '/api/ground-vehicles') {
+    const allVehicles = Object.values(liveEntityState.vehicles);
+    const visible = allVehicles.filter(v => Number.isFinite(v.lat) && Number.isFinite(v.lng));
+    const entities = visible.map(sanitizeEntityForRender).filter(Boolean);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      generated: allVehicles.length,
+      visible:   visible.length,
+      drawn:     entities.length,
+      entities,
       ts: Date.now(),
     }));
     return;
@@ -9293,6 +12118,302 @@ function router(req, res) {
     return;
   }
 
+  // ── GET /api/layer-feed/:layer  → live intelligence feed for a data layer
+  if (req.method === 'GET' && url.startsWith('/api/layer-feed/')) {
+    const layer = decodeURIComponent(url.slice('/api/layer-feed/'.length));
+    // Resolve entities for the layer
+    let entities = [];
+    if      (layer === 'vehicles')     entities = Object.values(liveEntityState.vehicles);
+    else if (layer === 'aircraft')     entities = Object.values(liveEntityState.aircraft);
+    else if (layer === 'vessels')      entities = Object.values(liveEntityState.vessels);
+    else if (layer === 'sensors')      entities = Object.values(liveEntityState.sensors);
+    else if (layer === 'weatherCells') entities = Object.values(liveEntityState.weather);
+    else if (layer === 'trafficSim') {
+      // Traffic feed: segments summary
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        layer,
+        count:    trafficState.segments.length,
+        events:   [],
+        entities: trafficState.segments.slice(0, 20).map(function (s, i) {
+          return { id: s.id || s.roadName || ('seg-' + i), status: s.congestion || 'active' };
+        }),
+        regions: [],
+        ts: Date.now(),
+      }));
+      return;
+    }
+    // Build events from entityEventHistory for each entity in the layer
+    const events = [];
+    for (const e of entities) {
+      if (!e || !e.id) continue;
+      const hist = entityEventHistory[e.id] || [];
+      for (const ev of hist) events.push({ entityId: e.id, ts: ev.ts, kind: ev.kind, msg: ev.msg });
+    }
+    events.sort(function (a, b) { return (b.ts > a.ts ? 1 : b.ts < a.ts ? -1 : 0); });
+    // Per-entity status list
+    const entityList = entities.map(function (e) {
+      if (!e) return null;
+      return {
+        id:     e.id,
+        type:   e.type,
+        status: e.state || 'active',
+        lat:    e.lat,
+        lng:    e.lng,
+      };
+    }).filter(Boolean);
+    // Regional activity: deduplicate regions touched by entity positions
+    const regionSummary = [];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      layer,
+      count:    entities.length,
+      events:   events.slice(0, 20),
+      entities: entityList,
+      regions:  regionSummary,
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // ── Quantum Simulation Engine routes ─────────────────────────────────────
+  // GET /api/sim/locations  → all locations with their branches
+  if (req.method === 'GET' && url === '/api/sim/locations') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      locations: Object.values(quantumSimState.locations),
+      auditTrail: quantumSimState.auditTrail.slice(-50),
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // POST /api/sim/generate  → { lat, lng, label? }  create a new sim location
+  if (req.method === 'POST' && url === '/api/sim/generate') {
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      let parsed;
+      try { parsed = JSON.parse(body); } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const lat = Number(parsed.lat);
+      const lng = Number(parsed.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'lat and lng are required numbers' }));
+        return;
+      }
+      const loc = createSimLocation(lat, lng, parsed.label || null);
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ location: loc, ts: Date.now() }));
+    });
+    return;
+  }
+
+  // POST /api/sim/evolve/:locationId  → advance branches one tick
+  if (req.method === 'POST' && url.startsWith('/api/sim/evolve/')) {
+    const locationId = decodeURIComponent(url.slice('/api/sim/evolve/'.length));
+    const count = evolveSimBranches(locationId);
+    if (count === null) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'location not found', locationId }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ locationId, evolvedBranches: count, ts: Date.now() }));
+    return;
+  }
+
+  // POST /api/sim/prune/:locationId  → { threshold? }  prune low-scoring branches
+  if (req.method === 'POST' && url.startsWith('/api/sim/prune/')) {
+    const locationId = decodeURIComponent(url.slice('/api/sim/prune/'.length));
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      if (!quantumSimState.locations[locationId]) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'location not found', locationId }));
+        return;
+      }
+      let threshold;
+      try { threshold = body ? JSON.parse(body).threshold : undefined; } catch (e) { threshold = undefined; }
+      const pruned = pruneSimBranches(locationId, threshold);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ locationId, prunedBranches: pruned, ts: Date.now() }));
+    });
+    return;
+  }
+
+  // POST /api/sim/collapse-all  → global collapse: single best branch wins system-wide
+  if (req.method === 'POST' && url === '/api/sim/collapse-all') {
+    const result = collapseAllSimLocations();
+    if (!result) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'no locations or no active branches' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      winner: result.winner,
+      winnerLocationId: result.winnerLocationId,
+      prunedCount: result.prunedCount,
+      locationCount: result.locationCount,
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // POST /api/sim/collapse/:locationId  → collapse to best branch
+  if (req.method === 'POST' && url.startsWith('/api/sim/collapse/')) {
+    const locationId = decodeURIComponent(url.slice('/api/sim/collapse/'.length));
+    const winner = collapseSimLocation(locationId);
+    if (!winner) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'location not found or no active branches', locationId }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ locationId, winner, ts: Date.now() }));
+    return;
+  }
+
+  // POST /api/sim/entangle  → { branchId1, branchId2 }  entangle two branches
+  if (req.method === 'POST' && url === '/api/sim/entangle') {
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      let parsed;
+      try { parsed = JSON.parse(body); } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const ok = entangleSimBranches(parsed.branchId1, parsed.branchId2);
+      if (!ok) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'one or both branches not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ entangled: true, branchId1: parsed.branchId1, branchId2: parsed.branchId2, ts: Date.now() }));
+    });
+    return;
+  }
+
+  // POST /api/sim/interfere  → apply interference weights to all active branches
+  if (req.method === 'POST' && url === '/api/sim/interfere') {
+    const results = applyInterference();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ applied: results.length, results, ts: Date.now() }));
+    return;
+  }
+
+  // GET /api/sim/strategy  → current active strategy profile + all available presets
+  if (req.method === 'GET' && url === '/api/sim/strategy') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      activeStrategy: quantumSimState.activeStrategy,
+      presets: Object.entries(STRATEGY_PRESETS).map(function ([key, p]) {
+        return { key, label: p.label, description: p.description };
+      }),
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // POST /api/sim/strategy  → { strategy: '<key>' }  set the active strategy
+  if (req.method === 'POST' && url === '/api/sim/strategy') {
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      let parsed;
+      try { parsed = JSON.parse(body); } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const key = parsed.strategy;
+      if (!key || !Object.prototype.hasOwnProperty.call(STRATEGY_PRESETS, key)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unknown strategy; valid keys: ' + Object.keys(STRATEGY_PRESETS).join(', ') }));
+        return;
+      }
+      quantumSimState.activeStrategy = key;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ activeStrategy: key, ts: Date.now() }));
+    });
+    return;
+  }
+
+  // GET /api/sim/continuous-collapse  → current engine config + running status
+  if (req.method === 'GET' && url === '/api/sim/continuous-collapse') {
+    const cfg = quantumSimState.continuousCollapse;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      running:                    cfg.running,
+      intervalMs:                 cfg.intervalMs,
+      hysteresisThreshold:        cfg.hysteresisThreshold,
+      winnerLockThreshold:        cfg.winnerLockThreshold,
+      winnerLockMargin:           cfg.winnerLockMargin,
+      nearWinnerPressureThreshold: cfg.nearWinnerPressureThreshold,
+      ts: Date.now(),
+    }));
+    return;
+  }
+
+  // POST /api/sim/continuous-collapse  → { action: 'start'|'stop', intervalMs?, hysteresisThreshold?, winnerLockThreshold?, winnerLockMargin?, nearWinnerPressureThreshold? }
+  if (req.method === 'POST' && url === '/api/sim/continuous-collapse') {
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; });
+    req.on('end', function () {
+      let parsed = {};
+      if (body) {
+        try { parsed = JSON.parse(body); } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+          return;
+        }
+      }
+      const cfg = quantumSimState.continuousCollapse;
+      // Apply any provided config overrides before start/stop
+      if (typeof parsed.intervalMs === 'number' && parsed.intervalMs > 0)
+        cfg.intervalMs = parsed.intervalMs;
+      if (typeof parsed.hysteresisThreshold === 'number')
+        cfg.hysteresisThreshold = parsed.hysteresisThreshold;
+      if (typeof parsed.winnerLockThreshold === 'number')
+        cfg.winnerLockThreshold = parsed.winnerLockThreshold;
+      if (typeof parsed.winnerLockMargin === 'number')
+        cfg.winnerLockMargin = parsed.winnerLockMargin;
+      if (typeof parsed.nearWinnerPressureThreshold === 'number')
+        cfg.nearWinnerPressureThreshold = parsed.nearWinnerPressureThreshold;
+
+      const action = parsed.action || (cfg.running ? 'stop' : 'start');
+      if (action === 'start') {
+        startContinuousCollapse();
+      } else if (action === 'stop') {
+        stopContinuousCollapse();
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'action must be "start" or "stop"' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        running:                    cfg.running,
+        intervalMs:                 cfg.intervalMs,
+        hysteresisThreshold:        cfg.hysteresisThreshold,
+        winnerLockThreshold:        cfg.winnerLockThreshold,
+        winnerLockMargin:           cfg.winnerLockMargin,
+        nearWinnerPressureThreshold: cfg.nearWinnerPressureThreshold,
+        ts: Date.now(),
+      }));
+    });
+    return;
+  }
+
   // 404
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'not found', path: url }));
@@ -9323,8 +12444,9 @@ if (require.main === module) {
   setInterval(simulationLoop, 800);
   setInterval(plannerTick, 2000);
   setInterval(pruneOldTasks, 60000);
+  startAdsbExchangePolling();   // primary live source
   startAviationstackPolling();
-  startOpenSkyPolling();
+  startOpenSkyPolling();        // optional future integration (disabled by default; see REAL_FLIGHT_PROVIDERS)
   startOpenSkyFileWatcher();
 
   server.listen(PORT, '0.0.0.0', () => {
@@ -9345,6 +12467,12 @@ module.exports = {
   countVisibleOpenSkyFlights,
   resolveClosestRegion,
   buildOpenSkyFlightEntity,
+  buildAdsbExchangeFlightEntity,
+  normalizeAdsbBatch,
+  getSimFlights,
+  selectActiveFlights,
+  isRecentPoll,
+  REAL_FLIGHT_PROVIDERS,
   emit,
   wsSend,
   wsParse,
@@ -9354,11 +12482,14 @@ module.exports = {
   eventLog,
   openSkyLiveState,
   openSkyFileState,
+  adsbExchangeState,
+  flightProviderState,
   fileCredentials,
   detectAnomalies,
   loadOpenSkyFile,
   normalizeStateBatch,
   errMsg,
+  _simFlightsCache,
   // ── Planner / Worker / Task exports ────────────────────────────────────────
   taskRegistry,
   workerRuntime,
@@ -9395,4 +12526,32 @@ module.exports = {
   feedBroker,
   bootstrapFeedBroker,
   FEED_PRIORITY,
+  LIVE_ENTITY_UPDATE_MS,
+  // ── Quantum Simulation Engine exports ──────────────────────────────────────
+  quantumSimState,
+  BRANCH_COUNT,
+  BRANCH_AGENT_ROLES,
+  EARTH_SPACE_LAYERS,
+  INTERFERENCE_ALIGN_THRESHOLD,
+  INTERFERENCE_CONFLICT_THRESHOLD,
+  CONTINUOUS_COLLAPSE_MS,
+  HYSTERESIS_THRESHOLD,
+  WINNER_LOCK_THRESHOLD,
+  WINNER_LOCK_MARGIN,
+  NEAR_WINNER_PRESSURE_THRESHOLD,
+  STRATEGY_PRESETS,
+  createSimLocation,
+  evolveSimBranches,
+  pruneSimBranches,
+  collapseSimLocation,
+  collapseAllSimLocations,
+  entangleSimBranches,
+  applyInterference,
+  computeStrategicWeight,
+  computeSignalInfluence,
+  NULL_SIGNAL_INFLUENCE,
+  _branchAdjustedScore,
+  runContinuousCollapseTick,
+  startContinuousCollapse,
+  stopContinuousCollapse,
 };

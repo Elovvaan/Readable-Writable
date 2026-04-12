@@ -2,8 +2,9 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 
-const { router, worldview } = require('../server');
+const { router, worldview, quantumSimState, stopContinuousCollapse } = require('../server');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,26 @@ function callRouter(method, url) {
   const res = makeMockRes();
   router(makeReq(method, url), res);
   return res;
+}
+
+/**
+ * callRouterWithBody – helper for POST routes that read req body via events.
+ * Returns a Promise that resolves to the mock response.
+ */
+function callRouterWithBody(method, url, bodyObj) {
+  return new Promise(function (resolve) {
+    const res = makeMockRes();
+    const req = new EventEmitter();
+    req.method = method;
+    req.url = url;
+    // Override res.end to resolve once the handler calls it
+    const origEnd = res.end.bind(res);
+    res.end = function (body) { origEnd(body); resolve(res); };
+    router(req, res);
+    const chunk = JSON.stringify(bodyObj || {});
+    req.emit('data', chunk);
+    req.emit('end');
+  });
 }
 
 function jsonBody(res) {
@@ -217,5 +238,270 @@ describe('unknown routes', () => {
 
   test('POST to unknown route returns 404', () => {
     assert.equal(callRouter('POST', '/health').statusCode, 404);
+  });
+});
+
+// ─── GET /api/ground-vehicles ────────────────────────────────────────────────
+
+describe('GET /api/ground-vehicles', () => {
+  test('returns 200', () => {
+    assert.equal(callRouter('GET', '/api/ground-vehicles').statusCode, 200);
+  });
+
+  test('Content-Type is application/json', () => {
+    const res = callRouter('GET', '/api/ground-vehicles');
+    assert.ok(res.headers['Content-Type'].includes('application/json'));
+  });
+
+  test('body has generated, visible, drawn, entities, ts fields', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok('generated' in body, 'must have generated');
+    assert.ok('visible'   in body, 'must have visible');
+    assert.ok('drawn'     in body, 'must have drawn');
+    assert.ok('entities'  in body, 'must have entities');
+    assert.ok('ts'        in body, 'must have ts');
+  });
+
+  test('generated >= 10 after live entity refresh', () => {
+    const { refreshLiveEntityLayers } = require('../server');
+    refreshLiveEntityLayers();
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok(body.generated >= 10, 'expected >= 10 generated vehicles, got ' + body.generated);
+  });
+
+  test('visible <= generated', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok(body.visible <= body.generated, 'visible must not exceed generated');
+  });
+
+  test('drawn <= visible', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok(body.drawn <= body.visible, 'drawn must not exceed visible');
+  });
+
+  test('entities is an array', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.ok(Array.isArray(body.entities));
+  });
+
+  test('entities have id, type, lat, lng fields', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    for (const e of body.entities) {
+      assert.ok('id'  in e, 'entity must have id');
+      assert.ok('type' in e, 'entity must have type');
+      assert.ok('lat'  in e, 'entity must have lat');
+      assert.ok('lng'  in e, 'entity must have lng');
+    }
+  });
+
+  test('entities count matches drawn count', () => {
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    assert.equal(body.entities.length, body.drawn, 'entities.length must equal drawn');
+  });
+
+  test('ts is a recent timestamp', () => {
+    const before = Date.now();
+    const body = jsonBody(callRouter('GET', '/api/ground-vehicles'));
+    const after = Date.now();
+    assert.ok(body.ts >= before && body.ts <= after, 'ts must be between before and after');
+  });
+});
+
+// ─── GET /api/sim/continuous-collapse ─────────────────────────────────────────
+
+describe('GET /api/sim/continuous-collapse', () => {
+  test('returns 200', () => {
+    assert.equal(callRouter('GET', '/api/sim/continuous-collapse').statusCode, 200);
+  });
+
+  test('body has running and intervalMs', () => {
+    const body = jsonBody(callRouter('GET', '/api/sim/continuous-collapse'));
+    assert.equal(typeof body.running, 'boolean');
+    assert.ok(typeof body.intervalMs === 'number' && body.intervalMs > 0);
+  });
+
+  test('body includes hysteresis and winner-lock thresholds', () => {
+    const body = jsonBody(callRouter('GET', '/api/sim/continuous-collapse'));
+    assert.ok('hysteresisThreshold' in body);
+    assert.ok('winnerLockThreshold' in body);
+    assert.ok('winnerLockMargin' in body);
+    assert.ok('nearWinnerPressureThreshold' in body);
+  });
+
+  test('body has ts', () => {
+    const body = jsonBody(callRouter('GET', '/api/sim/continuous-collapse'));
+    assert.ok(typeof body.ts === 'number');
+  });
+});
+
+// ─── POST /api/sim/continuous-collapse ────────────────────────────────────────
+
+describe('POST /api/sim/continuous-collapse', () => {
+  // Always stop after each test to avoid leaking timers
+  test('start action sets running=true', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'start', intervalMs: 60000 });
+    stopContinuousCollapse();
+    assert.equal(res.statusCode, 200);
+    const body = jsonBody(res);
+    assert.equal(body.running, true);
+  });
+
+  test('stop action sets running=false', async () => {
+    // First start it
+    await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'start', intervalMs: 60000 });
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'stop' });
+    assert.equal(res.statusCode, 200);
+    const body = jsonBody(res);
+    assert.equal(body.running, false);
+  });
+
+  test('default action toggles: start when stopped', async () => {
+    // Ensure stopped first
+    stopContinuousCollapse();
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { intervalMs: 60000 });
+    stopContinuousCollapse();
+    assert.equal(res.statusCode, 200);
+    const body = jsonBody(res);
+    assert.equal(body.running, true);
+  });
+
+  test('accepts and applies custom intervalMs', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'start', intervalMs: 9876 });
+    stopContinuousCollapse();
+    const body = jsonBody(res);
+    assert.equal(body.intervalMs, 9876);
+    // Reset to default
+    quantumSimState.continuousCollapse.intervalMs = 3000;
+  });
+
+  test('accepts hysteresisThreshold override', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'stop', hysteresisThreshold: 0.10 });
+    const body = jsonBody(res);
+    assert.equal(body.hysteresisThreshold, 0.10);
+    // Reset
+    quantumSimState.continuousCollapse.hysteresisThreshold = 0.05;
+  });
+
+  test('invalid JSON returns 400', async () => {
+    // Manually send non-JSON body
+    const res = await new Promise(function (resolve) {
+      const { EventEmitter: EE } = require('node:events');
+      const mockRes = {
+        statusCode: null, headers: {}, body: '',
+        writeHead(code) { this.statusCode = code; },
+        setHeader() {},
+        end(b) { this.body = b || ''; resolve(mockRes); },
+      };
+      const req = new EE();
+      req.method = 'POST';
+      req.url = '/api/sim/continuous-collapse';
+      router(req, mockRes);
+      req.emit('data', '{not valid json');
+      req.emit('end');
+    });
+    assert.equal(res.statusCode, 400);
+  });
+
+  test('unknown action returns 400', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'restart' });
+    assert.equal(res.statusCode, 400);
+  });
+
+  test('body has ts', async () => {
+    const res = await callRouterWithBody('POST', '/api/sim/continuous-collapse', { action: 'stop' });
+    const body = jsonBody(res);
+    assert.ok(typeof body.ts === 'number');
+  });
+});
+
+// ─── GET /api/layer-feed/:layer ───────────────────────────────────────────────
+
+describe('GET /api/layer-feed/:layer', () => {
+  const { refreshLiveEntityLayers } = require('../server');
+  refreshLiveEntityLayers();
+
+  test('returns 200 for vehicles layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/vehicles').statusCode, 200);
+  });
+
+  test('Content-Type is application/json for vehicles', () => {
+    const res = callRouter('GET', '/api/layer-feed/vehicles');
+    assert.ok(res.headers['Content-Type'].includes('application/json'));
+  });
+
+  test('body has layer, count, events, entities, ts fields for vehicles', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok('layer'    in body, 'must have layer');
+    assert.ok('count'    in body, 'must have count');
+    assert.ok('events'   in body, 'must have events');
+    assert.ok('entities' in body, 'must have entities');
+    assert.ok('ts'       in body, 'must have ts');
+  });
+
+  test('layer field matches requested layer key', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.equal(body.layer, 'vehicles');
+  });
+
+  test('count is a non-negative integer for vehicles', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok(Number.isInteger(body.count) && body.count >= 0, 'count must be non-negative integer');
+  });
+
+  test('count >= 10 for vehicles after refresh', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok(body.count >= 10, 'expected >= 10 vehicles, got ' + body.count);
+  });
+
+  test('events is an array', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok(Array.isArray(body.events), 'events must be an array');
+  });
+
+  test('entities is an array', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    assert.ok(Array.isArray(body.entities), 'entities must be an array');
+  });
+
+  test('entities have id and status fields', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    for (const e of body.entities) {
+      assert.ok('id'     in e, 'entity must have id');
+      assert.ok('status' in e, 'entity must have status');
+    }
+  });
+
+  test('returns 200 for aircraft layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/aircraft').statusCode, 200);
+  });
+
+  test('returns 200 for vessels layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/vessels').statusCode, 200);
+  });
+
+  test('returns 200 for sensors layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/sensors').statusCode, 200);
+  });
+
+  test('returns 200 for weatherCells layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/weatherCells').statusCode, 200);
+  });
+
+  test('returns 200 for trafficSim layer', () => {
+    assert.equal(callRouter('GET', '/api/layer-feed/trafficSim').statusCode, 200);
+  });
+
+  test('trafficSim feed has count and entities', () => {
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/trafficSim'));
+    assert.ok('count' in body, 'must have count');
+    assert.ok('entities' in body, 'must have entities');
+    assert.equal(body.layer, 'trafficSim');
+  });
+
+  test('ts is a recent timestamp', () => {
+    const before = Date.now();
+    const body = jsonBody(callRouter('GET', '/api/layer-feed/vehicles'));
+    const after = Date.now();
+    assert.ok(body.ts >= before && body.ts <= after, 'ts must be between before and after');
   });
 });
