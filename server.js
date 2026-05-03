@@ -2730,6 +2730,25 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return LEGACY_CANVAS_RENDERER;
   }
 
+  // Guard against silent Google 3D tile streaming failures (billing disabled, Map Tiles API
+  // not enabled, domain restriction on the API key, etc.).  When fromUrl() succeeds the root
+  // JSON loads fine, but every subsequent tile request returns 403/404 silently.  globe.show
+  // was already set to false optimistically at that point, so without this guard the viewer
+  // stays permanently black.  After ≥3 tileLoadFailed events we restore globe visibility.
+  function _attachGoogleTileFailGuard(tileset) {
+    if (typeof tileset.tileLoadFailed?.addEventListener !== 'function') return;
+    let _failCount = 0;
+    tileset.tileLoadFailed.addEventListener(function _h(e) {
+      if (++_failCount < 3 || cesiumGoogleTileset !== tileset || !cesiumViewer) return;
+      console.warn('[RW Cesium] Google tile streaming failures (' + _failCount + ') — restoring globe. Check GOOGLE_MAPS_API_KEY: billing enabled, Map Tiles API enabled, domain not restricted.', e && e.message);
+      cesiumViewer.scene.globe.show = true;
+      lastCesiumRenderCounts.tilesLoaded = false;
+      lastCesiumRenderCounts.tilesState = 'failed';
+      lastCesiumRenderCounts.tilesError = (e && e.message) ? e.message : 'tile streaming errors';
+      tileset.tileLoadFailed.removeEventListener(_h);
+    });
+  }
+
   async function initCesium() {
     console.log('[RW] initCesium start');
     if (!USE_CESIUM || typeof Cesium === 'undefined') return;
@@ -2789,6 +2808,7 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         );
         cesiumViewer.scene.primitives.add(tileset);
         cesiumGoogleTileset = tileset;
+        _attachGoogleTileFailGuard(tileset);
         if (typeof tileset.readyPromise?.then === 'function') {
           tileset.readyPromise.then(function () {
             if (cesiumGoogleTileset === tileset) {
@@ -12052,6 +12072,18 @@ function router(req, res) {
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(body);
+    return;
+  }
+
+  // ── GET /config-safe  → safe booleans for client-side diagnostics (no secrets)
+  if (req.method === 'GET' && url === '/config-safe') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      googleKeyPresent: GOOGLE_MAPS_API_KEY.length > 0,
+      cesiumTokenPresent: CESIUM_ACCESS_TOKEN.length > 0,
+      defaultView: RW_DEFAULT_VIEW,
+      openskyEnabled: OPENSKY_ENABLED,
+    }));
     return;
   }
 
