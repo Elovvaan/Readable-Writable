@@ -2734,19 +2734,19 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   // not enabled, domain restriction on the API key, etc.).  When fromUrl() succeeds the root
   // JSON loads fine, but every subsequent tile request returns 403/404 silently.  globe.show
   // was already set to false optimistically at that point, so without this guard the viewer
-  // stays permanently black.  After ≥TILE_FAILURE_THRESHOLD tileLoadFailed events we restore.
+  // stays permanently black.  After ≥TILE_FAILURE_THRESHOLD tileFailed events we restore.
   function _attachGoogleTileFailGuard(tileset) {
-    if (typeof tileset.tileLoadFailed?.addEventListener !== 'function') return;
+    if (typeof tileset.tileFailed?.addEventListener !== 'function') return;
     const TILE_FAILURE_THRESHOLD = 3;
     let failCount = 0;
-    tileset.tileLoadFailed.addEventListener(function onTileLoadFailed(e) {
+    tileset.tileFailed.addEventListener(function onTileLoadFailed(e) {
       if (++failCount < TILE_FAILURE_THRESHOLD || cesiumGoogleTileset !== tileset || !cesiumViewer) return;
       console.warn('[RW Cesium] Google tile streaming failures (' + failCount + ') — restoring globe. Check GOOGLE_MAPS_API_KEY: billing enabled, Map Tiles API enabled, domain not restricted.', e && e.message);
       cesiumViewer.scene.globe.show = true;
       lastCesiumRenderCounts.tilesLoaded = false;
       lastCesiumRenderCounts.tilesState = 'failed';
       lastCesiumRenderCounts.tilesError = (e && e.message) ? e.message : 'tile streaming errors';
-      tileset.tileLoadFailed.removeEventListener(onTileLoadFailed);
+      tileset.tileFailed.removeEventListener(onTileLoadFailed);
     });
   }
 
