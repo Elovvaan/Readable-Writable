@@ -5,10 +5,14 @@ REM The server will be available at http://localhost:4001
 
 REM Required: Google Maps Platform key with Map Tiles API enabled and billing on.
 REM Get one at https://console.cloud.google.com/
-set GOOGLE_MAPS_API_KEY=
+REM If GOOGLE_MAPS_API_KEY is already set in your environment, it will be used.
+REM To override it here, uncomment and fill in the next line.
+REM set GOOGLE_MAPS_API_KEY=your-google-maps-api-key
 
 REM Optional: Cesium Ion token — only needed for Cesium Ion-hosted assets.
-set CESIUM_ACCESS_TOKEN=
+REM If CESIUM_ACCESS_TOKEN is already set in your environment, it will be used.
+REM To override it here, uncomment and fill in the next line.
+REM set CESIUM_ACCESS_TOKEN=your-cesium-access-token
 
 REM Optional: set to true to enable OpenSky live flight ingestion.
 set RW_OPENSKY_ENABLED=false
