@@ -1,12 +1,16 @@
 'use strict';
 
+const path = require('path');
 const { spawnSync } = require('child_process');
+
+const ROOT = path.resolve(__dirname, '..');
+const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 function run(command, args) {
   console.log('\n$ ' + [command].concat(args).join(' '));
   const result = spawnSync(command, args, {
     stdio: 'inherit',
-    shell: process.platform === 'win32',
+    cwd: ROOT,
   });
 
   if (result.error) {
@@ -19,8 +23,8 @@ function run(command, args) {
   }
 }
 
-run('npm', ['run', 'report:core-duplicates']);
-run('npm', ['run', 'rewire:server-core']);
-run('npm', ['test']);
+run(NPM, ['run', 'report:core-duplicates']);
+run(NPM, ['run', 'rewire:server-core']);
+run(NPM, ['test']);
 
 console.log('\nCore rewire completed and tests passed.');
