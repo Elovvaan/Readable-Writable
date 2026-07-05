@@ -2809,7 +2809,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         );
         cesiumViewer.scene.primitives.add(tileset);
         cesiumGoogleTileset = tileset;
-        _attachGoogleTileFailGuard(tileset);
+        let googleTileFailGuardAttached = false;
+        if (typeof _attachGoogleTileFailGuard === 'function') {
+          try {
+            _attachGoogleTileFailGuard(tileset);
+            googleTileFailGuardAttached = true;
+          } catch (attachErr) {
+            console.error('[RW Cesium] Failed to attach Google tile fail guard', attachErr);
+          }
+        } else {
+          console.error('[RW Cesium] Google tile fail guard is unavailable');
+        }
+        if (!googleTileFailGuardAttached && typeof tileset?.tileFailed?.addEventListener === 'function') {
+          tileset.tileFailed.addEventListener(function (event) {
+            const reason = event && (event.message || event.error || event.url)
+              ? (event.message || String(event.error || event.url))
+              : 'tile stream failure';
+            console.error('[RW Cesium] Google Photorealistic 3D Tiles tileFailed', event);
+            lastCesiumRenderCounts.tilesLoaded = false;
+            lastCesiumRenderCounts.tilesState = 'failed';
+            lastCesiumRenderCounts.tilesError = reason;
+            if (cesiumViewer && cesiumViewer.scene && cesiumViewer.scene.globe) {
+              cesiumViewer.scene.globe.show = true;
+            }
+          });
+        }
         if (typeof tileset.readyPromise?.then === 'function') {
           tileset.readyPromise.then(function () {
             if (cesiumGoogleTileset === tileset) {
