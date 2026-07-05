@@ -23,4 +23,4 @@ set RW_DEFAULT_VIEW=earth
 REM Optional: override the port (default 4001).
 REM set PORT=4001
 
-node server.js
+node "%~dp0server.js"
