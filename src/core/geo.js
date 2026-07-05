@@ -24,14 +24,14 @@ function latLngToGrid(lat, lng) {
 
 function getGlobeUnitVectorFromLatLng(lat, lng) {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  const phi = lat * Math.PI / 180;
-  const theta = lng * Math.PI / 180;
-  const cosPhi = Math.cos(phi);
-  return {
-    x: cosPhi * Math.cos(theta),
-    y: Math.sin(phi),
-    z: cosPhi * Math.sin(theta),
-  };
+  const latRad = Math.max(-90, Math.min(90, lat)) * (Math.PI / 180);
+  const lngRad = Math.max(-180, Math.min(180, lng)) * (Math.PI / 180);
+  const cosLat = Math.cos(latRad);
+  const x = cosLat * Math.sin(lngRad);
+  const y = Math.sin(latRad);
+  const z = cosLat * Math.cos(lngRad);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+  return { x, y, z };
 }
 
 function normalizeEntityGridPosition(entity) {
