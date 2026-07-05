@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node scripts/restore-visible-world.js && node server.js",
     "diagnose": "node scripts/diagnose-repo.js",
     "report:core-duplicates": "node scripts/report-core-duplicates.js",
     "rewire:server-core": "node scripts/rewire-server-core.js",
