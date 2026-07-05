@@ -8,6 +8,6 @@
     "report:core-duplicates": "node scripts/report-core-duplicates.js",
     "rewire:server-core": "node scripts/rewire-server-core.js",
     "apply:core-rewire": "node scripts/apply-core-rewire.js",
-    "test": "node --test tests/core-utils.test.js tests/core-server-contract.test.js tests/core-boundary.test.js tests/utils.test.js tests/flight-entity.test.js tests/websocket.test.js tests/event-log.test.js tests/router.test.js tests/file-source.test.js tests/camera.test.js tests/live-entities.test.js tests/flight-provider.test.js tests/quantum-sim.test.js"
+    "test": "node --test tests/core-utils.test.js tests/core-server-contract.test.js tests/core-boundary.test.js tests/visible-world-restore.test.js tests/utils.test.js tests/flight-entity.test.js tests/websocket.test.js tests/event-log.test.js tests/router.test.js tests/file-source.test.js tests/camera.test.js tests/live-entities.test.js tests/flight-provider.test.js tests/quantum-sim.test.js"
   }
 }
