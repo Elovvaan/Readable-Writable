@@ -132,6 +132,48 @@ describe('GET /rw/spatial/health', () => {
   });
 });
 
+// ─── GET /config-safe ────────────────────────────────────────────────────────
+
+describe('GET /config-safe', () => {
+  test('returns 200', () => {
+    assert.equal(callRouter('GET', '/config-safe').statusCode, 200);
+  });
+
+  test('Content-Type is application/json', () => {
+    const res = callRouter('GET', '/config-safe');
+    assert.ok(res.headers['Content-Type'].includes('application/json'));
+  });
+
+  test('body has required safe boolean fields', () => {
+    const body = jsonBody(callRouter('GET', '/config-safe'));
+    assert.ok('googleKeyPresent' in body);
+    assert.ok('cesiumTokenPresent' in body);
+    assert.ok('defaultView' in body);
+    assert.ok('openskyEnabled' in body);
+  });
+
+  test('googleKeyPresent is a boolean', () => {
+    const body = jsonBody(callRouter('GET', '/config-safe'));
+    assert.equal(typeof body.googleKeyPresent, 'boolean');
+  });
+
+  test('openskyEnabled is a boolean', () => {
+    const body = jsonBody(callRouter('GET', '/config-safe'));
+    assert.equal(typeof body.openskyEnabled, 'boolean');
+  });
+
+  test('defaultView is a string', () => {
+    const body = jsonBody(callRouter('GET', '/config-safe'));
+    assert.equal(typeof body.defaultView, 'string');
+  });
+
+  test('does not expose the raw API key value', () => {
+    const body = jsonBody(callRouter('GET', '/config-safe'));
+    assert.ok(!('googleMapsApiKey' in body));
+    assert.ok(!('cesiumAccessToken' in body));
+  });
+});
+
 // ─── GET /rw/spatial ─────────────────────────────────────────────────────────
 
 describe('GET /rw/spatial', () => {

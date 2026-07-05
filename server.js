@@ -2730,6 +2730,26 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     return LEGACY_CANVAS_RENDERER;
   }
 
+  // Guard against silent Google 3D tile streaming failures (billing disabled, Map Tiles API
+  // not enabled, domain restriction on the API key, etc.).  When fromUrl() succeeds the root
+  // JSON loads fine, but every subsequent tile request returns 403/404 silently.  globe.show
+  // was already set to false optimistically at that point, so without this guard the viewer
+  // stays permanently black.  After ≥TILE_FAILURE_THRESHOLD tileFailed events we restore.
+  function _attachGoogleTileFailGuard(tileset) {
+    if (typeof tileset.tileFailed?.addEventListener !== 'function') return;
+    const TILE_FAILURE_THRESHOLD = 3;
+    let failCount = 0;
+    tileset.tileFailed.addEventListener(function onTileLoadFailed(e) {
+      if (++failCount < TILE_FAILURE_THRESHOLD || cesiumGoogleTileset !== tileset || !cesiumViewer) return;
+      console.warn('[RW Cesium] Google tile streaming failures (' + failCount + ') — restoring globe. Check GOOGLE_MAPS_API_KEY: billing enabled, Map Tiles API enabled, domain not restricted.', e && e.message);
+      cesiumViewer.scene.globe.show = true;
+      lastCesiumRenderCounts.tilesLoaded = false;
+      lastCesiumRenderCounts.tilesState = 'failed';
+      lastCesiumRenderCounts.tilesError = (e && e.message) ? e.message : 'tile streaming errors';
+      tileset.tileFailed.removeEventListener(onTileLoadFailed);
+    });
+  }
+
   async function initCesium() {
     console.log('[RW] initCesium start');
     if (!USE_CESIUM || typeof Cesium === 'undefined') return;
@@ -2789,6 +2809,31 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         );
         cesiumViewer.scene.primitives.add(tileset);
         cesiumGoogleTileset = tileset;
+        let googleTileFailGuardAttached = false;
+        if (typeof _attachGoogleTileFailGuard === 'function') {
+          try {
+            _attachGoogleTileFailGuard(tileset);
+            googleTileFailGuardAttached = true;
+          } catch (attachErr) {
+            console.error('[RW Cesium] Failed to attach Google tile fail guard', attachErr);
+          }
+        } else {
+          console.error('[RW Cesium] Google tile fail guard is unavailable');
+        }
+        if (!googleTileFailGuardAttached && typeof tileset?.tileFailed?.addEventListener === 'function') {
+          tileset.tileFailed.addEventListener(function (event) {
+            const reason = event && (event.message || event.error || event.url)
+              ? (event.message || String(event.error || event.url))
+              : 'tile stream failure';
+            console.error('[RW Cesium] Google Photorealistic 3D Tiles tileFailed', event);
+            lastCesiumRenderCounts.tilesLoaded = false;
+            lastCesiumRenderCounts.tilesState = 'failed';
+            lastCesiumRenderCounts.tilesError = reason;
+            if (cesiumViewer && cesiumViewer.scene && cesiumViewer.scene.globe) {
+              cesiumViewer.scene.globe.show = true;
+            }
+          });
+        }
         if (typeof tileset.readyPromise?.then === 'function') {
           tileset.readyPromise.then(function () {
             if (cesiumGoogleTileset === tileset) {
@@ -12052,6 +12097,18 @@ function router(req, res) {
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(body);
+    return;
+  }
+
+  // ── GET /config-safe  → safe booleans for client-side diagnostics (no secrets)
+  if (req.method === 'GET' && url === '/config-safe') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      googleKeyPresent: GOOGLE_MAPS_API_KEY.length > 0,
+      cesiumTokenPresent: CESIUM_ACCESS_TOKEN.length > 0,
+      defaultView: RW_DEFAULT_VIEW,
+      openskyEnabled: OPENSKY_ENABLED,
+    }));
     return;
   }
 
