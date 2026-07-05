@@ -7,11 +7,16 @@ const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPT_PATH = path.join(ROOT, 'scripts', 'restore-visible-world.js');
+const SERVER_PATH = path.join(ROOT, 'server.js');
 const PACKAGE_PATH = path.join(ROOT, 'package.json');
 
 describe('visible world restore startup patch', () => {
   test('restore script exists and targets the renderer constants', () => {
     const source = fs.readFileSync(SCRIPT_PATH, 'utf8');
+    const server = fs.readFileSync(SERVER_PATH, 'utf8');
+    assert.match(server, /const USE_CESIUM = true;/);
+    assert.match(server, /const LEGACY_CANVAS_RENDERER = false;/);
+    assert.match(server, /const RW_USE_CESIUM = true;/);
     assert.match(source, /const USE_CESIUM = true;/);
     assert.match(source, /const USE_CESIUM = false;/);
     assert.match(source, /const LEGACY_CANVAS_RENDERER = false;/);
