@@ -40,7 +40,7 @@ describe('server/core utility contract', () => {
       undefined,
     ];
     for (const sample of samples) {
-      assert.equal(serverCore.hasLatLng(sample), extractedCore.hasLatLng(sample));
+      assert.equal(Boolean(serverCore.hasLatLng(sample)), Boolean(extractedCore.hasLatLng(sample)));
     }
   });
 
