@@ -8,10 +8,10 @@ const serverPath = path.join(root, 'server.js');
 const marker = '// RW_VISIBLE_WORLD_RESTORE_APPLIED';
 
 function replaceOnce(source, from, to, label) {
-  if (!source.includes(from)) {
-    if (source.includes(to)) return source;
-    throw new Error('Missing expected server.js fragment: ' + label);
-  }
+  if (source.includes(to)) return source;
+  const occurrences = source.split(from).length - 1;
+  if (occurrences === 0) throw new Error('Missing expected server.js fragment: ' + label);
+  if (occurrences > 1) throw new Error('Multiple matches for server.js fragment: ' + label);
   return source.replace(from, to);
 }
 
