@@ -53,4 +53,4 @@ src/
 
 ## First safe slice
 
-This branch starts by adding structure and a diagnostic script. It does not move live runtime code yet. That gives the repo a stable map before the monolith is cut apart.
+This branch starts by adding structure and documentation. It does not move live runtime code yet. That gives the repo a stable map before the monolith is cut apart.
