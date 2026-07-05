@@ -26,14 +26,14 @@ function main() {
   source = replaceOnce(
     source,
     'const USE_CESIUM = true;',
-    'const USE_CESIUM = false; ' + marker,
+    'const USE_CESIUM = BOOTSTRAP.useCesium === true; ' + marker,
     'frontend USE_CESIUM constant'
   );
 
   source = replaceOnce(
     source,
     'const LEGACY_CANVAS_RENDERER = false;',
-    'const LEGACY_CANVAS_RENDERER = true;',
+    'const LEGACY_CANVAS_RENDERER = !USE_CESIUM;',
     'frontend LEGACY_CANVAS_RENDERER constant'
   );
 
