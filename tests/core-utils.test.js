@@ -40,11 +40,27 @@ describe('src/core geo utilities', () => {
   });
 
   test('getGlobeUnitVectorFromLatLng returns normalized vectors', () => {
+    const v00 = getGlobeUnitVectorFromLatLng(0, 0);
+    assert.ok(v00);
+    assert.ok(Math.abs(v00.x - 0) < 1e-10);
+    assert.ok(Math.abs(v00.y - 0) < 1e-10);
+    assert.ok(Math.abs(v00.z - 1) < 1e-10);
+
+    const v090 = getGlobeUnitVectorFromLatLng(0, 90);
+    assert.ok(v090);
+    assert.ok(Math.abs(v090.x - 1) < 1e-10);
+    assert.ok(Math.abs(v090.z - 0) < 1e-10);
+
     for (const [lat, lng] of [[0, 0], [45, 90], [-33, 151], [90, 0], [-90, 0]]) {
       const v = getGlobeUnitVectorFromLatLng(lat, lng);
       const mag = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
       assert.ok(Math.abs(mag - 1) < 1e-10, `magnitude=${mag}`);
     }
+
+    // Out-of-range values should be clamped (matching server behavior)
+    assert.deepEqual(getGlobeUnitVectorFromLatLng(100, 0), getGlobeUnitVectorFromLatLng(90, 0));
+    assert.deepEqual(getGlobeUnitVectorFromLatLng(0, 200), getGlobeUnitVectorFromLatLng(0, 180));
+
     assert.equal(getGlobeUnitVectorFromLatLng(NaN, 0), null);
     assert.equal(getGlobeUnitVectorFromLatLng(0, Infinity), null);
     assert.equal(getGlobeUnitVectorFromLatLng(null, null), null);
