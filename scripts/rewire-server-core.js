@@ -112,8 +112,16 @@ function replaceServerHelpersWithCoreAliases(source) {
   const found = [];
   for (const name of TARGETS) {
     const match = findFunctionDeclaration(source, name);
-    if (!match) throw new Error('Missing server helper declaration: ' + name);
-    found.push(match);
+    if (match) {
+      found.push(match);
+      continue;
+    }
+
+    // Allow re-running after helpers have already been rewired.
+    const aliasNeedle = 'const ' + name + ' = core.' + name + ';';
+    if (!source.includes(aliasNeedle)) {
+      throw new Error('Missing server helper declaration or core alias: ' + name);
+    }
   }
 
   found.sort((a, b) => b.start - a.start);
@@ -126,8 +134,12 @@ function replaceServerHelpersWithCoreAliases(source) {
   const anchorIndex = next.indexOf(insertionAnchor);
   if (anchorIndex === -1) throw new Error('Unable to find config section anchor.');
 
-  if (!next.includes('const safeNumber = core.safeNumber;')) {
-    next = next.slice(0, anchorIndex) + CORE_ALIAS_BLOCK + '\n' + next.slice(anchorIndex);
+  const missingAliasLines = TARGETS
+    .filter(name => !next.includes('const ' + name + ' = core.' + name + ';'))
+    .map(name => 'const ' + name + ' = core.' + name + ';');
+
+  if (missingAliasLines.length) {
+    next = next.slice(0, anchorIndex) + missingAliasLines.join('\n') + '\n' + next.slice(anchorIndex);
   }
 
   return { source: next, found };
