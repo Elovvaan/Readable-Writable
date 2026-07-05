@@ -84,8 +84,7 @@ describe('src/core geo utilities', () => {
 describe('src/core id utilities', () => {
   test('uid preserves prefix and produces lowercase hex suffixes', () => {
     const id = uid('agent');
-    assert.ok(id.startsWith('agent-'));
-    assert.match(id.slice('agent-'.length), /^[0-9a-f]+$/);
+    assert.match(id, /^agent-[0-9a-f]{8}$/);
   });
 
   test('uid generates unique values across many calls', () => {
