@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 
 function uid(prefix) {
-  return String(prefix || 'id') + '-' + crypto.randomBytes(8).toString('hex');
+  return String(prefix) + '-' + crypto.randomBytes(4).toString('hex');
 }
 
 module.exports = {
