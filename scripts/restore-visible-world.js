@@ -19,8 +19,7 @@ function main() {
   let source = fs.readFileSync(serverPath, 'utf8');
 
   if (source.includes(marker)) {
-    console.log('Visible world patch already applied.');
-    return;
+    console.log('Visible world patch marker found; verifying patch state.');
   }
 
   source = replaceOnce(
